@@ -1,6 +1,10 @@
 (() => {
   if (globalThis.__XHS_NOTE_EXPORTER_INSTALLED__) return;
   globalThis.__XHS_NOTE_EXPORTER_INSTALLED__ = true;
+  const PAGE_SESSION_ID = globalThis.__XHS_NOTE_EXPORTER_PAGE_SESSION_ID__ ||
+    globalThis.crypto?.randomUUID?.() ||
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  globalThis.__XHS_NOTE_EXPORTER_PAGE_SESSION_ID__ = PAGE_SESSION_ID;
 
   const DEFAULT_LIMIT = 50;
   const MAX_SCROLL_ROUNDS = 80;
@@ -146,16 +150,21 @@
     }).filter(Boolean);
   }
 
-  function sendProgress(title, detail, count) {
+  async function sendProgress(title, detail, count) {
     const status = {
       state: "working",
       title,
       detail,
       count,
+      pageSessionId: PAGE_SESSION_ID,
+      pageUrl: location.href,
+      noteId: getNoteId(),
       updatedAt: Date.now()
     };
-    chrome.runtime.sendMessage({ type: "XHS_EXPORT_PROGRESS", ...status }).catch(() => {});
-    chrome.storage.local.set({ xhsExporterStatus: status }).catch(() => {});
+    await Promise.allSettled([
+      chrome.runtime.sendMessage({ type: "XHS_EXPORT_PROGRESS", ...status }),
+      chrome.storage.local.set({ xhsExporterStatus: status })
+    ]);
   }
 
   async function loadTopLevelComments(root, limit) {
@@ -170,7 +179,7 @@
     try {
       for (let round = 0; round < MAX_SCROLL_ROUNDS; round += 1) {
         const count = root.querySelectorAll(".parent-comment").length;
-        sendProgress("正在读取评论", `已加载 ${Math.min(count, limit)} 条一级评论`, Math.min(count, limit));
+        await sendProgress("正在读取评论", `已加载 ${Math.min(count, limit)} 条一级评论`, Math.min(count, limit));
 
         if (count >= limit) break;
 
@@ -216,7 +225,8 @@
       source: {
         platform: "xiaohongshu",
         url: location.href,
-        noteId
+        noteId,
+        pageSessionId: PAGE_SESSION_ID
       },
       note: {
         title: textOf(root, "#detail-title, .title") || document.title.replace(/\s*-\s*小红书\s*$/, ""),
@@ -267,9 +277,9 @@
       throw new Error("没有找到帖文详情。请确认详情弹窗已经完全打开。");
     }
 
-    sendProgress("正在读取帖文", "获取元信息、互动数和媒体资源", 0);
+    await sendProgress("正在读取帖文", "获取元信息、互动数和媒体资源", 0);
     const loadingResult = await loadTopLevelComments(root, options.limit);
-    sendProgress("正在整理证据", "汇总正文、互动数据、图片和评论", Math.min(options.limit, loadingResult.loaded));
+    await sendProgress("正在整理证据", "汇总正文、互动数据、图片和评论", Math.min(options.limit, loadingResult.loaded));
 
     const payload = extractNote(root, options, loadingResult);
     return {
@@ -312,13 +322,72 @@
     };
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || !["XHS_CAPTURE_START", "XHS_EXPORT_START"].includes(message.type)) return undefined;
+  async function runCaptureAndSummarize(rawOptions, suppliedPayload, force) {
+    let payload = suppliedPayload || null;
+    if (payload) {
+      await sendProgress("正在重新生成", "复用本页面已经采集的证据", payload.commentExport?.extractedTopLevelCount || 0);
+    } else {
+      payload = (await runCapture(rawOptions)).payload;
+    }
 
-    const operation = message.type === "XHS_CAPTURE_START" ? runCapture(message.options) : runExtraction(message.options);
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_SUMMARIZE_PAGE",
+      payload,
+      force: Boolean(force),
+      pageSessionId: PAGE_SESSION_ID
+    });
+    if (!response?.ok) throw new Error(response?.error || "概括未完成。");
+    return { ok: true, result: response.result, capture: payload };
+  }
+
+  async function notifyWorkflowFailure(error) {
+    const detail = error?.message || "未知错误";
+    await chrome.runtime.sendMessage({
+      type: "XHS_AI_WORKFLOW_FAILED",
+      pageSessionId: PAGE_SESSION_ID,
+      pageUrl: location.href,
+      noteId: getNoteId(),
+      error: detail
+    }).catch(() => {});
+    return detail;
+  }
+
+  let activeAiWorkflow = null;
+
+  function startAiWorkflow(message) {
+    if (activeAiWorkflow) return activeAiWorkflow;
+    const operation = runCaptureAndSummarize(message.options, message.payload, message.force);
+    const tracked = operation.finally(() => {
+      if (activeAiWorkflow === tracked) activeAiWorkflow = null;
+    });
+    activeAiWorkflow = tracked;
+    return tracked;
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "XHS_PAGE_CONTEXT") {
+      sendResponse({
+        ok: true,
+        pageSessionId: PAGE_SESSION_ID,
+        pageUrl: location.href,
+        noteId: getNoteId()
+      });
+      return false;
+    }
+
+    if (!message || !["XHS_CAPTURE_START", "XHS_EXPORT_START", "XHS_CAPTURE_AND_SUMMARIZE"].includes(message.type)) {
+      return undefined;
+    }
+
+    const operation = message.type === "XHS_CAPTURE_START"
+      ? runCapture(message.options)
+      : message.type === "XHS_EXPORT_START"
+        ? runExtraction(message.options)
+        : startAiWorkflow(message);
     operation
       .then(sendResponse)
       .catch(async (error) => {
+        if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") await notifyWorkflowFailure(error);
         const status = {
           state: "error",
           title: "摘录失败",

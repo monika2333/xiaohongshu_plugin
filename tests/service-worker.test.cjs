@@ -6,6 +6,7 @@ const vm = require("node:vm");
 const downloads = [];
 const storageState = { local: {}, session: {} };
 const accessLevels = [];
+const runtimeMessages = [];
 
 function storageArea(name) {
   return {
@@ -34,7 +35,11 @@ context = {
     },
     runtime: {
       onMessage: { addListener: () => {} },
-      getURL: (value = "") => `chrome-extension://test/${value}`
+      getURL: (value = "") => `chrome-extension://test/${value}`,
+      sendMessage: async (message) => {
+        runtimeMessages.push(message);
+        return { ok: true };
+      }
     },
     storage: {
       local: storageArea("local"),
@@ -278,6 +283,44 @@ const payload = {
   );
   assert.equal(cachedSummary.text, firstSummary.text);
   assert.equal(textCalls, 1);
+
+  const pageSender = {
+    tab: { id: 42 },
+    url: textOnlyPayload.source.url
+  };
+  await context.recordCaptureProgress({
+    pageSessionId: "page-session-1",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: textOnlyPayload.source.noteId,
+    title: "正在读取评论",
+    detail: "已加载 20 条一级评论",
+    count: 20
+  }, pageSender);
+  const runningWorkflow = await context.getWorkflowState(42, "page-session-1", textOnlyPayload.source.url);
+  assert.equal(runningWorkflow.status, "working");
+  assert.equal(runningWorkflow.progress.percent, 12);
+  assert.equal(runningWorkflow.progress.count, 20);
+  assert.equal(
+    await context.getWorkflowState(42, "page-session-after-refresh", textOnlyPayload.source.url),
+    null
+  );
+
+  storageState.local.xhsAiConfig = context.XhsAi.DEFAULT_CONFIG;
+  storageState.local.xhsAiPersistentSecrets = { textApiKey: "test-deepseek-key", visionApiKey: "" };
+  const pageSummary = await context.summarizePagePayload({
+    payload: {
+      ...textOnlyPayload,
+      source: { ...textOnlyPayload.source, pageSessionId: "page-session-1" }
+    },
+    force: false,
+    pageSessionId: "page-session-1"
+  }, pageSender);
+  assert.equal(pageSummary.ok, true);
+  const completedWorkflow = await context.getWorkflowState(42, "page-session-1", textOnlyPayload.source.url);
+  assert.equal(completedWorkflow.status, "done");
+  assert.equal(completedWorkflow.result.text, pageSummary.result.text);
+  assert.equal(completedWorkflow.capture.source.pageSessionId, "page-session-1");
+  assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_WORKFLOW_STATE"));
 
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {

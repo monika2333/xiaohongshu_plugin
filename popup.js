@@ -21,6 +21,7 @@ const elements = {
 
 let currentCapture = null;
 let isWorking = false;
+let currentPageContext = null;
 
 function setStatus({ state = "idle", title, detail, percent = 0, count = null }) {
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -48,14 +49,6 @@ function isXhsNoteUrl(url) {
   }
 }
 
-function noteIdFromUrl(url) {
-  try {
-    return new URL(url).pathname.match(/\/explore\/([0-9a-f]{24})/i)?.[1] || null;
-  } catch {
-    return null;
-  }
-}
-
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
@@ -80,39 +73,84 @@ function showResult(result, capture) {
   elements.resultCard.hidden = false;
 }
 
-async function captureCurrentPage() {
+async function prepareCurrentPage() {
   const tab = await getActiveTab();
   if (!tab?.id || !isXhsNoteUrl(tab.url || "")) {
     throw new Error("请先打开小红书帖文详情页，再点击提取并概括。");
   }
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
-  const response = await chrome.tabs.sendMessage(tab.id, {
-    type: "XHS_CAPTURE_START",
-    options: { limit: LIMIT, includeVisibleReplies: true, downloadImages: false }
-  });
-  if (!response?.ok) throw new Error(response?.error || "页面内容提取失败，请刷新后重试。");
-  return response.payload;
+  const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
+  if (!context?.ok || !context.pageSessionId) {
+    throw new Error(context?.error || "无法确认当前页面状态，请刷新后重试。");
+  }
+  currentPageContext = { tabId: tab.id, ...context };
+  return currentPageContext;
 }
 
-async function summarize(payload, force = false) {
-  const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SUMMARIZE", payload, force });
+async function startPageWorkflow(payload = null, force = false) {
+  const page = await prepareCurrentPage();
+  const response = await chrome.tabs.sendMessage(page.tabId, {
+    type: "XHS_CAPTURE_AND_SUMMARIZE",
+    options: { limit: LIMIT, includeVisibleReplies: true, downloadImages: false },
+    payload,
+    force
+  });
   if (!response?.ok) throw new Error(response?.error || "概括未完成。");
-  showResult(response.result, payload);
+  showResult(response.result, response.capture || payload);
+  return response;
+}
+
+function workflowMatchesCurrentPage(workflow) {
+  return Boolean(
+    workflow &&
+    currentPageContext &&
+    workflow.tabId === currentPageContext.tabId &&
+    workflow.pageSessionId === currentPageContext.pageSessionId &&
+    workflow.pageUrl === currentPageContext.pageUrl
+  );
+}
+
+function applyWorkflowState(workflow) {
+  if (!workflowMatchesCurrentPage(workflow)) return false;
+  currentCapture = workflow.capture || currentCapture;
+  const progress = workflow.progress || {};
+  if (workflow.status === "done" && workflow.result) {
+    showResult(workflow.result, currentCapture);
+    setWorking(false);
+    setStatus({
+      state: "done",
+      title: progress.title || "概括完成",
+      detail: progress.detail || "已按固定格式生成，可直接复制。",
+      percent: 100
+    });
+    return true;
+  }
+  if (workflow.status === "error") {
+    setWorking(false);
+    setStatus({
+      state: "error",
+      title: progress.title || "未能完成",
+      detail: progress.detail || workflow.error || "发生未知错误。",
+      percent: progress.percent || 0
+    });
+    return true;
+  }
+  setWorking(true);
+  setStatus({
+    state: "working",
+    title: progress.title || "正在处理",
+    detail: progress.detail || "正在恢复当前任务状态…",
+    percent: progress.percent || 3,
+    count: progress.count
+  });
+  return true;
 }
 
 async function runFullWorkflow() {
   setWorking(true);
   setStatus({ state: "working", title: "正在连接页面", detail: "检查当前帖文详情页…", percent: 3 });
   try {
-    const payload = await captureCurrentPage();
-    currentCapture = payload;
-    setStatus({
-      state: "working",
-      title: "页面证据已就绪",
-      detail: `已读取 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} 张图片`,
-      percent: 30
-    });
-    await summarize(payload, false);
+    await startPageWorkflow(null, false);
     setStatus({ state: "done", title: "概括完成", detail: "已按固定格式生成，可直接复制。", percent: 100 });
   } catch (error) {
     setStatus({ state: "error", title: "未能完成", detail: error?.message || "发生未知错误。", percent: 0 });
@@ -122,24 +160,7 @@ async function runFullWorkflow() {
 }
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "XHS_EXPORT_PROGRESS") {
-    const count = Number(message.count) || 0;
-    setStatus({
-      state: "working",
-      title: message.title || "正在读取页面",
-      detail: message.detail || "正在读取当前帖文…",
-      percent: Math.min(30, Math.round((count / LIMIT) * 30)),
-      count
-    });
-  }
-  if (message?.type === "XHS_AI_PROGRESS") {
-    setStatus({
-      state: message.stage === "done" ? "done" : "working",
-      title: message.title || "正在调用模型",
-      detail: message.detail || "正在处理…",
-      percent: message.percent || 30
-    });
-  }
+  if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
 });
 
 elements.extractButton.addEventListener("click", runFullWorkflow);
@@ -165,7 +186,7 @@ elements.regenerateButton.addEventListener("click", async () => {
   setWorking(true);
   setStatus({ state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 });
   try {
-    await summarize(currentCapture, true);
+    await startPageWorkflow(currentCapture, true);
     setStatus({ state: "done", title: "重新生成完成", detail: "新版本已替换原概括。", percent: 100 });
   } catch (error) {
     setStatus({ state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 });
@@ -180,6 +201,9 @@ elements.downloadButton.addEventListener("click", async () => {
   try {
     const response = await chrome.runtime.sendMessage({
       type: "XHS_AI_DOWNLOAD_LAST",
+      tabId: currentPageContext?.tabId,
+      pageSessionId: currentPageContext?.pageSessionId,
+      pageUrl: currentPageContext?.pageUrl,
       options: { downloadImages: elements.downloadImages.checked }
     });
     if (!response?.ok) throw new Error(response?.error || "下载失败。");
@@ -196,14 +220,23 @@ elements.downloadButton.addEventListener("click", async () => {
   }
 });
 
-Promise.all([
-  chrome.runtime.sendMessage({ type: "XHS_AI_GET_LAST" }),
-  getActiveTab()
-]).then(([response, tab]) => {
-  if (!response?.ok || noteIdFromUrl(tab?.url) !== response.result?.noteId) return;
-  currentCapture = response.capture;
-  if (Date.now() - response.result.createdAt < 12 * 60 * 60 * 1000) {
-    showResult(response.result, currentCapture);
-    setStatus({ state: "done", title: "已恢复本次会话结果", detail: "可以继续复制、重新生成或下载原始数据。", percent: 100 });
+async function restoreCurrentWorkflow() {
+  try {
+    const page = await prepareCurrentPage();
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_GET_WORKFLOW",
+      tabId: page.tabId,
+      pageSessionId: page.pageSessionId,
+      pageUrl: page.pageUrl
+    });
+    if (response?.ok && response.workflow) {
+      applyWorkflowState(response.workflow);
+      return;
+    }
+  } catch {
+    return;
   }
-}).catch(() => {});
+  setWorking(false);
+}
+
+restoreCurrentWorkflow();
