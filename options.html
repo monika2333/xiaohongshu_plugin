@@ -15,30 +15,23 @@
           <h1>插件设置</h1>
           <p>配置文字与图片模型，并按需把完成的概括自动推送到飞书。</p>
         </div>
-        <span class="edition">个人直连版 · v0.3.1</span>
       </header>
 
-      <aside class="privacy-note">
-        <span class="note-index">01</span>
-        <div>
-          <strong>API Key 与飞书凭据默认仅保存在本机浏览器中</strong>
-          <p>重启后无需重填；不会同步、写入下载文件或注入网页，也可切换为会话模式。</p>
+      <aside class="privacy-note" aria-labelledby="credential-title">
+        <div class="credential-body">
+          <div class="credential-row">
+            <label class="remember-option">
+              <input id="remember-keys" class="remember-input" type="checkbox" checked>
+              <span class="remember-toggle" aria-hidden="true"></span>
+              <strong id="credential-title">API Key 与飞书凭据默认仅保存在本机浏览器中</strong>
+            </label>
+            <button id="clear-keys-button" class="clear-keys-button" type="button">清除全部敏感凭据</button>
+          </div>
+          <small class="credential-hint"><span id="storage-mode-hint">浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。</span>无论哪种模式，凭据都不会同步、写入下载文件或注入网页。</small>
         </div>
       </aside>
 
       <form id="settings-form">
-        <section class="credential-control" aria-labelledby="credential-title">
-          <label class="remember-option">
-            <input id="remember-keys" class="remember-input" type="checkbox" checked>
-            <span class="remember-toggle" aria-hidden="true"></span>
-            <span class="mode-copy">
-              <strong id="credential-title">在本机记住密钥与飞书凭据</strong>
-              <small id="storage-mode-hint">浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。</small>
-            </span>
-          </label>
-          <button id="clear-keys-button" class="clear-keys-button" type="button">清除全部敏感凭据</button>
-        </section>
-
         <section class="provider-card" aria-labelledby="text-title">
           <div class="card-number">A</div>
           <div class="card-heading">

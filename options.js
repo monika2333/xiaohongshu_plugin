@@ -77,6 +77,43 @@ function setSaveStatus(text, state = "") {
   saveStatus.dataset.state = state;
 }
 
+let closeCountdownTimer = null;
+
+function cancelCloseCountdown() {
+  if (closeCountdownTimer) {
+    clearInterval(closeCountdownTimer);
+    closeCountdownTimer = null;
+  }
+}
+
+async function closeOptionsPage() {
+  try {
+    const tab = await chrome.tabs.getCurrent();
+    if (tab) {
+      await chrome.tabs.remove(tab.id);
+      return;
+    }
+  } catch {}
+  window.close();
+}
+
+function beginCloseCountdown(savedText) {
+  cancelCloseCountdown();
+  let secondsLeft = 3;
+  const render = () =>
+    setSaveStatus(`${savedText} 本页将在 ${secondsLeft} 秒后自动关闭，也可以直接关闭本页。`, "ok");
+  render();
+  closeCountdownTimer = setInterval(() => {
+    secondsLeft -= 1;
+    if (secondsLeft <= 0) {
+      cancelCloseCountdown();
+      closeOptionsPage();
+      return;
+    }
+    render();
+  }, 1000);
+}
+
 function updateStorageModeHint() {
   storageModeHint.textContent = fields.rememberKeys.checked
     ? "浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。"
@@ -115,6 +152,7 @@ async function restoreSettings() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  cancelCloseCountdown();
   saveButton.disabled = true;
   setSaveStatus("正在保存设置…");
   try {
@@ -124,11 +162,10 @@ form.addEventListener("submit", async (event) => {
     await ensureApiPermissions(permissionUrls);
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SAVE_CONFIG", ...values });
     if (!response?.ok) throw new Error(response?.error || "保存失败。");
-    setSaveStatus(
+    beginCloseCountdown(
       values.config.rememberApiKeys
-        ? "已保存到本机浏览器，重启后无需重新填写。"
-        : "已保存到当前会话，关闭浏览器后会自动清除。",
-      "ok"
+        ? "设置已全部保存到本机浏览器，重启后无需重新填写。"
+        : "设置已全部保存到当前会话，关闭浏览器后会自动清除。"
     );
   } catch (error) {
     setSaveStatus(error?.message || "保存失败。", "error");
@@ -144,6 +181,7 @@ document.querySelectorAll('input[name="feishu-mode"]').forEach((input) => {
 });
 
 clearKeysButton.addEventListener("click", async () => {
+  cancelCloseCountdown();
   clearKeysButton.disabled = true;
   setSaveStatus("正在清除已保存密钥…");
   try {
