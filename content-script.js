@@ -255,7 +255,7 @@
     };
   }
 
-  async function runExtraction(rawOptions) {
+  async function runCapture(rawOptions) {
     const options = {
       limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT)),
       downloadImages: rawOptions?.downloadImages !== false,
@@ -269,9 +269,20 @@
 
     sendProgress("正在读取帖文", "获取元信息、互动数和媒体资源", 0);
     const loadingResult = await loadTopLevelComments(root, options.limit);
-    sendProgress("正在整理文件", "生成 JSON、Markdown 和 CSV", Math.min(options.limit, loadingResult.loaded));
+    sendProgress("正在整理证据", "汇总正文、互动数据、图片和评论", Math.min(options.limit, loadingResult.loaded));
 
     const payload = extractNote(root, options, loadingResult);
+    return {
+      ok: true,
+      payload,
+      topLevelCount: payload.commentExport.extractedTopLevelCount,
+      imageCount: payload.media.images.length
+    };
+  }
+
+  async function runExtraction(rawOptions) {
+    const captured = await runCapture(rawOptions);
+    const payload = captured.payload;
     const downloadResponse = await chrome.runtime.sendMessage({
       type: "XHS_EXPORT_DOWNLOAD",
       payload,
@@ -302,9 +313,10 @@
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type !== "XHS_EXPORT_START") return undefined;
+    if (!message || !["XHS_CAPTURE_START", "XHS_EXPORT_START"].includes(message.type)) return undefined;
 
-    runExtraction(message.options)
+    const operation = message.type === "XHS_CAPTURE_START" ? runCapture(message.options) : runExtraction(message.options);
+    operation
       .then(sendResponse)
       .catch(async (error) => {
         const status = {

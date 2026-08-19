@@ -1,13 +1,22 @@
 {
   "manifest_version": 3,
   "name": "薯页摘录",
-  "version": "0.1.0",
-  "description": "一键保存当前小红书帖文、互动数据、前 50 条一级评论和帖文图片。",
+  "version": "0.2.0",
+  "description": "提取当前小红书帖文、图片和前 50 条评论，并用自备大模型生成规整概括。",
   "permissions": [
     "activeTab",
+    "clipboardWrite",
     "downloads",
     "scripting",
     "storage"
+  ],
+  "host_permissions": [
+    "https://api.deepseek.com/*",
+    "https://*.maas.aliyuncs.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://dashscope-intl.aliyuncs.com/*",
+    "https://dashscope-us.aliyuncs.com/*",
+    "https://*.xhscdn.com/*"
   ],
   "background": {
     "service_worker": "service-worker.js"
@@ -15,5 +24,6 @@
   "action": {
     "default_title": "薯页摘录",
     "default_popup": "popup.html"
-  }
+  },
+  "options_page": "options.html"
 }

@@ -11,59 +11,63 @@
       <header class="masthead">
         <div class="brand-mark" aria-hidden="true">摘</div>
         <div>
-          <p class="eyebrow">LOCAL NOTE CLIPPER</p>
+          <p class="eyebrow">AI NOTE BRIEFING</p>
           <h1>薯页摘录</h1>
         </div>
-        <span class="version">v0.1</span>
+        <button id="settings-button" class="settings-button" type="button" title="模型设置">设置</button>
       </header>
 
       <section class="brief" aria-labelledby="brief-title">
         <div class="brief-heading">
           <h2 id="brief-title">当前帖文</h2>
-          <span class="limit-stamp">前 50 条</span>
+          <span class="limit-stamp">评论 50 条</span>
         </div>
-        <p>元信息、互动数据、一级评论与帖文图片，仅保存在本机。</p>
-      </section>
-
-      <section class="options" aria-label="导出选项">
-        <label class="option-row">
-          <span>
-            <strong>保存帖文图片</strong>
-            <small>自动排除头像和评论表情</small>
-          </span>
-          <input id="download-images" type="checkbox" checked>
-          <span class="toggle" aria-hidden="true"></span>
-        </label>
-        <label class="option-row">
-          <span>
-            <strong>附带已显示回复</strong>
-            <small>不会主动展开全部楼中楼</small>
-          </span>
-          <input id="include-visible-replies" type="checkbox" checked>
-          <span class="toggle" aria-hidden="true"></span>
-        </label>
+        <p>提取正文与图片，归纳评论观点，生成可直接复制的舆情简报。</p>
       </section>
 
       <section id="status-card" class="status-card" aria-live="polite">
         <div class="status-topline">
-          <span id="status-dot" class="status-dot"></span>
+          <span class="status-dot"></span>
           <strong id="status-title">准备就绪</strong>
-          <span id="status-count">0 / 50</span>
+          <span id="status-count">0%</span>
         </div>
-        <div class="progress-track" aria-hidden="true">
-          <span id="progress-bar"></span>
-        </div>
+        <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
         <p id="status-detail">请先打开一个小红书帖文详情页。</p>
       </section>
 
       <button id="extract-button" class="extract-button" type="button">
-        <span class="button-label">开始摘录</span>
+        <span class="button-label">提取并概括</span>
         <span class="button-arrow" aria-hidden="true">↘</span>
       </button>
 
+      <section id="result-card" class="result-card" hidden aria-labelledby="result-title">
+        <div class="result-heading">
+          <div>
+            <p class="eyebrow">READY TO COPY</p>
+            <h2 id="result-title">概括结果</h2>
+          </div>
+          <span id="result-time"></span>
+        </div>
+        <textarea id="result-text" readonly aria-label="生成的概括"></textarea>
+        <p id="warning-text" class="warning-text" hidden></p>
+        <div class="result-actions">
+          <button id="copy-button" class="copy-button" type="button">复制概括</button>
+          <button id="regenerate-button" class="secondary-button" type="button">重新生成</button>
+        </div>
+        <details class="evidence-panel">
+          <summary>证据与原始数据</summary>
+          <p id="evidence-summary">尚未提取。</p>
+          <label class="download-option">
+            <input id="download-images" type="checkbox" checked>
+            下载时包含帖文图片
+          </label>
+          <button id="download-button" class="download-button" type="button">下载 JSON · MD · CSV · 图片</button>
+        </details>
+      </section>
+
       <footer>
-        <span>JSON · Markdown · CSV · Images</span>
-        <span>不读取 Cookie</span>
+        <span>QWEN 识图 · DEEPSEEK 编写</span>
+        <span>密钥仅存本次会话</span>
       </footer>
     </main>
     <script src="popup.js"></script>

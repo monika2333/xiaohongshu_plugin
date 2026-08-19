@@ -4,7 +4,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const downloads = [];
-const context = {
+let context;
+context = {
   chrome: {
     downloads: {
       download: async (options) => {
@@ -13,12 +14,27 @@ const context = {
       }
     },
     runtime: {
-      onMessage: { addListener: () => {} }
+      onMessage: { addListener: () => {} },
+      getURL: (value = "") => `chrome-extension://test/${value}`
+    },
+    storage: {
+      local: { get: async () => ({}), set: async () => {} },
+      session: { get: async () => ({}), set: async () => {} }
     }
   },
   console,
   encodeURIComponent,
-  Promise
+  Promise,
+  URL,
+  Uint8Array,
+  AbortController,
+  setTimeout,
+  clearTimeout,
+  btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+  importScripts: (filename) => {
+    const imported = fs.readFileSync(path.join(__dirname, "..", filename), "utf8");
+    vm.runInContext(imported, context, { filename });
+  }
 };
 
 vm.createContext(context);
@@ -106,7 +122,64 @@ const payload = {
   assert.ok(downloads.some((item) => item.filename.endsWith("images/001.webp")));
   assert.ok(downloads.every((item) => !item.filename.includes("测试/帖文")));
 
-  process.stdout.write("service-worker smoke test passed\n");
+  const structured = {
+    headline: "高校教师称被移出工作群",
+    eventSummary: "8月17日，小红书用户发帖反映其被移出学院工作群",
+    opinionPoints: ["部分网民质疑相关管理方式", "部分网民猜测事件与职称评定有关"]
+  };
+  const rendered = context.XhsAi.renderSummary(structured, payload);
+  assert.match(rendered, /^★ 高校教师称被移出工作群\n/);
+  assert.match(rendered, /12次点赞、100条评论/);
+  assert.match(rendered, /部分网民质疑相关管理方式。/);
+  assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1）$/);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.XhsAi.parseJsonResponse("```json\n{\"ok\":true}\n```"))),
+    { ok: true }
+  );
+
+  let textCalls = 0;
+  context.fetch = async (url, options) => {
+    textCalls += 1;
+    assert.equal(url, "https://api.deepseek.com/chat/completions");
+    assert.equal(options.headers.Authorization, "Bearer test-deepseek-key");
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "用户反映测试事件",
+              event_summary: "8月8日，小红书用户发帖反映测试事件",
+              opinion_points: ["部分网民关注事件进展"],
+              warnings: []
+            })
+          }
+        }]
+      })
+    };
+  };
+  const textOnlyPayload = { ...payload, media: { images: [] } };
+  const cache = {};
+  const firstSummary = await context.XhsAi.summarize(
+    textOnlyPayload,
+    context.XhsAi.DEFAULT_CONFIG,
+    { deepseekApiKey: "test-deepseek-key", qwenApiKey: "" },
+    cache
+  );
+  assert.match(firstSummary.text, /用户反映测试事件/);
+  assert.equal(textCalls, 1);
+  const cachedSummary = await context.XhsAi.summarize(
+    textOnlyPayload,
+    context.XhsAi.DEFAULT_CONFIG,
+    { deepseekApiKey: "test-deepseek-key", qwenApiKey: "" },
+    cache
+  );
+  assert.equal(cachedSummary.text, firstSummary.text);
+  assert.equal(textCalls, 1);
+
+  process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
