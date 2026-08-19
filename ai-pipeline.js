@@ -227,7 +227,7 @@
     return {
       source: {
         platform: "小红书",
-        url: canonicalUrl(payload),
+        url: originalPageUrl(payload),
         noteId: payload.source?.noteId || null
       },
       note: {
@@ -287,11 +287,10 @@
     };
   }
 
-  function canonicalUrl(payload) {
-    const noteId = cleanText(payload?.source?.noteId);
-    return /^[0-9a-f]{24}$/i.test(noteId)
-      ? `https://www.xiaohongshu.com/explore/${noteId}`
-      : cleanText(payload?.source?.url);
+  function originalPageUrl(payload) {
+    const url = cleanText(payload?.source?.url);
+    if (!url) throw new Error("页面采集数据缺少完整原始地址，请重新打开帖文后再试。");
+    return url;
   }
 
   function withoutTrailingPunctuation(value) {
@@ -319,7 +318,7 @@
     else if (likes) engagement = `截至目前，该帖文获${likes}次点赞。`;
     else if (comments) engagement = `截至目前，该帖文有${comments}条评论。`;
 
-    const sourceUrl = canonicalUrl(payload);
+    const sourceUrl = originalPageUrl(payload);
     const eventSummary = cleanText(structured.eventSummary).split(sourceUrl).join("");
     const opinions = (structured.opinionPoints || []).map((item) => sentence(cleanText(item).split(sourceUrl).join(""))).join("");
     const paragraph = `${sentence(eventSummary)}${engagement}${opinions}（小红书 ${sourceUrl}）`;
@@ -428,7 +427,7 @@
     normalizeConfig,
     validateConfig,
     parseJsonResponse,
-    canonicalUrl,
+    originalPageUrl,
     renderSummary,
     summarize,
     testProvider,

@@ -65,7 +65,7 @@ const payload = {
   source: {
     platform: "xiaohongshu",
     noteId: "6a76029300000000250070c1",
-    url: "https://www.xiaohongshu.com/explore/6a76029300000000250070c1"
+    url: "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed"
   },
   note: {
     title: "测试/帖文",
@@ -150,7 +150,11 @@ const payload = {
   assert.match(rendered, /^★ 高校教师称被移出工作群\n/);
   assert.match(rendered, /12次点赞、100条评论/);
   assert.match(rendered, /部分网民质疑相关管理方式。/);
-  assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1）$/);
+  assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
+  assert.equal(
+    context.XhsAi.originalPageUrl(payload),
+    "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed"
+  );
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(context.XhsAi.parseJsonResponse("```json\n{\"ok\":true}\n```"))),
