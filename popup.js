@@ -1,4 +1,5 @@
 const LIMIT = 50;
+const LOGIN_REQUIRED_MESSAGE = "检测到当前小红书页面尚未登录。请先登录并刷新帖文详情页，再点击“提取并概括”。";
 
 const elements = {
   extractButton: document.querySelector("#extract-button"),
@@ -54,6 +55,11 @@ async function getActiveTab() {
   return tab;
 }
 
+async function hasXhsLoginSession(url) {
+  const session = await chrome.cookies.get({ url, name: "web_session" });
+  return Boolean(session?.value);
+}
+
 function formatTime(timestamp) {
   if (!timestamp) return "";
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp));
@@ -91,6 +97,9 @@ async function prepareCurrentPage() {
   const tab = await getActiveTab();
   if (!tab?.id || !isXhsNoteUrl(tab.url || "")) {
     throw new Error("请先打开小红书帖文详情页，再点击提取并概括。");
+  }
+  if (!(await hasXhsLoginSession(tab.url))) {
+    throw new Error(LOGIN_REQUIRED_MESSAGE);
   }
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
   const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });

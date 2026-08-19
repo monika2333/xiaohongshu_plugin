@@ -49,6 +49,9 @@ let runtimeListener = null;
 
 const context = {
   chrome: {
+    cookies: {
+      get: async () => ({ name: "web_session", value: "logged-in-session" })
+    },
     runtime: {
       onMessage: { addListener(listener) { runtimeListener = listener; } },
       openOptionsPage() {},
