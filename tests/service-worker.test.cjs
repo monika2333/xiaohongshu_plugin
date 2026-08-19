@@ -128,9 +128,10 @@ const payload = {
 };
 
 (async () => {
-  assert.equal(context.XhsPrompts.version, "2026-08-19-v2");
+  assert.equal(context.XhsPrompts.version, "2026-08-19-v4");
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
+  assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
   assert.equal(context.XhsAi.DEFAULT_CONFIG.promptVersion, context.XhsPrompts.version);
 
   assert.equal(context.sanitizeFilename("测试/帖文"), "测试-帖文");
@@ -157,7 +158,7 @@ const payload = {
   assert.match(rendered, /^★ 高校教师称被移出工作群\n/);
   assert.match(rendered, /\n8月8日，小红书用户发帖反映其被移出学院工作群。/);
   assert.match(rendered, /12次点赞、100条评论/);
-  assert.match(rendered, /部分网民质疑相关管理方式。/);
+  assert.match(rendered, /部分网民质疑相关管理方式；部分网民猜测事件与职称评定有关。/);
   assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
   assert.equal(
     context.XhsAi.originalPageUrl(payload),
@@ -249,8 +250,7 @@ const payload = {
             content: JSON.stringify({
               headline: "用户反映测试事件",
               event_summary: "小红书用户发帖反映测试事件",
-              opinion_points: ["部分网民关注事件进展"],
-              warnings: []
+              opinion_points: ["部分网民关注事件进展"]
             })
           }
         }]

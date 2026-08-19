@@ -12,7 +12,6 @@ const elements = {
   resultCard: document.querySelector("#result-card"),
   resultText: document.querySelector("#result-text"),
   resultTime: document.querySelector("#result-time"),
-  warningText: document.querySelector("#warning-text"),
   evidenceSummary: document.querySelector("#evidence-summary"),
   copyButton: document.querySelector("#copy-button"),
   regenerateButton: document.querySelector("#regenerate-button"),
@@ -71,9 +70,6 @@ function showResult(result, capture) {
   currentCapture = capture || currentCapture;
   elements.resultText.value = result.text;
   elements.resultTime.textContent = formatTime(result.createdAt);
-  const warnings = result.warnings || [];
-  elements.warningText.hidden = warnings.length === 0;
-  elements.warningText.textContent = warnings.length ? `注意：${warnings.join("；")}` : "";
   const evidence = result.evidence || {};
   elements.evidenceSummary.textContent = [
     `${evidence.topLevelComments || 0} 条一级评论`,

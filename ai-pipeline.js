@@ -406,10 +406,6 @@
       opinionPoints: (Array.isArray(parsed.opinion_points) ? parsed.opinion_points : [])
         .slice(0, 3)
         .map((item) => cleanText(item, 500))
-        .filter(Boolean),
-      warnings: (Array.isArray(parsed.warnings) ? parsed.warnings : [])
-        .slice(0, 8)
-        .map((item) => cleanText(item, 300))
         .filter(Boolean)
     };
   }
@@ -456,7 +452,10 @@
     const publishedDate = resolvePublishedDate(payload);
     const eventBody = withoutLeadingPublishDate(cleanText(structured.eventSummary).split(sourceUrl).join(""));
     const eventSummary = publishedDate?.display ? `${publishedDate.display}，${eventBody}` : eventBody;
-    const opinions = (structured.opinionPoints || []).map((item) => sentence(cleanText(item).split(sourceUrl).join(""))).join("");
+    const opinionPoints = (structured.opinionPoints || [])
+      .map((item) => withoutTrailingPunctuation(cleanText(item).split(sourceUrl).join("")))
+      .filter(Boolean);
+    const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
     const paragraph = `${sentence(eventSummary)}${engagement}${opinions}（小红书 ${sourceUrl}）`;
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${paragraph}`;
   }
@@ -478,13 +477,12 @@
     if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
 
     const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
-    const warnings = [];
     let vision = [];
     const vKey = visionCacheKey(payload, config);
 
     if (images.length) {
       if (!cleanText(visionApiKey)) {
-        warnings.push("未配置图片模型 API Key，本次未识别图片。");
+        emitProgress({ stage: "vision", percent: 62, detail: "未配置图片模型，已跳过图片识别" });
       } else if (cache[vKey]) {
         vision = cache[vKey];
         emitProgress({ stage: "vision", percent: 62, detail: `已复用 ${images.length} 张图片的识别缓存` });
@@ -502,9 +500,9 @@
             });
           }
           cache[vKey] = vision;
-        } catch (error) {
-          warnings.push(`图片识别未完成：${error?.message || "未知错误"}`);
+        } catch {
           vision = [];
+          emitProgress({ stage: "vision", percent: 62, detail: "图片识别未完成，继续概括文字内容" });
         }
       }
     } else {
@@ -521,12 +519,10 @@
       cache[tKey] = structured;
     }
 
-    const allWarnings = [...warnings, ...(structured.warnings || [])];
     emitProgress({ stage: "done", percent: 100, detail: "概括已经生成" });
     return {
       text: renderSummary(structured, payload),
       structured,
-      warnings: allWarnings,
       evidence: {
         topLevelComments: payload.commentExport?.extractedTopLevelCount || 0,
         visibleReplies: payload.commentExport?.visibleReplyCount || 0,
