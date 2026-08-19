@@ -50,9 +50,11 @@ context = {
   setTimeout,
   clearTimeout,
   btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-  importScripts: (filename) => {
-    const imported = fs.readFileSync(path.join(__dirname, "..", filename), "utf8");
-    vm.runInContext(imported, context, { filename });
+  importScripts: (...filenames) => {
+    for (const filename of filenames) {
+      const imported = fs.readFileSync(path.join(__dirname, "..", filename), "utf8");
+      vm.runInContext(imported, context, { filename });
+    }
   }
 };
 
@@ -126,6 +128,11 @@ const payload = {
 };
 
 (async () => {
+  assert.equal(context.XhsPrompts.version, "2026-08-19-v2");
+  assert.match(context.XhsPrompts.visionSystem, /summary_value/);
+  assert.match(context.XhsPrompts.textSystem, /event_summary/);
+  assert.equal(context.XhsAi.DEFAULT_CONFIG.promptVersion, context.XhsPrompts.version);
+
   assert.equal(context.sanitizeFilename("测试/帖文"), "测试-帖文");
   const csv = context.commentsToCsv(payload);
   assert.match(csv, /"包含,逗号与""引号"""/);
@@ -148,12 +155,47 @@ const payload = {
   };
   const rendered = context.XhsAi.renderSummary(structured, payload);
   assert.match(rendered, /^★ 高校教师称被移出工作群\n/);
+  assert.match(rendered, /\n8月8日，小红书用户发帖反映其被移出学院工作群。/);
   assert.match(rendered, /12次点赞、100条评论/);
   assert.match(rendered, /部分网民质疑相关管理方式。/);
   assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
   assert.equal(
     context.XhsAi.originalPageUrl(payload),
     "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed"
+  );
+
+  const relativePayload = {
+    ...payload,
+    exportedAt: "2026-08-19T04:00:00.000Z",
+    note: { ...payload.note, publishedDisplay: "一天前", location: "北京" }
+  };
+  const relativeDate = context.XhsAi.resolvePublishedDate(relativePayload);
+  assert.equal(relativeDate.iso, "2026-08-18");
+  assert.equal(relativeDate.display, "8月18日");
+  const relativeRendered = context.XhsAi.renderSummary({
+    ...structured,
+    eventSummary: "一天前，小红书用户发帖反映测试事件"
+  }, relativePayload);
+  assert.match(relativeRendered, /\n8月18日，小红书用户发帖反映测试事件。/);
+  assert.doesNotMatch(relativeRendered, /一天前/);
+
+  const ignoredImage = context.XhsAi.normalizeVisionItem({
+    image_index: 1,
+    has_text: false,
+    factual_description: "一张普通人物自拍",
+    summary_value: "none"
+  }, 1);
+  const usefulImage = context.XhsAi.normalizeVisionItem({
+    image_index: 2,
+    has_text: true,
+    visible_text: "工作群通知",
+    factual_description: "聊天记录截图",
+    summary_value: "essential"
+  }, 2);
+  assert.equal(ignoredImage.factual_description, "");
+  assert.equal(
+    context.XhsAi.selectVisionEvidence([ignoredImage, usefulImage]).map((item) => item.image_index).join(","),
+    "2"
   );
 
   assert.deepEqual(
@@ -192,8 +234,10 @@ const payload = {
   assert.equal(storageState.session.xhsAiSecrets, undefined);
 
   let textCalls = 0;
+  let lastTextRequest = null;
   context.fetch = async (url, options) => {
     textCalls += 1;
+    lastTextRequest = JSON.parse(options.body);
     assert.equal(url, "https://api.deepseek.com/chat/completions");
     assert.equal(options.headers.Authorization, "Bearer test-deepseek-key");
     return {
@@ -204,7 +248,7 @@ const payload = {
           message: {
             content: JSON.stringify({
               headline: "用户反映测试事件",
-              event_summary: "8月8日，小红书用户发帖反映测试事件",
+              event_summary: "小红书用户发帖反映测试事件",
               opinion_points: ["部分网民关注事件进展"],
               warnings: []
             })
@@ -223,6 +267,9 @@ const payload = {
   );
   assert.match(firstSummary.text, /用户反映测试事件/);
   assert.equal(textCalls, 1);
+  const textEvidence = lastTextRequest.messages[1].content;
+  assert.match(textEvidence, /"publishedDate":"8月8日"/);
+  assert.doesNotMatch(textEvidence, /"location"|浙江/);
   const cachedSummary = await context.XhsAi.summarize(
     textOnlyPayload,
     context.XhsAi.DEFAULT_CONFIG,

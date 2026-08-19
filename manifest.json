@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "薯页摘录",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "提取当前小红书帖文、图片和前 50 条评论，并用自备大模型生成规整概括。",
   "permissions": [
     "activeTab",
