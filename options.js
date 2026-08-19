@@ -5,6 +5,12 @@ const fields = {
   visionBaseUrl: document.querySelector("#vision-base-url"),
   visionModel: document.querySelector("#vision-model"),
   visionKey: document.querySelector("#vision-key"),
+  feishuEnabled: document.querySelector("#feishu-enabled"),
+  feishuWebhookUrl: document.querySelector("#feishu-webhook-url"),
+  feishuWebhookSecret: document.querySelector("#feishu-webhook-secret"),
+  feishuAppId: document.querySelector("#feishu-app-id"),
+  feishuAppSecret: document.querySelector("#feishu-app-secret"),
+  feishuRecipientId: document.querySelector("#feishu-recipient-id"),
   rememberKeys: document.querySelector("#remember-keys")
 };
 
@@ -13,6 +19,15 @@ const saveButton = document.querySelector("#save-button");
 const saveStatus = document.querySelector("#save-status");
 const clearKeysButton = document.querySelector("#clear-keys-button");
 const storageModeHint = document.querySelector("#storage-mode-hint");
+const feishuCard = document.querySelector(".notification-card");
+const feishuWebhookFields = document.querySelector("#feishu-webhook-fields");
+const feishuAppFields = document.querySelector("#feishu-app-fields");
+const feishuTestButton = document.querySelector("#feishu-test-button");
+const feishuTestStatus = document.querySelector("#feishu-test-status");
+
+function selectedFeishuMode() {
+  return document.querySelector('input[name="feishu-mode"]:checked')?.value || "webhook";
+}
 
 function formValue() {
   return {
@@ -25,13 +40,22 @@ function formValue() {
         baseUrl: fields.visionBaseUrl.value.trim(),
         model: fields.visionModel.value.trim()
       },
+      feishu: {
+        enabled: fields.feishuEnabled.checked,
+        mode: selectedFeishuMode(),
+        appId: fields.feishuAppId.value.trim(),
+        recipientId: fields.feishuRecipientId.value.trim()
+      },
       rememberApiKeys: fields.rememberKeys.checked,
       includeVisibleReplies: true,
       commentLimit: 50
     },
     secrets: {
       textApiKey: fields.textKey.value.trim(),
-      visionApiKey: fields.visionKey.value.trim()
+      visionApiKey: fields.visionKey.value.trim(),
+      feishuWebhookUrl: fields.feishuWebhookUrl.value.trim(),
+      feishuWebhookSecret: fields.feishuWebhookSecret.value.trim(),
+      feishuAppSecret: fields.feishuAppSecret.value.trim()
     }
   };
 }
@@ -56,7 +80,14 @@ function setSaveStatus(text, state = "") {
 function updateStorageModeHint() {
   storageModeHint.textContent = fields.rememberKeys.checked
     ? "浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。"
-    : "只保留到浏览器关闭、插件重新加载或更新，之后需要重新填写。";
+    : "API Key、Webhook 和 App Secret 只保留到浏览器关闭、插件重新加载或更新。";
+}
+
+function updateFeishuUi() {
+  const mode = selectedFeishuMode();
+  feishuWebhookFields.hidden = mode !== "webhook";
+  feishuAppFields.hidden = mode !== "app";
+  feishuCard.dataset.enabled = fields.feishuEnabled.checked ? "true" : "false";
 }
 
 async function restoreSettings() {
@@ -66,10 +97,20 @@ async function restoreSettings() {
   fields.textModel.value = response.config.text.model;
   fields.visionBaseUrl.value = response.config.vision.baseUrl;
   fields.visionModel.value = response.config.vision.model;
+  fields.feishuEnabled.checked = response.config.feishu?.enabled === true;
+  fields.feishuAppId.value = response.config.feishu?.appId || "";
+  fields.feishuRecipientId.value = response.config.feishu?.recipientId || response.config.feishu?.recipientOpenId || "";
+  const mode = response.config.feishu?.mode === "app" ? "app" : "webhook";
+  const modeInput = document.querySelector(`input[name="feishu-mode"][value="${mode}"]`);
+  if (modeInput) modeInput.checked = true;
   fields.rememberKeys.checked = response.config.rememberApiKeys !== false;
   fields.textKey.value = response.secrets.textApiKey || "";
   fields.visionKey.value = response.secrets.visionApiKey || "";
+  fields.feishuWebhookUrl.value = response.secrets.feishuWebhookUrl || "";
+  fields.feishuWebhookSecret.value = response.secrets.feishuWebhookSecret || "";
+  fields.feishuAppSecret.value = response.secrets.feishuAppSecret || "";
   updateStorageModeHint();
+  updateFeishuUi();
 }
 
 form.addEventListener("submit", async (event) => {
@@ -78,7 +119,9 @@ form.addEventListener("submit", async (event) => {
   setSaveStatus("正在保存设置…");
   try {
     const values = formValue();
-    await ensureApiPermissions([values.config.text.baseUrl, values.config.vision.baseUrl]);
+    const permissionUrls = [values.config.text.baseUrl, values.config.vision.baseUrl];
+    if (values.config.feishu.enabled) permissionUrls.push("https://open.feishu.cn");
+    await ensureApiPermissions(permissionUrls);
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SAVE_CONFIG", ...values });
     if (!response?.ok) throw new Error(response?.error || "保存失败。");
     setSaveStatus(
@@ -95,6 +138,10 @@ form.addEventListener("submit", async (event) => {
 });
 
 fields.rememberKeys.addEventListener("change", updateStorageModeHint);
+fields.feishuEnabled.addEventListener("change", updateFeishuUi);
+document.querySelectorAll('input[name="feishu-mode"]').forEach((input) => {
+  input.addEventListener("change", updateFeishuUi);
+});
 
 clearKeysButton.addEventListener("click", async () => {
   clearKeysButton.disabled = true;
@@ -104,7 +151,10 @@ clearKeysButton.addEventListener("click", async () => {
     if (!response?.ok) throw new Error(response?.error || "清除失败。");
     fields.textKey.value = "";
     fields.visionKey.value = "";
-    setSaveStatus("文字与图片模型的 API Key 已从本机和当前会话中清除。", "ok");
+    fields.feishuWebhookUrl.value = "";
+    fields.feishuWebhookSecret.value = "";
+    fields.feishuAppSecret.value = "";
+    setSaveStatus("模型 API Key、飞书 Webhook 与 App Secret 已全部清除。", "ok");
   } catch (error) {
     setSaveStatus(error?.message || "清除失败。", "error");
   } finally {
@@ -112,7 +162,29 @@ clearKeysButton.addEventListener("click", async () => {
   }
 });
 
-document.querySelectorAll(".test-button").forEach((button) => {
+feishuTestButton.addEventListener("click", async () => {
+  feishuTestButton.disabled = true;
+  feishuTestStatus.textContent = "正在发送…";
+  feishuTestStatus.dataset.state = "";
+  try {
+    const values = formValue();
+    await ensureApiPermissions(["https://open.feishu.cn"]);
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_TEST_FEISHU",
+      ...values
+    });
+    if (!response?.ok) throw new Error(response?.error || "测试消息发送失败。");
+    feishuTestStatus.textContent = response.detail;
+    feishuTestStatus.dataset.state = "ok";
+  } catch (error) {
+    feishuTestStatus.textContent = error?.message || "测试消息发送失败。";
+    feishuTestStatus.dataset.state = "error";
+  } finally {
+    feishuTestButton.disabled = false;
+  }
+});
+
+document.querySelectorAll(".test-button[data-provider]").forEach((button) => {
   button.addEventListener("click", async () => {
     const provider = button.dataset.provider;
     const status = document.querySelector(provider === "vision" ? "#vision-test-status" : "#text-test-status");

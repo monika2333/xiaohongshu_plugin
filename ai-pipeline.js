@@ -16,6 +16,12 @@
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       model: "qwen3-vl-plus"
     },
+    feishu: {
+      enabled: false,
+      mode: "webhook",
+      appId: "",
+      recipientId: ""
+    },
     rememberApiKeys: true,
     includeVisibleReplies: true,
     commentLimit: 50,
@@ -154,6 +160,12 @@
         baseUrl: normalizeBaseUrl(raw.vision?.baseUrl || DEFAULT_CONFIG.vision.baseUrl),
         model: cleanText(raw.vision?.model || DEFAULT_CONFIG.vision.model, 120)
       },
+      feishu: {
+        enabled: raw.feishu?.enabled === true,
+        mode: raw.feishu?.mode === "app" ? "app" : "webhook",
+        appId: cleanText(raw.feishu?.appId, 160),
+        recipientId: cleanText(raw.feishu?.recipientId || raw.feishu?.recipientOpenId, 160)
+      },
       rememberApiKeys: raw.rememberApiKeys !== false,
       includeVisibleReplies: raw.includeVisibleReplies !== false,
       commentLimit: Math.max(1, Math.min(50, Number(raw.commentLimit) || 50)),
@@ -176,6 +188,10 @@
     validateHttpsUrl(config.vision.baseUrl, "图片模型 API 地址");
     if (!config.text.model) throw new Error("请填写文字模型名称。");
     if (!config.vision.model) throw new Error("请填写图片模型名称。");
+    if (config.feishu.enabled && config.feishu.mode === "app") {
+      if (!config.feishu.appId) throw new Error("请填写飞书自建应用的 App ID。");
+      if (!config.feishu.recipientId) throw new Error("请填写接收人的飞书邮箱或 Open ID。");
+    }
     return config;
   }
 
@@ -519,7 +535,7 @@
       cache[tKey] = structured;
     }
 
-    emitProgress({ stage: "done", percent: 100, detail: "概括已经生成" });
+    emitProgress({ stage: "done", percent: 94, detail: "概括已经生成" });
     return {
       text: renderSummary(structured, payload),
       structured,

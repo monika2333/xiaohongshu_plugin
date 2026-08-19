@@ -9,11 +9,14 @@ const LAST_RESULT_KEY = "xhsAiLastResult";
 const WORKFLOW_STATES_KEY = "xhsAiWorkflowStatesV1";
 const MAX_CACHE_ENTRIES = 16;
 const MAX_WORKFLOW_STATES = 12;
+const FEISHU_API_ORIGIN = "https://open.feishu.cn";
+const FEISHU_REQUEST_TIMEOUT_MS = 15000;
 const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_GET_CONFIG",
   "XHS_AI_SAVE_CONFIG",
   "XHS_AI_CLEAR_KEYS",
   "XHS_AI_TEST_PROVIDER",
+  "XHS_AI_TEST_FEISHU",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
   "XHS_AI_GET_LAST",
@@ -298,13 +301,51 @@ async function getStoredSecrets() {
   ]);
   const sessionSecrets = sessionStored[SECRETS_KEY] || {};
   const persistentSecrets = localStored[PERSISTENT_SECRETS_KEY] || {};
-  const saved = sessionSecrets.textApiKey || sessionSecrets.visionApiKey || sessionSecrets.deepseekApiKey || sessionSecrets.qwenApiKey
-    ? sessionSecrets
-    : persistentSecrets;
+  const saved = { ...persistentSecrets, ...sessionSecrets };
   return {
     textApiKey: saved.textApiKey || saved.deepseekApiKey || "",
-    visionApiKey: saved.visionApiKey || saved.qwenApiKey || ""
+    visionApiKey: saved.visionApiKey || saved.qwenApiKey || "",
+    feishuWebhookUrl: saved.feishuWebhookUrl || "",
+    feishuWebhookSecret: saved.feishuWebhookSecret || "",
+    feishuAppSecret: saved.feishuAppSecret || ""
   };
+}
+
+function validateFeishuWebhookUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || "").trim());
+  } catch {
+    throw new Error("飞书机器人 Webhook 地址无效。");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname !== "open.feishu.cn" ||
+    !/^\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9_-]+$/.test(parsed.pathname) ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("请填写飞书开放平台生成的完整机器人 Webhook 地址。");
+  }
+  return parsed.href;
+}
+
+function validateFeishuSettings(config, secrets) {
+  if (!config.feishu?.enabled) return;
+  if (config.feishu.mode === "webhook") {
+    validateFeishuWebhookUrl(secrets?.feishuWebhookUrl);
+    return;
+  }
+  if (!config.feishu.appId) throw new Error("请填写飞书自建应用的 App ID。");
+  if (!String(secrets?.feishuAppSecret || "").trim()) throw new Error("请填写飞书自建应用的 App Secret。");
+  feishuRecipientType(config.feishu.recipientId);
+}
+
+function feishuRecipientType(value) {
+  const recipient = String(value || "").trim();
+  if (/^ou_[A-Za-z0-9_-]+$/.test(recipient)) return "open_id";
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) return "email";
+  throw new Error("接收人需填写飞书企业邮箱或以 ou_ 开头的 Open ID。");
 }
 
 async function saveAiSettings(config, secrets) {
@@ -312,8 +353,12 @@ async function saveAiSettings(config, secrets) {
   const normalized = XhsAi.validateConfig(XhsAi.normalizeConfig(config));
   const safeSecrets = {
     textApiKey: String(secrets?.textApiKey || "").trim(),
-    visionApiKey: String(secrets?.visionApiKey || "").trim()
+    visionApiKey: String(secrets?.visionApiKey || "").trim(),
+    feishuWebhookUrl: String(secrets?.feishuWebhookUrl || "").trim(),
+    feishuWebhookSecret: String(secrets?.feishuWebhookSecret || "").trim(),
+    feishuAppSecret: String(secrets?.feishuAppSecret || "").trim()
   };
+  validateFeishuSettings(normalized, safeSecrets);
   const storageJobs = [chrome.storage.local.set({ [CONFIG_KEY]: normalized })];
   if (normalized.rememberApiKeys) {
     storageJobs.push(
@@ -339,6 +384,114 @@ async function clearStoredSecrets() {
   return { ok: true };
 }
 
+async function feishuWebhookSignature(timestamp, secret) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(`${timestamp}\n${secret}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new Uint8Array());
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+async function postFeishuJson(url, body, authorization = "") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FEISHU_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        ...(authorization ? { Authorization: authorization } : {})
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const raw = await response.text();
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(`飞书返回了无法解析的响应（HTTP ${response.status}）。`);
+    }
+    const code = data.code ?? data.StatusCode;
+    if (!response.ok || (code !== undefined && Number(code) !== 0)) {
+      const detail = cleanText(data.msg || data.StatusMessage || data.message) || `HTTP ${response.status}`;
+      throw new Error(`飞书接口拒绝了请求：${detail}`);
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("连接飞书超时，请稍后重试。");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function sendFeishuMessage(text, config, secrets) {
+  validateFeishuSettings(config, secrets);
+  if (!config.feishu.enabled) return null;
+  const messageText = String(text || "").trim();
+  if (!messageText) throw new Error("没有可推送的概括内容。");
+
+  if (config.feishu.mode === "webhook") {
+    const webhookUrl = validateFeishuWebhookUrl(secrets.feishuWebhookUrl);
+    const body = { msg_type: "text", content: { text: messageText } };
+    if (secrets.feishuWebhookSecret) {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      body.timestamp = timestamp;
+      body.sign = await feishuWebhookSignature(timestamp, secrets.feishuWebhookSecret);
+    }
+    await postFeishuJson(webhookUrl, body);
+    return { channel: "webhook" };
+  }
+
+  const tokenResponse = await postFeishuJson(`${FEISHU_API_ORIGIN}/open-apis/auth/v3/tenant_access_token/internal`, {
+    app_id: config.feishu.appId,
+    app_secret: secrets.feishuAppSecret
+  });
+  const tenantToken = tokenResponse.tenant_access_token;
+  if (!tenantToken) throw new Error("飞书未返回 tenant_access_token，请检查应用凭据。");
+  const recipientType = feishuRecipientType(config.feishu.recipientId);
+  await postFeishuJson(
+    `${FEISHU_API_ORIGIN}/open-apis/im/v1/messages?receive_id_type=${recipientType}`,
+    {
+      receive_id: config.feishu.recipientId,
+      msg_type: "text",
+      content: JSON.stringify({ text: messageText })
+    },
+    `Bearer ${tenantToken}`
+  );
+  return { channel: "direct" };
+}
+
+async function pushFeishuNotification(text, config, secrets) {
+  if (!config.feishu?.enabled) return null;
+  try {
+    const delivered = await sendFeishuMessage(text, config, secrets);
+    return { status: "sent", channel: delivered.channel, sentAt: Date.now() };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: cleanText(error?.message || "飞书推送失败。").slice(0, 180)
+    };
+  }
+}
+
+async function testFeishuSettings(rawConfig, secrets) {
+  const config = XhsAi.normalizeConfig(rawConfig);
+  config.feishu.enabled = true;
+  XhsAi.validateConfig(config);
+  const delivered = await sendFeishuMessage("薯页摘录：飞书推送测试成功。", config, secrets || {});
+  return {
+    ok: true,
+    detail: delivered.channel === "direct" ? "已向指定账号发送测试消息" : "已向机器人所在群发送测试消息"
+  };
+}
+
 function emitAiProgress(progress) {
   chrome.runtime.sendMessage({
     type: "XHS_AI_PROGRESS",
@@ -360,8 +513,13 @@ async function summarizePayload(payload, force, progressListener = emitAiProgres
   await chrome.storage.session.set({ [LAST_CAPTURE_KEY]: payload });
   const result = await XhsAi.summarize(payload, config, secrets, cache, progressListener, Boolean(force));
   const { cache: updatedCache, ...publicResult } = result;
+  if (config.feishu?.enabled) {
+    progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+  }
+  const notification = await pushFeishuNotification(publicResult.text, config, secrets);
   const storedResult = {
     ...publicResult,
+    notification,
     noteId: payload.source?.noteId || null,
     createdAt: Date.now()
   };
@@ -402,7 +560,9 @@ async function summarizePagePayload(message, sender) {
       ? "正在识别图片"
       : progress.stage === "text"
         ? "正在撰写概括"
-        : "正在完成概括";
+        : progress.stage === "notification"
+          ? "正在推送飞书"
+          : "正在完成概括";
     updateWorkflowState(tabId, pageSessionId, {
       pageUrl,
       noteId: payload?.source?.noteId || null,
@@ -418,6 +578,14 @@ async function summarizePagePayload(message, sender) {
 
   try {
     const response = await summarizePayload(payload, message.force, onProgress);
+    const notification = response.result.notification;
+    const completionDetail = notification?.status === "sent"
+      ? "概括已生成，并已推送到飞书。"
+      : notification?.status === "failed"
+        ? `概括已生成；飞书推送失败：${notification.error}`
+        : message.force
+          ? "新版本已替换原概括。"
+          : "已按固定格式生成，可直接复制。";
     await updateWorkflowState(tabId, pageSessionId, {
       pageUrl,
       noteId: payload?.source?.noteId || null,
@@ -428,7 +596,7 @@ async function summarizePagePayload(message, sender) {
       progress: {
         state: "done",
         title: message.force ? "重新生成完成" : "概括完成",
-        detail: message.force ? "新版本已替换原概括。" : "已按固定格式生成，可直接复制。",
+        detail: completionDetail,
         percent: 100
       }
     });
@@ -502,6 +670,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_TEST_PROVIDER":
       task = XhsAi.testProvider(message.provider, message.config, message.secrets);
+      break;
+    case "XHS_AI_TEST_FEISHU":
+      task = testFeishuSettings(message.config, message.secrets);
       break;
     case "XHS_AI_SUMMARIZE":
       task = summarizePayload(message.payload, message.force);

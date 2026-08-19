@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   min-width: 720px;
@@ -298,6 +299,103 @@ input:focus {
   margin-top: 2px;
 }
 
+.notification-settings {
+  grid-column: 3;
+  min-width: 0;
+}
+
+.notification-card[data-enabled="false"]::after { background: var(--paper-deep); }
+
+.notification-switch {
+  width: 100%;
+  padding-bottom: 15px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.feishu-config { margin-top: 14px; }
+
+.delivery-methods {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.method-option {
+  position: relative;
+  display: block;
+  cursor: pointer;
+}
+
+.method-option > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.method-copy-card {
+  display: block;
+  min-height: 66px;
+  margin: 0;
+  padding: 11px 12px;
+  background: rgba(255, 250, 240, .54);
+  border: 1px solid var(--line);
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.method-copy-card strong,
+.method-copy-card small {
+  display: block;
+}
+
+.method-copy-card strong {
+  margin-bottom: 5px;
+  color: var(--ink);
+  font-family: "STSong", "Songti SC", serif;
+  font-size: 13px;
+}
+
+.method-copy-card small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.method-option > input:checked + .method-copy-card {
+  background: var(--paper-soft);
+  border-color: var(--red);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.method-option > input:focus-visible + .method-copy-card {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
+.feishu-fields { margin-top: 14px; }
+
+.field-help {
+  margin: -3px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.field-help a {
+  display: inline-block;
+  margin-left: 5px;
+  color: var(--red-dark);
+  font-weight: 700;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.notification-actions {
+  margin-top: 15px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
+
 .test-button {
   padding: 8px 12px;
   color: var(--ink);
@@ -362,7 +460,7 @@ input:focus {
 @media (max-width: 820px) {
   .credential-control { align-items: flex-start; flex-direction: column; }
   .provider-card { grid-template-columns: 34px 1fr; }
-  .fields, .card-actions { grid-column: 2; }
+  .fields, .card-actions, .notification-settings { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>模型设置 · 薯页摘录</title>
+    <title>插件设置 · 薯页摘录</title>
     <link rel="stylesheet" href="options.css">
   </head>
   <body>
@@ -12,16 +12,16 @@
         <div class="brand-mark" aria-hidden="true">摘</div>
         <div class="title-copy">
           <p class="eyebrow">PERSONAL BYOK WORKBENCH</p>
-          <h1>模型设置</h1>
-          <p>分别配置文字概括与图片识别模型。下方提供推荐预设，也可以替换为其他兼容模型。</p>
+          <h1>插件设置</h1>
+          <p>配置文字与图片模型，并按需把完成的概括自动推送到飞书。</p>
         </div>
-        <span class="edition">个人直连版 · v0.2.2</span>
+        <span class="edition">个人直连版 · v0.3.0</span>
       </header>
 
       <aside class="privacy-note">
         <span class="note-index">01</span>
         <div>
-          <strong>API Key 默认仅保存在本机浏览器中</strong>
+          <strong>API Key 与飞书凭据默认仅保存在本机浏览器中</strong>
           <p>重启后无需重填；不会同步、写入下载文件或注入网页，也可切换为会话模式。</p>
         </div>
       </aside>
@@ -32,11 +32,11 @@
             <input id="remember-keys" class="remember-input" type="checkbox" checked>
             <span class="remember-toggle" aria-hidden="true"></span>
             <span class="mode-copy">
-              <strong id="credential-title">在本机记住 API Key</strong>
+              <strong id="credential-title">在本机记住密钥与飞书凭据</strong>
               <small id="storage-mode-hint">浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。</small>
             </span>
           </label>
-          <button id="clear-keys-button" class="clear-keys-button" type="button">清除已保存密钥</button>
+          <button id="clear-keys-button" class="clear-keys-button" type="button">清除全部敏感凭据</button>
         </section>
 
         <section class="provider-card" aria-labelledby="text-title">
@@ -93,13 +93,83 @@
           </div>
         </section>
 
+        <section class="provider-card notification-card" aria-labelledby="feishu-title">
+          <div class="card-number">C</div>
+          <div class="card-heading">
+            <p class="eyebrow">FEISHU DELIVERY</p>
+            <h2 id="feishu-title">飞书自动推送 <span class="recommendation">可选</span></h2>
+            <p>每次概括完成后发送一条纯文本消息。推送失败不会影响结果生成。</p>
+          </div>
+          <div class="notification-settings">
+            <label class="remember-option notification-switch">
+              <input id="feishu-enabled" class="remember-input" type="checkbox">
+              <span class="remember-toggle" aria-hidden="true"></span>
+              <span class="mode-copy">
+                <strong>完成后自动推送</strong>
+                <small>重新生成概括时也会再次推送。</small>
+              </span>
+            </label>
+
+            <div id="feishu-config" class="feishu-config" aria-label="飞书推送配置">
+              <div class="delivery-methods" role="radiogroup" aria-label="推送方式">
+                <label class="method-option">
+                  <input type="radio" name="feishu-mode" value="webhook" checked>
+                  <span class="method-copy-card">
+                    <strong>群机器人 Webhook</strong>
+                    <small>推荐 · 配置最少，发到机器人所在群</small>
+                  </span>
+                </label>
+                <label class="method-option">
+                  <input type="radio" name="feishu-mode" value="app">
+                  <span class="method-copy-card">
+                    <strong>自建应用私聊</strong>
+                    <small>发给指定账号，可填写企业邮箱或 Open ID</small>
+                  </span>
+                </label>
+              </div>
+
+              <div id="feishu-webhook-fields" class="fields feishu-fields">
+                <label class="wide-field">
+                  <span>机器人 Webhook 地址</span>
+                  <input id="feishu-webhook-url" type="password" autocomplete="off" spellcheck="false" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…">
+                </label>
+                <label class="wide-field">
+                  <span>签名密钥（选填）</span>
+                  <input id="feishu-webhook-secret" type="password" autocomplete="off" spellcheck="false" placeholder="机器人开启签名校验时填写">
+                </label>
+                <p class="field-help wide-field">在目标飞书群的“设置 → 群机器人”中添加自定义机器人并复制 Webhook。建议同时开启签名校验。<a href="https://open.feishu.cn/document/common-capabilities/message-card/getting-started/send-message-cards-with-a-custom-bot?lang=zh-CN" target="_blank" rel="noreferrer">查看飞书说明 ↗</a></p>
+              </div>
+
+              <div id="feishu-app-fields" class="fields feishu-fields" hidden>
+                <label>
+                  <span>App ID</span>
+                  <input id="feishu-app-id" type="text" autocomplete="off" spellcheck="false" placeholder="cli_…">
+                </label>
+                <label>
+                  <span>App Secret</span>
+                  <input id="feishu-app-secret" type="password" autocomplete="off" spellcheck="false">
+                </label>
+                <label class="wide-field">
+                  <span>接收人的飞书邮箱或 Open ID</span>
+                  <input id="feishu-recipient-id" type="text" autocomplete="off" spellcheck="false" placeholder="name@company.com 或 ou_…">
+                </label>
+                <p class="field-help wide-field">应用需启用机器人能力、开通“以应用的身份发消息”权限、发布版本，并对接收人可用。<a href="https://open.feishu.cn/document/develop-an-echo-bot/faq" target="_blank" rel="noreferrer">查看应用配置 ↗</a></p>
+              </div>
+            </div>
+          </div>
+          <div class="card-actions notification-actions">
+            <button id="feishu-test-button" class="test-button" type="button">发送测试消息</button>
+            <span id="feishu-test-status" class="test-status" aria-live="polite"></span>
+          </div>
+        </section>
+
         <section class="workflow-strip" aria-label="处理顺序">
-          <span>页面证据</span><b>→</b><span>图片模型识别</span><b>→</b><span>文字模型编写</span><b>→</b><span>固定格式</span>
+          <span>页面证据</span><b>→</b><span>图片模型识别</span><b>→</b><span>文字模型编写</span><b>→</b><span>飞书（可选）</span>
         </section>
 
         <div class="save-row">
           <p id="save-status" aria-live="polite">填写后保存，再回到帖文页面使用插件。</p>
-          <button id="save-button" class="save-button" type="submit">保存模型设置 <span>↘</span></button>
+          <button id="save-button" class="save-button" type="submit">保存全部设置 <span>↘</span></button>
         </div>
       </form>
     </main>

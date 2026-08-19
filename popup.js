@@ -64,13 +64,27 @@ function showResult(result, capture) {
   elements.resultText.value = result.text;
   elements.resultTime.textContent = formatTime(result.createdAt);
   const evidence = result.evidence || {};
+  const notificationLabel = result.notification?.status === "sent"
+    ? "飞书已推送"
+    : result.notification?.status === "failed"
+      ? "飞书推送失败"
+      : null;
   elements.evidenceSummary.textContent = [
     `${evidence.topLevelComments || 0} 条一级评论`,
     `${evidence.visibleReplies || 0} 条已显示回复`,
     `${evidence.imagesAnalyzed || 0} / ${evidence.imagesFound || 0} 张图片完成识别`,
-    `文字模型 ${evidence.textModel || "—"}`
-  ].join(" · ");
+    `文字模型 ${evidence.textModel || "—"}`,
+    notificationLabel
+  ].filter(Boolean).join(" · ");
   elements.resultCard.hidden = false;
+}
+
+function completionDetail(result, fallback) {
+  if (result?.notification?.status === "sent") return "概括已生成，并已推送到飞书。";
+  if (result?.notification?.status === "failed") {
+    return `概括已生成；飞书推送失败：${result.notification.error || "请检查设置。"}`;
+  }
+  return fallback;
 }
 
 async function prepareCurrentPage() {
@@ -150,8 +164,13 @@ async function runFullWorkflow() {
   setWorking(true);
   setStatus({ state: "working", title: "正在连接页面", detail: "检查当前帖文详情页…", percent: 3 });
   try {
-    await startPageWorkflow(null, false);
-    setStatus({ state: "done", title: "概括完成", detail: "已按固定格式生成，可直接复制。", percent: 100 });
+    const response = await startPageWorkflow(null, false);
+    setStatus({
+      state: "done",
+      title: "概括完成",
+      detail: completionDetail(response.result, "已按固定格式生成，可直接复制。"),
+      percent: 100
+    });
   } catch (error) {
     setStatus({ state: "error", title: "未能完成", detail: error?.message || "发生未知错误。", percent: 0 });
   } finally {
@@ -186,8 +205,13 @@ elements.regenerateButton.addEventListener("click", async () => {
   setWorking(true);
   setStatus({ state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 });
   try {
-    await startPageWorkflow(currentCapture, true);
-    setStatus({ state: "done", title: "重新生成完成", detail: "新版本已替换原概括。", percent: 100 });
+    const response = await startPageWorkflow(currentCapture, true);
+    setStatus({
+      state: "done",
+      title: "重新生成完成",
+      detail: completionDetail(response.result, "新版本已替换原概括。"),
+      percent: 100
+    });
   } catch (error) {
     setStatus({ state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 });
   } finally {

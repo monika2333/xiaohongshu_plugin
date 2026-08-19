@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { webcrypto } = require("node:crypto");
 
 const downloads = [];
 const storageState = { local: {}, session: {} };
@@ -52,6 +53,8 @@ context = {
   URL,
   Uint8Array,
   AbortController,
+  TextEncoder,
+  crypto: webcrypto,
   setTimeout,
   clearTimeout,
   btoa: (value) => Buffer.from(value, "binary").toString("base64"),
@@ -217,6 +220,8 @@ const payload = {
   assert.equal(customConfig.text.model, "custom-text");
   assert.equal(customConfig.vision.baseUrl, "https://vision.example.com/openai/v1");
   assert.equal(customConfig.vision.model, "custom-vision");
+  assert.equal(customConfig.feishu.enabled, false);
+  assert.equal(customConfig.feishu.mode, "webhook");
 
   await context.saveAiSettings(
     { ...customConfig, rememberApiKeys: true },
@@ -238,6 +243,68 @@ const payload = {
   await context.clearStoredSecrets();
   assert.equal(storageState.local.xhsAiPersistentSecrets, undefined);
   assert.equal(storageState.session.xhsAiSecrets, undefined);
+
+  const webhookConfig = context.XhsAi.normalizeConfig({
+    ...customConfig,
+    feishu: { enabled: true, mode: "webhook" }
+  });
+  let webhookRequest = null;
+  context.fetch = async (url, options) => {
+    webhookRequest = { url, options, body: JSON.parse(options.body) };
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ code: 0, msg: "success" })
+    };
+  };
+  const webhookTest = await context.testFeishuSettings(webhookConfig, {
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook",
+    feishuWebhookSecret: "test-signing-secret"
+  });
+  assert.equal(webhookTest.ok, true);
+  assert.equal(webhookRequest.url, "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook");
+  assert.equal(webhookRequest.body.msg_type, "text");
+  assert.match(webhookRequest.body.content.text, /飞书推送测试成功/);
+  assert.match(webhookRequest.body.timestamp, /^\d+$/);
+  assert.ok(webhookRequest.body.sign);
+
+  const appConfig = context.XhsAi.normalizeConfig({
+    ...customConfig,
+    feishu: {
+      enabled: true,
+      mode: "app",
+      appId: "cli_test",
+      recipientId: "user@example.com"
+    }
+  });
+  const appRequests = [];
+  context.fetch = async (url, options) => {
+    appRequests.push({ url, options, body: JSON.parse(options.body) });
+    const data = url.includes("tenant_access_token")
+      ? { code: 0, tenant_access_token: "tenant-token" }
+      : { code: 0, data: { message_id: "om_test" } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(data) };
+  };
+  const appTest = await context.testFeishuSettings(appConfig, { feishuAppSecret: "app-secret" });
+  assert.equal(appTest.ok, true);
+  assert.equal(appRequests.length, 2);
+  assert.equal(appRequests[0].body.app_id, "cli_test");
+  assert.match(appRequests[1].url, /receive_id_type=email/);
+  assert.equal(appRequests[1].options.headers.Authorization, "Bearer tenant-token");
+  assert.equal(appRequests[1].body.receive_id, "user@example.com");
+  assert.equal(context.feishuRecipientType("ou_test"), "open_id");
+  assert.throws(() => context.feishuRecipientType("not-an-id"), /企业邮箱|Open ID/);
+
+  context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ code: 19001, msg: "invalid webhook" })
+  });
+  const failedNotification = await context.pushFeishuNotification("测试概括", webhookConfig, {
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-hook"
+  });
+  assert.equal(failedNotification.status, "failed");
+  assert.match(failedNotification.error, /invalid webhook/);
 
   let textCalls = 0;
   let lastTextRequest = null;
