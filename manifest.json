@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "薯页摘录",
+  "version": "0.1.0",
+  "description": "一键保存当前小红书帖文、互动数据、前 50 条一级评论和帖文图片。",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "薯页摘录",
+    "default_popup": "popup.html"
+  }
+}

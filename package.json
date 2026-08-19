@@ -1,0 +1,8 @@
+{
+  "name": "xiaohongshu-note-exporter",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check": "node --check popup.js && node --check content-script.js && node --check service-worker.js && node tests/service-worker.test.cjs"
+  }
+}
