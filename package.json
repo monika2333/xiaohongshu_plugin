@@ -3,6 +3,6 @@
   "version": "0.3.2",
   "private": true,
   "scripts": {
-    "check": "node --check popup.js && node --check options.js && node --check content-script.js && node --check prompts.js && node --check ai-pipeline.js && node --check service-worker.js && node tests/service-worker.test.cjs && node tests/popup.test.cjs && node tests/popup-login.test.cjs && node tests/options.test.cjs"
+    "check": "node --check popup.js && node --check options.js && node --check content-script.js && node --check prompts.js && node --check ai-pipeline.js && node --check service-worker.js && node tests/content-script.test.cjs && node tests/service-worker.test.cjs && node tests/popup.test.cjs && node tests/popup-login.test.cjs && node tests/options.test.cjs"
   }
 }

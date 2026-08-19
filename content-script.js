@@ -45,7 +45,9 @@
     const roots = [
       document.querySelector(".note-detail-mask"),
       document.querySelector(".note-detail"),
-      document.querySelector("[class*='note-detail']")
+      document.querySelector("[class*='note-detail']"),
+      document.querySelector("#noteContainer"),
+      document.querySelector(".note-container")
     ].filter(Boolean);
 
     return roots.find((root) => root.querySelector("#detail-title, #detail-desc, .comments-container")) || null;
@@ -68,7 +70,11 @@
   }
 
   function getInteraction(root, selector) {
-    const raw = textOf(root, `${selector} .count`);
+    const countSelector = selector
+      .split(",")
+      .map((item) => `${item.trim()} .count`)
+      .join(", ");
+    const raw = textOf(root, countSelector);
     return { raw: raw || null, value: normalizeCount(raw) };
   }
 
@@ -242,9 +248,9 @@
         publishedAtInferredSource: "note_id_prefix_heuristic_not_official"
       },
       interactions: {
-        likes: getInteraction(root, ".interact-container .like-wrapper"),
-        collects: getInteraction(root, ".interact-container .collect-wrapper"),
-        comments: getInteraction(root, ".interact-container .chat-wrapper"),
+        likes: getInteraction(root, ".interact-container .like-wrapper, .interactions .like-wrapper"),
+        collects: getInteraction(root, ".interact-container .collect-wrapper, .interactions .collect-wrapper"),
+        comments: getInteraction(root, ".interact-container .chat-wrapper, .interactions .chat-wrapper"),
         displayedCommentTotalRaw: displayedCommentRaw || null,
         displayedCommentTotal: normalizeCount(displayedCommentRaw)
       },
