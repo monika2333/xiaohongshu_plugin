@@ -258,6 +258,23 @@ h1 {
   white-space: nowrap;
 }
 
+.provider-link {
+  display: inline-block;
+  margin-left: 5px;
+  color: var(--red-dark);
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-decoration-color: rgba(168, 29, 25, .42);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.provider-link:hover { color: var(--red); text-decoration-color: currentColor; }
+.provider-link:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
+
 .fields {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -44,7 +44,7 @@
 4. 如果机器人启用了签名校验，同时填写签名密钥。
 5. 点击“发送测试消息”，确认目标群收到消息，再开启自动推送并保存。
 
-Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：[使用自定义机器人发送消息](https://open.feishu.cn/document/common-capabilities/message-card/getting-started/send-message-cards-with-a-custom-bot?lang=zh-CN)。
+Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：[使用自定义机器人发送消息](https://open.feishu.cn/document/feishu-cards/quick-start/send-message-cards-with-custom-bot)。
 
 ### 方式二：自建应用私聊
 

@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+const optionsHtml = fs.readFileSync(path.join(__dirname, "..", "options.html"), "utf8");
+
 function createElement(overrides = {}) {
   return {
     value: "",
@@ -97,6 +99,13 @@ vm.runInContext(
 );
 
 (async () => {
+  assert.match(optionsHtml, /https:\/\/platform\.deepseek\.com\/api_keys/);
+  assert.match(optionsHtml, /https:\/\/bailian\.console\.aliyun\.com\/\?tab=model#\/api-key/);
+  assert.match(optionsHtml, /https:\/\/open\.feishu\.cn\/document\/feishu-cards\/quick-start\/send-message-cards-with-custom-bot/);
+  assert.doesNotMatch(optionsHtml, /common-capabilities\/message-card\/getting-started\/send-message-cards-with-a-custom-bot/);
+  assert.match(optionsHtml, />获取 DeepSeek API Key ↗<\/a>/);
+  assert.match(optionsHtml, />获取百炼 API Key ↗<\/a>/);
+
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 

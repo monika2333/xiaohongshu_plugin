@@ -15,7 +15,7 @@
           <h1>插件设置</h1>
           <p>配置文字与图片模型，并按需把完成的概括自动推送到飞书。</p>
         </div>
-        <span class="edition">个人直连版 · v0.3.0</span>
+        <span class="edition">个人直连版 · v0.3.1</span>
       </header>
 
       <aside class="privacy-note">
@@ -44,7 +44,7 @@
           <div class="card-heading">
             <p class="eyebrow">TEXT MODEL</p>
             <h2 id="text-title">文字概括模型 <span class="recommendation">推荐 DeepSeek</span></h2>
-            <p>综合正文、前 50 条评论和图片识别结果，生成最终简报。</p>
+            <p>综合正文、前 50 条评论和图片识别结果，生成最终简报。<a class="provider-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">获取 DeepSeek API Key ↗</a></p>
           </div>
           <div class="fields">
             <label class="wide-field">
@@ -71,7 +71,7 @@
           <div class="card-heading">
             <p class="eyebrow">VISION MODEL</p>
             <h2 id="vision-title">图片识别模型 <span class="recommendation">推荐 Qwen</span></h2>
-            <p>逐图提取可见文字与关键事实，需要选择支持图像输入的兼容模型。</p>
+            <p>逐图提取可见文字与关键事实，需要选择支持图像输入的兼容模型。<a class="provider-link" href="https://bailian.console.aliyun.com/?tab=model#/api-key" target="_blank" rel="noreferrer">获取百炼 API Key ↗</a></p>
           </div>
           <div class="fields">
             <label class="wide-field">
@@ -137,7 +137,7 @@
                   <span>签名密钥（选填）</span>
                   <input id="feishu-webhook-secret" type="password" autocomplete="off" spellcheck="false" placeholder="机器人开启签名校验时填写">
                 </label>
-                <p class="field-help wide-field">在目标飞书群的“设置 → 群机器人”中添加自定义机器人并复制 Webhook。建议同时开启签名校验。<a href="https://open.feishu.cn/document/common-capabilities/message-card/getting-started/send-message-cards-with-a-custom-bot?lang=zh-CN" target="_blank" rel="noreferrer">查看飞书说明 ↗</a></p>
+                <p class="field-help wide-field">在目标飞书群的“设置 → 群机器人”中添加自定义机器人并复制 Webhook。建议同时开启签名校验。<a href="https://open.feishu.cn/document/feishu-cards/quick-start/send-message-cards-with-custom-bot" target="_blank" rel="noreferrer">查看飞书说明 ↗</a></p>
               </div>
 
               <div id="feishu-app-fields" class="fields feishu-fields" hidden>
