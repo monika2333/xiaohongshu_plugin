@@ -4,6 +4,25 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const downloads = [];
+const storageState = { local: {}, session: {} };
+const accessLevels = [];
+
+function storageArea(name) {
+  return {
+    get: async (keys) => {
+      const state = storageState[name];
+      if (keys == null) return { ...state };
+      const requested = Array.isArray(keys) ? keys : [keys];
+      return Object.fromEntries(requested.filter((key) => key in state).map((key) => [key, state[key]]));
+    },
+    set: async (values) => { Object.assign(storageState[name], values); },
+    remove: async (keys) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete storageState[name][key];
+    },
+    setAccessLevel: async (options) => { accessLevels.push({ name, ...options }); }
+  };
+}
+
 let context;
 context = {
   chrome: {
@@ -18,8 +37,8 @@ context = {
       getURL: (value = "") => `chrome-extension://test/${value}`
     },
     storage: {
-      local: { get: async () => ({}), set: async () => {} },
-      session: { get: async () => ({}), set: async () => {} }
+      local: storageArea("local"),
+      session: storageArea("session")
     }
   },
   console,
@@ -138,6 +157,36 @@ const payload = {
     { ok: true }
   );
 
+  const customConfig = context.XhsAi.normalizeConfig({
+    text: { baseUrl: "https://models.example.com/v1/", model: "custom-text" },
+    vision: { baseUrl: "https://vision.example.com/openai/v1/", model: "custom-vision" }
+  });
+  assert.equal(customConfig.text.baseUrl, "https://models.example.com/v1");
+  assert.equal(customConfig.text.model, "custom-text");
+  assert.equal(customConfig.vision.baseUrl, "https://vision.example.com/openai/v1");
+  assert.equal(customConfig.vision.model, "custom-vision");
+
+  await context.saveAiSettings(
+    { ...customConfig, rememberApiKeys: true },
+    { textApiKey: "persistent-text", visionApiKey: "persistent-vision" }
+  );
+  assert.equal(storageState.local.xhsAiPersistentSecrets.textApiKey, "persistent-text");
+  assert.equal(storageState.session.xhsAiSecrets, undefined);
+  assert.equal((await context.getStoredSecrets()).visionApiKey, "persistent-vision");
+  assert.deepEqual(accessLevels, [{ name: "local", accessLevel: "TRUSTED_CONTEXTS" }]);
+
+  await context.saveAiSettings(
+    { ...customConfig, rememberApiKeys: false },
+    { textApiKey: "session-text", visionApiKey: "session-vision" }
+  );
+  assert.equal(storageState.local.xhsAiPersistentSecrets, undefined);
+  assert.equal(storageState.session.xhsAiSecrets.textApiKey, "session-text");
+  assert.equal((await context.getStoredSecrets()).visionApiKey, "session-vision");
+
+  await context.clearStoredSecrets();
+  assert.equal(storageState.local.xhsAiPersistentSecrets, undefined);
+  assert.equal(storageState.session.xhsAiSecrets, undefined);
+
   let textCalls = 0;
   context.fetch = async (url, options) => {
     textCalls += 1;
@@ -165,7 +214,7 @@ const payload = {
   const firstSummary = await context.XhsAi.summarize(
     textOnlyPayload,
     context.XhsAi.DEFAULT_CONFIG,
-    { deepseekApiKey: "test-deepseek-key", qwenApiKey: "" },
+    { textApiKey: "test-deepseek-key", visionApiKey: "" },
     cache
   );
   assert.match(firstSummary.text, /用户反映测试事件/);
@@ -173,7 +222,7 @@ const payload = {
   const cachedSummary = await context.XhsAi.summarize(
     textOnlyPayload,
     context.XhsAi.DEFAULT_CONFIG,
-    { deepseekApiKey: "test-deepseek-key", qwenApiKey: "" },
+    { textApiKey: "test-deepseek-key", visionApiKey: "" },
     cache
   );
   assert.equal(cachedSummary.text, firstSummary.text);

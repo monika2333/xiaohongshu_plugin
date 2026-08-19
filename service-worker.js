@@ -2,6 +2,7 @@ importScripts("ai-pipeline.js");
 
 const CONFIG_KEY = "xhsAiConfig";
 const SECRETS_KEY = "xhsAiSecrets";
+const PERSISTENT_SECRETS_KEY = "xhsAiPersistentSecrets";
 const CACHE_KEY = "xhsAiCacheV1";
 const LAST_CAPTURE_KEY = "xhsAiLastCapture";
 const LAST_RESULT_KEY = "xhsAiLastResult";
@@ -9,11 +10,16 @@ const MAX_CACHE_ENTRIES = 16;
 const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_GET_CONFIG",
   "XHS_AI_SAVE_CONFIG",
+  "XHS_AI_CLEAR_KEYS",
   "XHS_AI_TEST_PROVIDER",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_LAST",
   "XHS_AI_DOWNLOAD_LAST"
 ]);
+
+const storageAccessReady = typeof chrome.storage.local.setAccessLevel === "function"
+  ? chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
+  : Promise.resolve();
 
 function cleanText(value) {
   return String(value ?? "").replace(/\r?\n/g, " ").trim();
@@ -181,26 +187,58 @@ async function downloadExport(payload, options) {
 }
 
 async function getStoredConfig() {
+  await storageAccessReady;
   const stored = await chrome.storage.local.get(CONFIG_KEY);
   return XhsAi.normalizeConfig(stored[CONFIG_KEY]);
 }
 
 async function getStoredSecrets() {
-  const stored = await chrome.storage.session.get(SECRETS_KEY);
-  return stored[SECRETS_KEY] || { deepseekApiKey: "", qwenApiKey: "" };
+  await storageAccessReady;
+  const [sessionStored, localStored] = await Promise.all([
+    chrome.storage.session.get(SECRETS_KEY),
+    chrome.storage.local.get(PERSISTENT_SECRETS_KEY)
+  ]);
+  const sessionSecrets = sessionStored[SECRETS_KEY] || {};
+  const persistentSecrets = localStored[PERSISTENT_SECRETS_KEY] || {};
+  const saved = sessionSecrets.textApiKey || sessionSecrets.visionApiKey || sessionSecrets.deepseekApiKey || sessionSecrets.qwenApiKey
+    ? sessionSecrets
+    : persistentSecrets;
+  return {
+    textApiKey: saved.textApiKey || saved.deepseekApiKey || "",
+    visionApiKey: saved.visionApiKey || saved.qwenApiKey || ""
+  };
 }
 
 async function saveAiSettings(config, secrets) {
+  await storageAccessReady;
   const normalized = XhsAi.validateConfig(XhsAi.normalizeConfig(config));
   const safeSecrets = {
-    deepseekApiKey: String(secrets?.deepseekApiKey || "").trim(),
-    qwenApiKey: String(secrets?.qwenApiKey || "").trim()
+    textApiKey: String(secrets?.textApiKey || "").trim(),
+    visionApiKey: String(secrets?.visionApiKey || "").trim()
   };
-  await Promise.all([
-    chrome.storage.local.set({ [CONFIG_KEY]: normalized }),
-    chrome.storage.session.set({ [SECRETS_KEY]: safeSecrets })
-  ]);
+  const storageJobs = [chrome.storage.local.set({ [CONFIG_KEY]: normalized })];
+  if (normalized.rememberApiKeys) {
+    storageJobs.push(
+      chrome.storage.local.set({ [PERSISTENT_SECRETS_KEY]: safeSecrets }),
+      chrome.storage.session.remove(SECRETS_KEY)
+    );
+  } else {
+    storageJobs.push(
+      chrome.storage.session.set({ [SECRETS_KEY]: safeSecrets }),
+      chrome.storage.local.remove(PERSISTENT_SECRETS_KEY)
+    );
+  }
+  await Promise.all(storageJobs);
   return { ok: true, config: normalized };
+}
+
+async function clearStoredSecrets() {
+  await storageAccessReady;
+  await Promise.all([
+    chrome.storage.session.remove(SECRETS_KEY),
+    chrome.storage.local.remove(PERSISTENT_SECRETS_KEY)
+  ]);
+  return { ok: true };
 }
 
 function emitAiProgress(progress) {
@@ -271,6 +309,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_SAVE_CONFIG":
       task = saveAiSettings(message.config, message.secrets);
+      break;
+    case "XHS_AI_CLEAR_KEYS":
+      task = clearStoredSecrets();
       break;
     case "XHS_AI_TEST_PROVIDER":
       task = XhsAi.testProvider(message.provider, message.config, message.secrets);

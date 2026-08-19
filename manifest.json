@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "薯页摘录",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "提取当前小红书帖文、图片和前 50 条评论，并用自备大模型生成规整概括。",
   "permissions": [
     "activeTab",
@@ -11,12 +11,10 @@
     "storage"
   ],
   "host_permissions": [
-    "https://api.deepseek.com/*",
-    "https://*.maas.aliyuncs.com/*",
-    "https://dashscope.aliyuncs.com/*",
-    "https://dashscope-intl.aliyuncs.com/*",
-    "https://dashscope-us.aliyuncs.com/*",
     "https://*.xhscdn.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "background": {
     "service_worker": "service-worker.js"

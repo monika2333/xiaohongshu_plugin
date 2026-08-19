@@ -6,15 +6,16 @@
 
   const DEFAULT_CONFIG = Object.freeze({
     text: {
-      provider: "deepseek",
+      provider: "openai_compatible",
       baseUrl: "https://api.deepseek.com",
       model: "deepseek-v4-flash"
     },
     vision: {
-      provider: "qwen",
+      provider: "openai_compatible",
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       model: "qwen3-vl-plus"
     },
+    rememberApiKeys: true,
     includeVisibleReplies: true,
     commentLimit: 50,
     promptVersion: PROMPT_VERSION
@@ -35,15 +36,16 @@
   function normalizeConfig(raw = {}) {
     return {
       text: {
-        provider: "deepseek",
+        provider: "openai_compatible",
         baseUrl: normalizeBaseUrl(raw.text?.baseUrl || DEFAULT_CONFIG.text.baseUrl),
         model: cleanText(raw.text?.model || DEFAULT_CONFIG.text.model, 120)
       },
       vision: {
-        provider: "qwen",
+        provider: "openai_compatible",
         baseUrl: normalizeBaseUrl(raw.vision?.baseUrl || DEFAULT_CONFIG.vision.baseUrl),
         model: cleanText(raw.vision?.model || DEFAULT_CONFIG.vision.model, 120)
       },
+      rememberApiKeys: raw.rememberApiKeys !== false,
       includeVisibleReplies: raw.includeVisibleReplies !== false,
       commentLimit: Math.max(1, Math.min(50, Number(raw.commentLimit) || 50)),
       promptVersion: PROMPT_VERSION
@@ -61,10 +63,10 @@
   }
 
   function validateConfig(config) {
-    validateHttpsUrl(config.text.baseUrl, "DeepSeek API 地址");
-    validateHttpsUrl(config.vision.baseUrl, "Qwen API 地址");
-    if (!config.text.model) throw new Error("请填写 DeepSeek 模型名称。");
-    if (!config.vision.model) throw new Error("请填写 Qwen 模型名称。");
+    validateHttpsUrl(config.text.baseUrl, "文字模型 API 地址");
+    validateHttpsUrl(config.vision.baseUrl, "图片模型 API 地址");
+    if (!config.text.model) throw new Error("请填写文字模型名称。");
+    if (!config.vision.model) throw new Error("请填写图片模型名称。");
     return config;
   }
 
@@ -200,7 +202,7 @@
       temperature: 0
     });
     const parsed = parseJsonResponse(raw);
-    if (!Array.isArray(parsed)) throw new Error("Qwen 图片结果不是 JSON 数组。");
+    if (!Array.isArray(parsed)) throw new Error("图片模型返回结果不是 JSON 数组。");
     return parsed;
   }
 
@@ -269,7 +271,7 @@
     });
     const parsed = parseJsonResponse(raw);
     if (!parsed || Array.isArray(parsed) || !cleanText(parsed.headline) || !cleanText(parsed.event_summary)) {
-      throw new Error("DeepSeek 返回结果缺少标题或事件概括。");
+      throw new Error("文字模型返回结果缺少标题或事件概括。");
     }
     return {
       headline: cleanText(parsed.headline, 160).replace(/^★\s*/, ""),
@@ -326,17 +328,19 @@
 
   function visionCacheKey(payload, config) {
     const urls = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT).map((item) => stableImageUrl(item.url));
-    return `vision:${payload.source?.noteId}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
+    return `vision:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
   }
 
   function textCacheKey(payload, config, vision) {
     const evidence = buildEvidence(payload, vision, config);
-    return `text:${payload.source?.noteId}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+    return `text:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
   }
 
   async function summarize(payload, rawConfig, secrets, cache = {}, emitProgress = () => {}, force = false) {
     const config = validateConfig(normalizeConfig(rawConfig));
-    if (!cleanText(secrets?.deepseekApiKey)) throw new Error("尚未配置 DeepSeek API Key，请先打开模型设置。");
+    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
+    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
 
     const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
     const warnings = [];
@@ -344,8 +348,8 @@
     const vKey = visionCacheKey(payload, config);
 
     if (images.length) {
-      if (!cleanText(secrets?.qwenApiKey)) {
-        warnings.push("未配置 Qwen API Key，本次未识别图片。");
+      if (!cleanText(visionApiKey)) {
+        warnings.push("未配置图片模型 API Key，本次未识别图片。");
       } else if (cache[vKey]) {
         vision = cache[vKey];
         emitProgress({ stage: "vision", percent: 62, detail: `已复用 ${images.length} 张图片的识别缓存` });
@@ -354,7 +358,7 @@
         try {
           for (let offset = 0; offset < images.length; offset += VISION_BATCH_SIZE) {
             const batch = images.slice(offset, offset + VISION_BATCH_SIZE);
-            const items = await analyzeVisionBatch(batch, offset, config, secrets.qwenApiKey);
+            const items = await analyzeVisionBatch(batch, offset, config, visionApiKey);
             vision.push(...items);
             emitProgress({
               stage: "vision",
@@ -377,8 +381,8 @@
     if (structured) {
       emitProgress({ stage: "text", percent: 88, detail: "已复用文字概括缓存" });
     } else {
-      emitProgress({ stage: "text", percent: 68, detail: "DeepSeek 正在整合正文、图片与评论" });
-      structured = await createTextSummary(payload, vision, config, secrets.deepseekApiKey);
+      emitProgress({ stage: "text", percent: 68, detail: "文字模型正在整合正文、图片与评论" });
+      structured = await createTextSummary(payload, vision, config, textApiKey);
       cache[tKey] = structured;
     }
 
@@ -404,8 +408,10 @@
     const config = validateConfig(normalizeConfig(rawConfig));
     const isVision = provider === "vision";
     const target = isVision ? config.vision : config.text;
-    const apiKey = isVision ? secrets?.qwenApiKey : secrets?.deepseekApiKey;
-    if (!cleanText(apiKey)) throw new Error(`请先填写 ${isVision ? "Qwen" : "DeepSeek"} API Key。`);
+    const apiKey = isVision
+      ? secrets?.visionApiKey || secrets?.qwenApiKey
+      : secrets?.textApiKey || secrets?.deepseekApiKey;
+    if (!cleanText(apiKey)) throw new Error(`请先填写${isVision ? "图片" : "文字"}模型 API Key。`);
     const answer = await callChat({
       baseUrl: target.baseUrl,
       apiKey,

@@ -13,43 +13,55 @@
         <div class="title-copy">
           <p class="eyebrow">PERSONAL BYOK WORKBENCH</p>
           <h1>模型设置</h1>
-          <p>DeepSeek 整理文字，Qwen 识别帖文图片。两个密钥彼此独立。</p>
+          <p>分别配置文字概括与图片识别模型。下方提供推荐预设，也可以替换为其他兼容模型。</p>
         </div>
-        <span class="edition">个人直连版 · v0.2</span>
+        <span class="edition">个人直连版 · v0.2.1</span>
       </header>
 
       <aside class="privacy-note">
         <span class="note-index">01</span>
         <div>
-          <strong>密钥仅保留在当前浏览器会话</strong>
-          <p>关闭浏览器后会自动清除；不会写入同步存储、下载文件或页面脚本。</p>
+          <strong>API Key 默认仅保存在本机浏览器中</strong>
+          <p>重启后无需重填；不会同步、写入下载文件或注入网页，也可切换为会话模式。</p>
         </div>
       </aside>
 
       <form id="settings-form">
+        <section class="credential-control" aria-labelledby="credential-title">
+          <label class="remember-option">
+            <input id="remember-keys" class="remember-input" type="checkbox" checked>
+            <span class="remember-toggle" aria-hidden="true"></span>
+            <span class="mode-copy">
+              <strong id="credential-title">在本机记住 API Key</strong>
+              <small id="storage-mode-hint">浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。</small>
+            </span>
+          </label>
+          <button id="clear-keys-button" class="clear-keys-button" type="button">清除已保存密钥</button>
+        </section>
+
         <section class="provider-card" aria-labelledby="text-title">
           <div class="card-number">A</div>
           <div class="card-heading">
-            <p class="eyebrow">TEXT EDITOR</p>
-            <h2 id="text-title">DeepSeek · 文字概括</h2>
-            <p>接收正文、前 50 条评论和 Qwen 的图片识别结果，生成最终简报。</p>
+            <p class="eyebrow">TEXT MODEL</p>
+            <h2 id="text-title">文字概括模型 <span class="recommendation">推荐 DeepSeek</span></h2>
+            <p>综合正文、前 50 条评论和图片识别结果，生成最终简报。</p>
           </div>
           <div class="fields">
             <label class="wide-field">
               <span>API 地址</span>
-              <input id="deepseek-base-url" type="url" autocomplete="off" spellcheck="false" required>
+              <input id="text-base-url" type="url" autocomplete="off" spellcheck="false" required>
             </label>
             <label>
               <span>模型名称</span>
-              <input id="deepseek-model" type="text" autocomplete="off" spellcheck="false" required>
+              <input id="text-model" type="text" autocomplete="off" spellcheck="false" required>
             </label>
             <label>
               <span>API Key</span>
-              <input id="deepseek-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+              <input id="text-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
             </label>
           </div>
           <div class="card-actions">
-            <button class="test-button" type="button" data-provider="text">测试 DeepSeek</button>
+            <button class="test-button" type="button" data-provider="text">测试文字模型</button>
             <span id="text-test-status" class="test-status" aria-live="polite"></span>
           </div>
         </section>
@@ -57,37 +69,37 @@
         <section class="provider-card" aria-labelledby="vision-title">
           <div class="card-number">B</div>
           <div class="card-heading">
-            <p class="eyebrow">VISUAL READER</p>
-            <h2 id="vision-title">Qwen · 图片识别</h2>
-            <p>逐图提取可见文字与关键事实。支持阿里云百炼兼容地址或工作空间专属地址。</p>
+            <p class="eyebrow">VISION MODEL</p>
+            <h2 id="vision-title">图片识别模型 <span class="recommendation">推荐 Qwen</span></h2>
+            <p>逐图提取可见文字与关键事实，需要选择支持图像输入的兼容模型。</p>
           </div>
           <div class="fields">
             <label class="wide-field">
               <span>API 地址</span>
-              <input id="qwen-base-url" type="url" autocomplete="off" spellcheck="false" required>
+              <input id="vision-base-url" type="url" autocomplete="off" spellcheck="false" required>
             </label>
             <label>
               <span>模型名称</span>
-              <input id="qwen-model" type="text" autocomplete="off" spellcheck="false" required>
+              <input id="vision-model" type="text" autocomplete="off" spellcheck="false" required>
             </label>
             <label>
               <span>API Key</span>
-              <input id="qwen-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+              <input id="vision-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
             </label>
           </div>
           <div class="card-actions">
-            <button class="test-button" type="button" data-provider="vision">测试 Qwen</button>
+            <button class="test-button" type="button" data-provider="vision">测试图片模型</button>
             <span id="vision-test-status" class="test-status" aria-live="polite"></span>
           </div>
         </section>
 
         <section class="workflow-strip" aria-label="处理顺序">
-          <span>页面证据</span><b>→</b><span>Qwen 看图</span><b>→</b><span>DeepSeek 编写</span><b>→</b><span>固定格式</span>
+          <span>页面证据</span><b>→</b><span>图片模型识别</span><b>→</b><span>文字模型编写</span><b>→</b><span>固定格式</span>
         </section>
 
         <div class="save-row">
           <p id="save-status" aria-live="polite">填写后保存，再回到帖文页面使用插件。</p>
-          <button id="save-button" class="save-button" type="submit">保存本次会话设置 <span>↘</span></button>
+          <button id="save-button" class="save-button" type="submit">保存模型设置 <span>↘</span></button>
         </div>
       </form>
     </main>

@@ -121,6 +121,97 @@ h1 {
   font-size: 15px;
 }
 
+.credential-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 18px;
+  background: rgba(29, 26, 23, .045);
+  border: 1px dashed var(--line);
+}
+
+.remember-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  cursor: pointer;
+}
+
+.remember-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.remember-toggle {
+  position: relative;
+  display: block;
+  width: 42px;
+  height: 23px;
+  flex: 0 0 auto;
+  margin: 0;
+  background: #c7bba9;
+  border: 1px solid var(--ink);
+  border-radius: 99px;
+  transition: background 180ms ease;
+}
+
+.remember-toggle::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  background: var(--paper-soft);
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  content: "";
+  transition: transform 180ms ease;
+}
+
+.remember-input:checked + .remember-toggle { background: var(--red); }
+.remember-input:checked + .remember-toggle::after { transform: translateX(19px); }
+.remember-input:focus-visible + .remember-toggle { outline: 2px solid var(--red); outline-offset: 3px; }
+
+.mode-copy {
+  display: block;
+  margin: 0;
+}
+
+.mode-copy strong,
+.mode-copy small {
+  display: block;
+}
+
+.mode-copy strong {
+  margin-bottom: 4px;
+  font-family: "STSong", "Songti SC", serif;
+  font-size: 14px;
+}
+
+.mode-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.clear-keys-button {
+  flex: 0 0 auto;
+  padding: 8px 11px;
+  color: var(--red-dark);
+  background: transparent;
+  border: 1px solid currentColor;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.clear-keys-button:hover { color: var(--paper-soft); background: var(--red-dark); }
+.clear-keys-button:disabled { cursor: wait; opacity: .55; }
+
 .provider-card {
   position: relative;
   display: grid;
@@ -150,6 +241,20 @@ h1 {
 .card-heading h2 {
   margin-bottom: 10px;
   font-size: 22px;
+}
+
+.recommendation {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 3px 7px;
+  color: var(--red-dark);
+  border: 1px solid currentColor;
+  border-radius: 99px;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: 4px;
+  white-space: nowrap;
 }
 
 .fields {
@@ -255,6 +360,7 @@ input:focus {
 .save-button:disabled { cursor: wait; opacity: .65; }
 
 @media (max-width: 820px) {
+  .credential-control { align-items: flex-start; flex-direction: column; }
   .provider-card { grid-template-columns: 34px 1fr; }
   .fields, .card-actions { grid-column: 2; }
 }
