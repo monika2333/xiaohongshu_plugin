@@ -136,7 +136,7 @@ const payload = {
 };
 
 (async () => {
-  assert.equal(context.XhsPrompts.version, "2026-08-19-v5");
+  assert.equal(context.XhsPrompts.version, "2026-08-20-v1");
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
   assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
