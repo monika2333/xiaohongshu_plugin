@@ -306,6 +306,55 @@ const payload = {
   assert.equal(failedNotification.status, "failed");
   assert.match(failedNotification.error, /invalid webhook/);
 
+  let visionModelCalls = 0;
+  context.fetch = async (url, options) => {
+    if (url.includes("xhscdn.com")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "image/webp" },
+        arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer
+      };
+    }
+    visionModelCalls += 1;
+    assert.equal(url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+    assert.equal(options.headers.Authorization, "Bearer test-vision-key");
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify([{
+              image_index: 1,
+              has_text: true,
+              visible_text: "图片关键信息",
+              factual_description: "图片补充了关键事实",
+              summary_value: "essential"
+            }])
+          }
+        }]
+      })
+    };
+  };
+  storageState.local.xhsAiConfig = context.XhsAi.DEFAULT_CONFIG;
+  storageState.local.xhsAiPersistentSecrets = {
+    textApiKey: "test-deepseek-key",
+    visionApiKey: "test-vision-key"
+  };
+  const visionSender = { tab: { id: 42 }, url: payload.source.url };
+  const visionPreparation = await context.prepareVisionPayload({
+    payload: {
+      source: { ...payload.source, pageSessionId: "page-session-1" },
+      media: payload.media
+    },
+    pageSessionId: "page-session-1"
+  }, visionSender);
+  assert.equal(visionPreparation.ok, true);
+  assert.equal(visionPreparation.preparedVision.status, "analyzed");
+  assert.equal(visionPreparation.preparedVision.items.length, 1);
+  assert.equal(visionModelCalls, 1);
+
   let textCalls = 0;
   let lastTextRequest = null;
   context.fetch = async (url, options) => {
@@ -350,6 +399,19 @@ const payload = {
   );
   assert.equal(cachedSummary.text, firstSummary.text);
   assert.equal(textCalls, 1);
+
+  const imageSummary = await context.XhsAi.summarize(
+    payload,
+    context.XhsAi.DEFAULT_CONFIG,
+    { textApiKey: "test-deepseek-key", visionApiKey: "test-vision-key" },
+    {},
+    () => {},
+    false,
+    visionPreparation.preparedVision
+  );
+  assert.equal(imageSummary.evidence.imagesAnalyzed, 1);
+  assert.equal(textCalls, 2);
+  assert.equal(visionModelCalls, 1);
 
   const pageSender = {
     tab: { id: 42 },

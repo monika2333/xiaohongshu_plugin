@@ -481,48 +481,98 @@
     return `vision:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
   }
 
-  function textCacheKey(payload, config, vision) {
-    const evidence = buildEvidence(payload, vision, config);
-    return `text:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
-  }
-
-  async function summarize(payload, rawConfig, secrets, cache = {}, emitProgress = () => {}, force = false) {
-    const config = validateConfig(normalizeConfig(rawConfig));
-    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
-    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
-    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
-
+  async function resolveVision(payload, config, visionApiKey, cache, emitProgress) {
     const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
-    let vision = [];
-    const vKey = visionCacheKey(payload, config);
+    const key = visionCacheKey(payload, config);
+    let items = [];
+    let status = "no_images";
 
     if (images.length) {
       if (!cleanText(visionApiKey)) {
+        status = "missing_key";
         emitProgress({ stage: "vision", percent: 62, detail: "未配置图片模型，已跳过图片识别" });
-      } else if (cache[vKey]) {
-        vision = cache[vKey];
+      } else if (cache[key]) {
+        items = cache[key];
+        status = "cached";
         emitProgress({ stage: "vision", percent: 62, detail: `已复用 ${images.length} 张图片的识别缓存` });
       } else {
         emitProgress({ stage: "vision", percent: 34, detail: `准备识别 ${images.length} 张图片` });
         try {
           for (let offset = 0; offset < images.length; offset += VISION_BATCH_SIZE) {
             const batch = images.slice(offset, offset + VISION_BATCH_SIZE);
-            const items = await analyzeVisionBatch(batch, offset, config, visionApiKey);
-            vision.push(...items);
+            const batchItems = await analyzeVisionBatch(batch, offset, config, visionApiKey);
+            items.push(...batchItems);
             emitProgress({
               stage: "vision",
               percent: 34 + Math.round(((offset + batch.length) / images.length) * 28),
               detail: `已识别 ${Math.min(offset + batch.length, images.length)} / ${images.length} 张图片`
             });
           }
-          cache[vKey] = vision;
+          cache[key] = items;
+          status = "analyzed";
         } catch {
-          vision = [];
+          items = [];
+          status = "failed";
           emitProgress({ stage: "vision", percent: 62, detail: "图片识别未完成，继续概括文字内容" });
         }
       }
     } else {
       emitProgress({ stage: "vision", percent: 62, detail: "当前帖文没有可识别的图片" });
+    }
+
+    return { key, items, status };
+  }
+
+  function emitPreparedVisionProgress(prepared, imageCount, emitProgress) {
+    if (prepared.status === "missing_key") {
+      emitProgress({ stage: "vision", percent: 62, detail: "未配置图片模型，已跳过图片识别" });
+    } else if (prepared.status === "failed") {
+      emitProgress({ stage: "vision", percent: 62, detail: "图片识别未完成，继续概括文字内容" });
+    } else if (prepared.status === "no_images") {
+      emitProgress({ stage: "vision", percent: 62, detail: "当前帖文没有可识别的图片" });
+    } else if (prepared.status === "cached") {
+      emitProgress({ stage: "vision", percent: 62, detail: `已复用 ${imageCount} 张图片的识别缓存` });
+    } else {
+      emitProgress({ stage: "vision", percent: 62, detail: `已在读取评论期间识别 ${imageCount} 张图片` });
+    }
+  }
+
+  async function prepareVision(payload, rawConfig, secrets, cache = {}, emitProgress = () => {}) {
+    const config = validateConfig(normalizeConfig(rawConfig));
+    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    const prepared = await resolveVision(payload, config, visionApiKey, cache, emitProgress);
+    return { ...prepared, cache };
+  }
+
+  function textCacheKey(payload, config, vision) {
+    const evidence = buildEvidence(payload, vision, config);
+    return `text:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+  }
+
+  async function summarize(
+    payload,
+    rawConfig,
+    secrets,
+    cache = {},
+    emitProgress = () => {},
+    force = false,
+    preparedVision = null
+  ) {
+    const config = validateConfig(normalizeConfig(rawConfig));
+    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
+    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
+
+    const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
+    const vKey = visionCacheKey(payload, config);
+    let vision;
+
+    if (preparedVision?.key === vKey && Array.isArray(preparedVision.items)) {
+      vision = preparedVision.items.map((item, offset) => normalizeVisionItem(item, offset + 1));
+      if (["analyzed", "cached"].includes(preparedVision.status)) cache[vKey] = vision;
+      emitPreparedVisionProgress(preparedVision, images.length, emitProgress);
+    } else {
+      vision = (await resolveVision(payload, config, visionApiKey, cache, emitProgress)).items;
     }
 
     const tKey = textCacheKey(payload, config, vision);
@@ -581,6 +631,7 @@
     normalizeVisionItem,
     selectVisionEvidence,
     renderSummary,
+    prepareVision,
     summarize,
     testProvider,
     hashText

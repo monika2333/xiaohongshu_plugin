@@ -24,6 +24,7 @@ const EXTENSION_PAGE_MESSAGES = new Set([
 ]);
 const CONTENT_SCRIPT_MESSAGES = new Set([
   "XHS_EXPORT_PROGRESS",
+  "XHS_AI_PREPARE_VISION",
   "XHS_AI_SUMMARIZE_PAGE",
   "XHS_AI_WORKFLOW_FAILED"
 ]);
@@ -500,7 +501,43 @@ function emitAiProgress(progress) {
   }).catch(() => {});
 }
 
-async function summarizePayload(payload, force, progressListener = emitAiProgress) {
+async function prepareVisionPayload(message, sender) {
+  const tabId = sender?.tab?.id;
+  const payload = message.payload;
+  const pageSessionId = cleanText(message.pageSessionId || payload?.source?.pageSessionId);
+  const pageUrl = cleanText(payload?.source?.url || sender?.url);
+  if (
+    !Number.isInteger(tabId) ||
+    !pageSessionId ||
+    !payload?.source?.noteId ||
+    !payload?.media ||
+    !isXhsPageUrl(pageUrl)
+  ) {
+    throw new Error("无法确认图片所属的帖文页面，请刷新页面后重试。");
+  }
+
+  const [config, secrets, cacheRecord] = await Promise.all([
+    getStoredConfig(),
+    getStoredSecrets(),
+    chrome.storage.session.get(CACHE_KEY)
+  ]);
+  const cache = cacheRecord[CACHE_KEY] || {};
+  const prepared = await XhsAi.prepareVision(payload, config, secrets, cache);
+  const latestRecord = await chrome.storage.session.get(CACHE_KEY);
+  const mergedCache = { ...(latestRecord[CACHE_KEY] || {}), ...prepared.cache };
+  const boundedCache = Object.fromEntries(Object.entries(mergedCache).slice(-MAX_CACHE_ENTRIES));
+  await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
+  return {
+    ok: true,
+    preparedVision: {
+      key: prepared.key,
+      items: prepared.items,
+      status: prepared.status
+    }
+  };
+}
+
+async function summarizePayload(payload, force, progressListener = emitAiProgress, preparedVision = null) {
   if (!payload?.source?.noteId || !payload?.commentExport || !payload?.media) {
     throw new Error("页面采集数据不完整，请重新打开帖文后再试。");
   }
@@ -511,7 +548,15 @@ async function summarizePayload(payload, force, progressListener = emitAiProgres
   ]);
   const cache = cacheRecord[CACHE_KEY] || {};
   await chrome.storage.session.set({ [LAST_CAPTURE_KEY]: payload });
-  const result = await XhsAi.summarize(payload, config, secrets, cache, progressListener, Boolean(force));
+  const result = await XhsAi.summarize(
+    payload,
+    config,
+    secrets,
+    cache,
+    progressListener,
+    Boolean(force),
+    preparedVision
+  );
   const { cache: updatedCache, ...publicResult } = result;
   if (config.feishu?.enabled) {
     progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
@@ -577,7 +622,7 @@ async function summarizePagePayload(message, sender) {
   };
 
   try {
-    const response = await summarizePayload(payload, message.force, onProgress);
+    const response = await summarizePayload(payload, message.force, onProgress, message.preparedVision);
     const notification = response.result.notification;
     const completionDetail = notification?.status === "sent"
       ? "概括已生成，并已推送到飞书。"
@@ -679,6 +724,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_SUMMARIZE_PAGE":
       task = summarizePagePayload(message, sender);
+      break;
+    case "XHS_AI_PREPARE_VISION":
+      task = prepareVisionPayload(message, sender);
       break;
     case "XHS_AI_WORKFLOW_FAILED":
       task = recordWorkflowFailure(message, sender).then(() => ({ ok: true }));

@@ -90,6 +90,114 @@ async function captureFromPage(rootSelector) {
   });
 }
 
+async function captureAndSummarizeWithOverlappingVision() {
+  let commentLoaded = false;
+  const image = {
+    currentSrc: "https://sns-webpic-qc.xhscdn.com/parallel-test.webp",
+    src: "https://sns-webpic-qc.xhscdn.com/parallel-test.webp",
+    naturalWidth: 1080,
+    naturalHeight: 1440
+  };
+  const commentItem = {
+    id: "comment-parallel",
+    querySelector: () => null
+  };
+  const commentParent = {
+    querySelector: () => commentItem,
+    querySelectorAll: () => []
+  };
+  const scroller = {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 500,
+    dispatchEvent() { commentLoaded = true; }
+  };
+  const detailRoot = createDetailRoot();
+  const baseQuerySelector = detailRoot.querySelector.bind(detailRoot);
+  detailRoot.querySelector = (selector) => selector === ".note-scroller" ? scroller : baseQuerySelector(selector);
+  detailRoot.querySelectorAll = (selector) => {
+    if (selector === ".img-container img, .note-slider-img img, [class*='slider'] img") return [image];
+    if (selector === ".parent-comment") return commentLoaded ? [commentParent] : [];
+    return [];
+  };
+
+  let messageListener;
+  let resolveVision;
+  let signalVisionStarted;
+  const visionStarted = new Promise((resolve) => { signalVisionStarted = resolve; });
+  const runtimeMessages = [];
+  const document = {
+    title: "清华听涛园食堂异物 - 小红书",
+    querySelector: (selector) => selector === "#noteContainer" ? detailRoot : null
+  };
+  const chrome = {
+    runtime: {
+      onMessage: { addListener(listener) { messageListener = listener; } },
+      sendMessage(message) {
+        runtimeMessages.push(message);
+        if (message.type === "XHS_AI_PREPARE_VISION") {
+          signalVisionStarted();
+          return new Promise((resolve) => {
+            resolveVision = () => resolve({
+              ok: true,
+              preparedVision: { key: "vision-key", items: [], status: "analyzed" }
+            });
+          });
+        }
+        if (message.type === "XHS_AI_SUMMARIZE_PAGE") {
+          return Promise.resolve({ ok: true, result: { text: "测试概括" } });
+        }
+        return Promise.resolve({ ok: true });
+      }
+    },
+    storage: { local: { set: async () => {} } }
+  };
+  const context = {
+    chrome,
+    crypto: { randomUUID: () => "parallel-page-session" },
+    document,
+    Event,
+    globalThis: null,
+    location: {
+      href: `https://www.xiaohongshu.com/explore/${NOTE_ID}`,
+      pathname: `/explore/${NOTE_ID}`
+    },
+    setTimeout,
+    URL
+  };
+  context.globalThis = context;
+  vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
+    context,
+    { filename: "content-script.js" }
+  );
+
+  const responsePromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("parallel workflow response timed out")), 2000);
+    const keepChannelOpen = messageListener(
+      { type: "XHS_CAPTURE_AND_SUMMARIZE", options: { limit: 1 } },
+      {},
+      (response) => {
+        clearTimeout(timeout);
+        resolve(response);
+      }
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+
+  await visionStarted;
+  assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_PREPARE_VISION"));
+  assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
+  resolveVision();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
+
+  const response = await responsePromise;
+  assert.equal(response.ok, true);
+  const summaryMessage = runtimeMessages.find((message) => message.type === "XHS_AI_SUMMARIZE_PAGE");
+  assert.equal(summaryMessage.preparedVision.key, "vision-key");
+}
+
 (async () => {
   const directPage = await captureFromPage("#noteContainer");
   assert.equal(directPage.ok, true);
@@ -102,6 +210,8 @@ async function captureFromPage(rootSelector) {
   const modalPage = await captureFromPage(".note-detail-mask");
   assert.equal(modalPage.ok, true);
   assert.equal(modalPage.payload.note.content, "帖文正文");
+
+  await captureAndSummarizeWithOverlappingVision();
 
   console.log("content-script tests passed");
 })().catch((error) => {

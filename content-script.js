@@ -111,6 +111,23 @@
     return images;
   }
 
+  function buildVisionSeed(root) {
+    const noteId = getNoteId();
+    if (!noteId) throw new Error("无法识别当前帖文 ID。");
+    return {
+      source: {
+        platform: "xiaohongshu",
+        url: location.href,
+        noteId,
+        pageSessionId: PAGE_SESSION_ID
+      },
+      media: {
+        images: collectMedia(root),
+        note: "页面当前可访问的图片版本，不保证为创作者上传的未压缩原文件。"
+      }
+    };
+  }
+
   function parseCommentItem(item, kind = "top_level", parentCommentId = null) {
     const id = item.id?.replace(/^comment-/, "") || null;
     const authorNode = item.querySelector(":scope > .comment-inner-container .author .name");
@@ -271,7 +288,7 @@
     };
   }
 
-  async function runCapture(rawOptions) {
+  async function runCapture(rawOptions, onVisionSeed = null) {
     const options = {
       limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT)),
       downloadImages: rawOptions?.downloadImages !== false,
@@ -284,6 +301,7 @@
     }
 
     await sendProgress("正在读取帖文", "获取元信息、互动数和媒体资源", 0);
+    if (typeof onVisionSeed === "function") onVisionSeed(buildVisionSeed(root));
     const loadingResult = await loadTopLevelComments(root, options.limit);
     await sendProgress("正在整理证据", "汇总正文、互动数据、图片和评论", Math.min(options.limit, loadingResult.loaded));
 
@@ -330,17 +348,30 @@
 
   async function runCaptureAndSummarize(rawOptions, suppliedPayload, force) {
     let payload = suppliedPayload || null;
+    let visionPreparationPromise = null;
     if (payload) {
       await sendProgress("正在重新生成", "复用本页面已经采集的证据", payload.commentExport?.extractedTopLevelCount || 0);
     } else {
-      payload = (await runCapture(rawOptions)).payload;
+      payload = (await runCapture(rawOptions, (visionSeed) => {
+        if (!visionSeed.media.images.length) return;
+        visionPreparationPromise = chrome.runtime.sendMessage({
+          type: "XHS_AI_PREPARE_VISION",
+          payload: visionSeed,
+          pageSessionId: PAGE_SESSION_ID
+        }).catch(() => null);
+      })).payload;
     }
+
+    const visionPreparationResponse = visionPreparationPromise
+      ? await visionPreparationPromise
+      : null;
 
     const response = await chrome.runtime.sendMessage({
       type: "XHS_AI_SUMMARIZE_PAGE",
       payload,
       force: Boolean(force),
-      pageSessionId: PAGE_SESSION_ID
+      pageSessionId: PAGE_SESSION_ID,
+      preparedVision: visionPreparationResponse?.ok ? visionPreparationResponse.preparedVision : null
     });
     if (!response?.ok) throw new Error(response?.error || "概括未完成。");
     return { ok: true, result: response.result, capture: payload };
