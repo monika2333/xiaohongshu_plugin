@@ -88,7 +88,6 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .brief-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .brief h2 { margin: 0; font-size: 18px; }
 .brief p { max-width: 310px; margin-bottom: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.limit-stamp { padding: 4px 8px; color: var(--red-dark); border: 1px solid currentColor; border-radius: 99px; font-size: 10px; font-weight: 700; transform: rotate(2deg); }
 
 .status-card {
   margin: 0 0 13px;
