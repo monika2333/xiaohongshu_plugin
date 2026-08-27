@@ -9,7 +9,8 @@ function textNode(text, extra = {}) {
   return { innerText: text, textContent: text, ...extra };
 }
 
-function createDetailRoot() {
+function createDetailRoot(usePrimaryInteractionContainer = true) {
+  const firstCommentLike = textNode("1");
   const nodes = new Map([
     ["#detail-title, #detail-desc, .comments-container", textNode("清华听涛园食堂异物")],
     ["#detail-title, .title", textNode("清华听涛园食堂异物")],
@@ -17,14 +18,22 @@ function createDetailRoot() {
     [".author-wrapper a.name", { href: "https://www.xiaohongshu.com/user/profile/example" }],
     ["#detail-desc .note-text, #detail-desc, .desc .note-text", textNode("帖文正文")],
     [".bottom-container .date", textNode("08-17 北京")],
-    [".interactions .like-wrapper .count", textNode("1.2万")],
-    [".interactions .collect-wrapper .count", textNode("345")],
-    [".interactions .chat-wrapper .count", textNode("67")],
     [".comments-container .total", textNode("共 67 条评论")]
   ]);
+  const interactionPrefix = usePrimaryInteractionContainer ? ".interact-container" : ".interactions";
+  nodes.set(`${interactionPrefix} .like-wrapper .count`, textNode("1.2万"));
+  nodes.set(`${interactionPrefix} .collect-wrapper .count`, textNode("345"));
+  nodes.set(`${interactionPrefix} .chat-wrapper .count`, textNode("67"));
+  if (usePrimaryInteractionContainer) nodes.set(".interactions .like-wrapper .count", firstCommentLike);
 
   return {
     querySelector(selector) {
+      if (
+        usePrimaryInteractionContainer &&
+        selector === ".interact-container .like-wrapper .count, .interactions .like-wrapper .count"
+      ) {
+        return firstCommentLike;
+      }
       return selector
         .split(",")
         .map((item) => item.trim())
@@ -37,8 +46,7 @@ function createDetailRoot() {
   };
 }
 
-async function captureFromPage(rootSelector) {
-  const detailRoot = createDetailRoot();
+async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
   let messageListener;
   const document = {
     title: "清华听涛园食堂异物 - 小红书",
@@ -207,7 +215,7 @@ async function captureAndSummarizeWithOverlappingVision() {
   assert.equal(directPage.payload.interactions.collects.value, 345);
   assert.equal(directPage.payload.interactions.comments.value, 67);
 
-  const modalPage = await captureFromPage(".note-detail-mask");
+  const modalPage = await captureFromPage(".note-detail-mask", createDetailRoot(false));
   assert.equal(modalPage.ok, true);
   assert.equal(modalPage.payload.note.content, "帖文正文");
 

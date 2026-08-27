@@ -70,11 +70,13 @@
   }
 
   function getInteraction(root, selector) {
-    const countSelector = selector
+    const selectors = selector
       .split(",")
-      .map((item) => `${item.trim()} .count`)
-      .join(", ");
-    const raw = textOf(root, countSelector);
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const raw = selectors
+      .map((item) => textOf(root, `${item} .count`))
+      .find(Boolean) || "";
     return { raw: raw || null, value: normalizeCount(raw) };
   }
 
