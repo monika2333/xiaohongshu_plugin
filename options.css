@@ -310,16 +310,6 @@ input:focus {
   min-width: 0;
 }
 
-.notification-card[data-enabled="false"]::after { background: var(--paper-deep); }
-
-.notification-switch {
-  width: 100%;
-  padding-bottom: 15px;
-  border-bottom: 1px dashed var(--line);
-}
-
-.feishu-config { margin-top: 14px; }
-
 .delivery-methods {
   display: grid;
   grid-template-columns: 1fr 1fr;

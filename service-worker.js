@@ -332,14 +332,26 @@ function validateFeishuWebhookUrl(value) {
 }
 
 function validateFeishuSettings(config, secrets) {
-  if (!config.feishu?.enabled) return;
+  if (!hasFeishuSettings(config, secrets)) return false;
   if (config.feishu.mode === "webhook") {
     validateFeishuWebhookUrl(secrets?.feishuWebhookUrl);
-    return;
+    return true;
   }
   if (!config.feishu.appId) throw new Error("请填写飞书自建应用的 App ID。");
   if (!String(secrets?.feishuAppSecret || "").trim()) throw new Error("请填写飞书自建应用的 App Secret。");
   feishuRecipientType(config.feishu.recipientId);
+  return true;
+}
+
+function hasFeishuSettings(config, secrets) {
+  if (config.feishu?.mode === "app") {
+    return Boolean(
+      String(config.feishu.appId || "").trim() ||
+      String(secrets?.feishuAppSecret || "").trim() ||
+      String(config.feishu.recipientId || "").trim()
+    );
+  }
+  return Boolean(String(secrets?.feishuWebhookUrl || "").trim());
 }
 
 function feishuRecipientType(value) {
@@ -433,8 +445,7 @@ async function postFeishuJson(url, body, authorization = "") {
 }
 
 async function sendFeishuMessage(text, config, secrets) {
-  validateFeishuSettings(config, secrets);
-  if (!config.feishu.enabled) return null;
+  if (!validateFeishuSettings(config, secrets)) return null;
   const messageText = String(text || "").trim();
   if (!messageText) throw new Error("没有可推送的概括内容。");
 
@@ -470,7 +481,7 @@ async function sendFeishuMessage(text, config, secrets) {
 }
 
 async function pushFeishuNotification(text, config, secrets) {
-  if (!config.feishu?.enabled) return null;
+  if (!hasFeishuSettings(config, secrets)) return null;
   try {
     const delivered = await sendFeishuMessage(text, config, secrets);
     return { status: "sent", channel: delivered.channel, sentAt: Date.now() };
@@ -484,8 +495,8 @@ async function pushFeishuNotification(text, config, secrets) {
 
 async function testFeishuSettings(rawConfig, secrets) {
   const config = XhsAi.normalizeConfig(rawConfig);
-  config.feishu.enabled = true;
   XhsAi.validateConfig(config);
+  if (!hasFeishuSettings(config, secrets)) throw new Error("请先填写当前推送方式所需的飞书配置。");
   const delivered = await sendFeishuMessage("薯页摘录：飞书推送测试成功。", config, secrets || {});
   return {
     ok: true,
@@ -558,7 +569,7 @@ async function summarizePayload(payload, force, progressListener = emitAiProgres
     preparedVision
   );
   const { cache: updatedCache, ...publicResult } = result;
-  if (config.feishu?.enabled) {
+  if (hasFeishuSettings(config, secrets)) {
     progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
   }
   const notification = await pushFeishuNotification(publicResult.text, config, secrets);

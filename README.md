@@ -36,7 +36,7 @@
 
 ## 飞书自动推送
 
-飞书推送默认关闭。启用后，每次概括或重新生成完成都会发送一条纯文本消息；推送失败只会显示错误状态，不会丢失已经生成的结果。
+填写当前推送方式所需的配置后，每次概括或重新生成完成都会自动发送一条纯文本消息；未填写则不推送。推送失败只会显示错误状态，不会丢失已经生成的结果。
 
 ### 方式一：群机器人 Webhook（推荐）
 
@@ -44,7 +44,7 @@
 2. 添加“自定义机器人”，复制飞书生成的完整 Webhook 地址。
 3. 在插件设置的“飞书自动推送”中选择“群机器人 Webhook”，粘贴地址。
 4. 如果机器人启用了签名校验，同时填写签名密钥。
-5. 点击“发送测试消息”，确认目标群收到消息，再开启自动推送并保存。
+5. 点击“发送测试消息”，确认目标群收到消息后保存；Webhook 留空即可停止推送。
 
 Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：[使用自定义机器人发送消息](https://open.feishu.cn/document/feishu-cards/quick-start/send-message-cards-with-custom-bot)。
 
@@ -54,7 +54,7 @@ Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：
 2. 申请“以应用的身份发消息”（`im:message:send_as_bot`）权限，创建并发布应用版本，并确保应用对接收人可用。
 3. 从应用的“凭证与基础信息”复制 App ID 和 App Secret。
 4. 填写接收人的飞书企业邮箱；也可以填写该应用下的 Open ID（`ou_…`）。
-5. 点击“发送测试消息”，确认指定账号收到机器人私聊，再开启自动推送并保存。
+5. 点击“发送测试消息”，确认指定账号收到机器人私聊后保存；清空这三个字段即可停止推送。
 
 自建应用方式先用 App ID 与 App Secret 获取 `tenant_access_token`，再调用飞书发送消息接口。官方说明：[机器人应用配置](https://open.feishu.cn/document/develop-an-echo-bot/faq)、[发送消息 API](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[获取 tenant_access_token](https://open.feishu.cn/document/server-docs/authentication-management/access-token/tenant_access_token_internal)。
 
@@ -66,7 +66,7 @@ Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：
 - 非敏感模型配置使用 `chrome.storage.local` 保存。
 - 本次采集数据、图片识别结果和概括结果进入浏览器会话缓存，不会自动下载。
 - 图片二进制不会写入缓存；需要识别时由扩展后台读取并临时转换为 Base64。
-- 内容只发送给用户配置的文字与图片模型 API；启用飞书后，最终概括还会直接发送到飞书开放平台，不经过中转服务器。
+- 内容只发送给用户配置的文字与图片模型 API；填写飞书推送配置后，最终概括还会直接发送到飞书开放平台，不经过中转服务器。
 - 插件只读取小红书 `web_session` Cookie 是否存在，用于在任务启动前判断登录状态；不会保存、展示或传出 Cookie 值，也不调用小红书未公开接口。
 
 ## 数据范围与容错

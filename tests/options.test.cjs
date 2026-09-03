@@ -22,7 +22,7 @@ function createElement(overrides = {}) {
 const ids = [
   "#text-base-url", "#text-model", "#text-key",
   "#vision-base-url", "#vision-model", "#vision-key",
-  "#feishu-enabled", "#feishu-webhook-url", "#feishu-webhook-secret",
+  "#feishu-webhook-url", "#feishu-webhook-secret",
   "#feishu-app-id", "#feishu-app-secret", "#feishu-recipient-id",
   "#remember-keys", "#settings-form", "#save-button", "#save-status",
   "#clear-keys-button", "#storage-mode-hint", "#feishu-webhook-fields",
@@ -30,7 +30,6 @@ const ids = [
   "#text-test-status", "#vision-test-status"
 ];
 const elements = Object.fromEntries(ids.map((id) => [id, createElement()]));
-const feishuCard = createElement();
 const webhookRadio = createElement({ value: "webhook", checked: true });
 const appRadio = createElement({ value: "app" });
 const textTestButton = createElement({ dataset: { provider: "text" } });
@@ -43,7 +42,7 @@ const configResponse = {
   config: {
     text: { baseUrl: "https://text.example.com", model: "text-model" },
     vision: { baseUrl: "https://vision.example.com", model: "vision-model" },
-    feishu: { enabled: false, mode: "webhook", appId: "", recipientId: "" },
+    feishu: { mode: "webhook", appId: "", recipientId: "" },
     rememberApiKeys: true
   },
   secrets: {
@@ -74,7 +73,6 @@ const context = {
   },
   document: {
     querySelector(selector) {
-      if (selector === ".notification-card") return feishuCard;
       if (selector === 'input[name="feishu-mode"]:checked') return appRadio.checked ? appRadio : webhookRadio;
       if (selector.includes('input[name="feishu-mode"][value="app"]')) return appRadio;
       if (selector.includes('input[name="feishu-mode"][value="webhook"]')) return webhookRadio;
@@ -88,7 +86,9 @@ const context = {
   },
   URL,
   Promise,
-  console
+  console,
+  setInterval: () => 1,
+  clearInterval: () => {}
 };
 
 vm.createContext(context);
@@ -105,6 +105,7 @@ vm.runInContext(
   assert.doesNotMatch(optionsHtml, /common-capabilities\/message-card\/getting-started\/send-message-cards-with-a-custom-bot/);
   assert.match(optionsHtml, />获取 DeepSeek API Key ↗<\/a>/);
   assert.match(optionsHtml, />获取百炼 API Key ↗<\/a>/);
+  assert.doesNotMatch(optionsHtml, /feishu-enabled|完成后自动推送/);
 
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
@@ -121,6 +122,15 @@ vm.runInContext(
   );
   assert.equal(JSON.stringify(permissions), JSON.stringify([{ origins: ["https://open.feishu.cn/*"] }]));
   assert.equal(elements["#feishu-test-status"].dataset.state, "ok");
+
+  await elements["#settings-form"].listeners.submit({ preventDefault() {} });
+  const saveMessage = messages.find((message) => message.type === "XHS_AI_SAVE_CONFIG");
+  assert.ok(saveMessage);
+  assert.equal("enabled" in saveMessage.config.feishu, false);
+  assert.equal(
+    JSON.stringify(permissions[1].origins),
+    JSON.stringify(["https://text.example.com/*", "https://vision.example.com/*", "https://open.feishu.cn/*"])
+  );
 
   process.stdout.write("options settings and Feishu test routing tests passed\n");
 })().catch((error) => {

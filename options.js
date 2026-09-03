@@ -5,7 +5,6 @@ const fields = {
   visionBaseUrl: document.querySelector("#vision-base-url"),
   visionModel: document.querySelector("#vision-model"),
   visionKey: document.querySelector("#vision-key"),
-  feishuEnabled: document.querySelector("#feishu-enabled"),
   feishuWebhookUrl: document.querySelector("#feishu-webhook-url"),
   feishuWebhookSecret: document.querySelector("#feishu-webhook-secret"),
   feishuAppId: document.querySelector("#feishu-app-id"),
@@ -19,7 +18,6 @@ const saveButton = document.querySelector("#save-button");
 const saveStatus = document.querySelector("#save-status");
 const clearKeysButton = document.querySelector("#clear-keys-button");
 const storageModeHint = document.querySelector("#storage-mode-hint");
-const feishuCard = document.querySelector(".notification-card");
 const feishuWebhookFields = document.querySelector("#feishu-webhook-fields");
 const feishuAppFields = document.querySelector("#feishu-app-fields");
 const feishuTestButton = document.querySelector("#feishu-test-button");
@@ -41,7 +39,6 @@ function formValue() {
         model: fields.visionModel.value.trim()
       },
       feishu: {
-        enabled: fields.feishuEnabled.checked,
         mode: selectedFeishuMode(),
         appId: fields.feishuAppId.value.trim(),
         recipientId: fields.feishuRecipientId.value.trim()
@@ -58,6 +55,17 @@ function formValue() {
       feishuAppSecret: fields.feishuAppSecret.value.trim()
     }
   };
+}
+
+function hasFeishuSettings(values) {
+  if (values.config.feishu.mode === "app") {
+    return Boolean(
+      values.config.feishu.appId ||
+      values.secrets.feishuAppSecret ||
+      values.config.feishu.recipientId
+    );
+  }
+  return Boolean(values.secrets.feishuWebhookUrl);
 }
 
 function permissionPattern(baseUrl) {
@@ -124,7 +132,6 @@ function updateFeishuUi() {
   const mode = selectedFeishuMode();
   feishuWebhookFields.hidden = mode !== "webhook";
   feishuAppFields.hidden = mode !== "app";
-  feishuCard.dataset.enabled = fields.feishuEnabled.checked ? "true" : "false";
 }
 
 async function restoreSettings() {
@@ -134,7 +141,6 @@ async function restoreSettings() {
   fields.textModel.value = response.config.text.model;
   fields.visionBaseUrl.value = response.config.vision.baseUrl;
   fields.visionModel.value = response.config.vision.model;
-  fields.feishuEnabled.checked = response.config.feishu?.enabled === true;
   fields.feishuAppId.value = response.config.feishu?.appId || "";
   fields.feishuRecipientId.value = response.config.feishu?.recipientId || response.config.feishu?.recipientOpenId || "";
   const mode = response.config.feishu?.mode === "app" ? "app" : "webhook";
@@ -158,7 +164,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const values = formValue();
     const permissionUrls = [values.config.text.baseUrl, values.config.vision.baseUrl];
-    if (values.config.feishu.enabled) permissionUrls.push("https://open.feishu.cn");
+    if (hasFeishuSettings(values)) permissionUrls.push("https://open.feishu.cn");
     await ensureApiPermissions(permissionUrls);
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SAVE_CONFIG", ...values });
     if (!response?.ok) throw new Error(response?.error || "保存失败。");
@@ -175,7 +181,6 @@ form.addEventListener("submit", async (event) => {
 });
 
 fields.rememberKeys.addEventListener("change", updateStorageModeHint);
-fields.feishuEnabled.addEventListener("change", updateFeishuUi);
 document.querySelectorAll('input[name="feishu-mode"]').forEach((input) => {
   input.addEventListener("change", updateFeishuUi);
 });

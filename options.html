@@ -91,18 +91,9 @@
           <div class="card-heading">
             <p class="eyebrow">FEISHU DELIVERY</p>
             <h2 id="feishu-title">飞书自动推送 <span class="recommendation">可选</span></h2>
-            <p>每次概括完成后发送一条纯文本消息。推送失败不会影响结果生成。</p>
+            <p>填写当前方式的推送配置后，每次概括（含重新生成）完成都会发送一条纯文本消息；留空则不推送。</p>
           </div>
           <div class="notification-settings">
-            <label class="remember-option notification-switch">
-              <input id="feishu-enabled" class="remember-input" type="checkbox">
-              <span class="remember-toggle" aria-hidden="true"></span>
-              <span class="mode-copy">
-                <strong>完成后自动推送</strong>
-                <small>重新生成概括时也会再次推送。</small>
-              </span>
-            </label>
-
             <div id="feishu-config" class="feishu-config" aria-label="飞书推送配置">
               <div class="delivery-methods" role="radiogroup" aria-label="推送方式">
                 <label class="method-option">

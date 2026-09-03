@@ -220,7 +220,7 @@ const payload = {
   assert.equal(customConfig.text.model, "custom-text");
   assert.equal(customConfig.vision.baseUrl, "https://vision.example.com/openai/v1");
   assert.equal(customConfig.vision.model, "custom-vision");
-  assert.equal(customConfig.feishu.enabled, false);
+  assert.equal("enabled" in customConfig.feishu, false);
   assert.equal(customConfig.feishu.mode, "webhook");
 
   await context.saveAiSettings(
@@ -246,8 +246,11 @@ const payload = {
 
   const webhookConfig = context.XhsAi.normalizeConfig({
     ...customConfig,
-    feishu: { enabled: true, mode: "webhook" }
+    feishu: { enabled: false, mode: "webhook" }
   });
+  assert.equal("enabled" in webhookConfig.feishu, false);
+  assert.equal(context.hasFeishuSettings(webhookConfig, {}), false);
+  assert.equal(await context.pushFeishuNotification("测试概括", webhookConfig, {}), null);
   let webhookRequest = null;
   context.fetch = async (url, options) => {
     webhookRequest = { url, options, body: JSON.parse(options.body) };
@@ -271,7 +274,6 @@ const payload = {
   const appConfig = context.XhsAi.normalizeConfig({
     ...customConfig,
     feishu: {
-      enabled: true,
       mode: "app",
       appId: "cli_test",
       recipientId: "user@example.com"

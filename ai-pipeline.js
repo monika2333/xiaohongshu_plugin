@@ -17,7 +17,6 @@
       model: "qwen3-vl-plus"
     },
     feishu: {
-      enabled: false,
       mode: "webhook",
       appId: "",
       recipientId: ""
@@ -161,7 +160,6 @@
         model: cleanText(raw.vision?.model || DEFAULT_CONFIG.vision.model, 120)
       },
       feishu: {
-        enabled: raw.feishu?.enabled === true,
         mode: raw.feishu?.mode === "app" ? "app" : "webhook",
         appId: cleanText(raw.feishu?.appId, 160),
         recipientId: cleanText(raw.feishu?.recipientId || raw.feishu?.recipientOpenId, 160)
@@ -188,10 +186,6 @@
     validateHttpsUrl(config.vision.baseUrl, "图片模型 API 地址");
     if (!config.text.model) throw new Error("请填写文字模型名称。");
     if (!config.vision.model) throw new Error("请填写图片模型名称。");
-    if (config.feishu.enabled && config.feishu.mode === "app") {
-      if (!config.feishu.appId) throw new Error("请填写飞书自建应用的 App ID。");
-      if (!config.feishu.recipientId) throw new Error("请填写接收人的飞书邮箱或 Open ID。");
-    }
     return config;
   }
 
