@@ -642,6 +642,30 @@ const payload = {
   assert.equal(mergeDoneWorkflow.result, null);
   assert.match(mergeDoneWorkflow.progress.detail, /3 条一级评论/);
 
+  // —— 单条视图：截图识别后直接概括 ——
+  await context.clearMergeBasket();
+  const recognized = await context.recognizeScreenshots({
+    images: ["data:image/png;base64,QUJD"],
+    sourceUrl: "https://xhslink.cn/o/recognize-test"
+  });
+  assert.equal(recognized.ok, true);
+  assert.equal(recognized.payload.source.origin, "user_screenshot");
+  assert.ok(String(recognized.payload.source.screenshotId).length > 0);
+  assert.equal((await context.listMergeBasket()).basket.length, 0);
+
+  const shotSingle = await context.summarizePayload(recognized.payload, false);
+  assert.equal(shotSingle.ok, true);
+  assert.match(shotSingle.result.text, /截至目前，该帖文获1200次点赞、233条评论。/);
+  assert.match(shotSingle.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/recognize-test）$/);
+
+  const renderedShotSingle = context.XhsAi.renderSummary({
+    headline: "据截图反映某事件",
+    eventSummary: "截图显示有账号发帖反映某事件。",
+    opinionPoints: []
+  }, screenshotPayload);
+  assert.match(renderedShotSingle, /截至目前，该帖文获55次点赞、998条评论。/);
+  assert.match(renderedShotSingle, /（原帖已删除，内容据用户上传截图整理）$/);
+
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {
   console.error(error);

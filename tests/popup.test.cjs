@@ -43,7 +43,14 @@ const selectors = [
   "#merge-list",
   "#merge-summarize-button",
   "#merge-summarize-label",
-  "#merge-clear-button"
+  "#merge-clear-button",
+  "#tab-single",
+  "#tab-merge",
+  "#view-single",
+  "#view-merge",
+  "#shot-single-upload",
+  "#shot-single-input",
+  "#shot-single-url"
 ];
 const elements = Object.fromEntries(selectors.map((selector) => [selector, createElement()]));
 const pageUrl = "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token";
@@ -236,6 +243,70 @@ vm.runInContext(source, context, { filename: "popup.js" });
   runtimeCalls.length = 0;
   await elements["#regenerate-button"].listeners.click();
   assert.ok(runtimeCalls.includes("XHS_AI_MERGE_SUMMARIZE"));
+
+  // —— 视图切换与单条截图概括 ——
+  await elements["#tab-merge"].listeners.click();
+  assert.equal(elements["#tab-merge"].dataset.active, "true");
+  assert.equal(elements["#tab-single"].dataset.active, "false");
+  assert.equal(elements["#view-single"].hidden, true);
+  assert.equal(elements["#view-merge"].hidden, false);
+  await elements["#tab-single"].listeners.click();
+  assert.equal(elements["#view-single"].hidden, false);
+  assert.equal(elements["#view-merge"].hidden, true);
+
+  runtimeCalls.length = 0;
+  context.chrome.runtime.sendMessage = async (message) => {
+    runtimeCalls.push(message);
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") {
+      return {
+        ok: true,
+        payload: {
+          source: { platform: "xiaohongshu", noteId: null, url: "https://xhslink.cn/o/abc", origin: "user_screenshot" },
+          note: { title: "截图帖文", author: "截图作者" },
+          commentExport: { extractedTopLevelCount: 2 },
+          media: { images: [] }
+        },
+        warnings: ["发帖时间为相对表述（原文“3天前”），截图拍摄时间未知，无法换算为日期。"]
+      };
+    }
+    if (message.type === "XHS_AI_SUMMARIZE") {
+      assert.equal(message.payload.source.origin, "user_screenshot");
+      return {
+        ok: true,
+        result: {
+          text: "★ 截图帖文事件\n据截图整理。（小红书 https://xhslink.cn/o/abc）",
+          createdAt: Date.now(),
+          evidence: { topLevelComments: 2, visibleReplies: 0, imagesFound: 0, imagesAnalyzed: 0, textModel: "deepseek-v4-flash" },
+          notification: null
+        }
+      };
+    }
+    return { ok: true };
+  };
+  context.FileReader = class {
+    readAsDataURL(file) {
+      this.result = file.dataUrl;
+      this.onload();
+    }
+  };
+  context.Image = class {
+    set src(value) {
+      this.naturalWidth = 100;
+      this.naturalHeight = 100;
+      this.onload();
+    }
+  };
+  elements["#shot-single-url"].value = " https://xhslink.cn/o/abc ";
+  elements["#shot-single-input"].files = [{ name: "shot.png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  await elements["#shot-single-input"].listeners.change();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE"));
+  assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SUMMARIZE"));
+  assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  assert.match(elements["#result-text"].value, /截图帖文事件/);
+  assert.equal(elements["#download-button"].hidden, false);
+  assert.equal(elements["#shot-single-url"].value, "");
 
   process.stdout.write("popup workflow restoration tests passed\n");
 })().catch((error) => {

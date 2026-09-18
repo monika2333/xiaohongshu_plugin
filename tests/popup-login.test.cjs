@@ -43,7 +43,14 @@ const selectors = [
   "#merge-list",
   "#merge-summarize-button",
   "#merge-summarize-label",
-  "#merge-clear-button"
+  "#merge-clear-button",
+  "#tab-single",
+  "#tab-merge",
+  "#view-single",
+  "#view-merge",
+  "#shot-single-upload",
+  "#shot-single-input",
+  "#shot-single-url"
 ];
 const elements = Object.fromEntries(selectors.map((selector) => [selector, createElement()]));
 const pageUrl = "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token";

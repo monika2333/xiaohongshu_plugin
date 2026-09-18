@@ -600,15 +600,20 @@
     else if (likes) engagement = `截至目前，该帖文获${likes}次点赞。`;
     else if (comments) engagement = `截至目前，该帖文有${comments}条评论。`;
 
-    const sourceUrl = originalPageUrl(payload);
+    const sourceUrl = cleanText(payload?.source?.url);
     const publishedDate = resolvePublishedDate(payload);
-    const eventBody = withoutLeadingPublishDate(cleanText(structured.eventSummary).split(sourceUrl).join(""));
+    let eventBody = cleanText(structured.eventSummary);
+    if (sourceUrl) eventBody = eventBody.split(sourceUrl).join("");
+    eventBody = withoutLeadingPublishDate(eventBody);
     const eventSummary = publishedDate?.display ? `${publishedDate.display}，${eventBody}` : eventBody;
     const opinionPoints = (structured.opinionPoints || [])
-      .map((item) => withoutTrailingPunctuation(cleanText(item).split(sourceUrl).join("")))
+      .map((item) => withoutTrailingPunctuation(sourceUrl ? cleanText(item).split(sourceUrl).join("") : cleanText(item)))
       .filter(Boolean);
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
-    const paragraph = `${sentence(eventSummary)}${engagement}${opinions}（小红书 ${sourceUrl}）`;
+    const sourceSuffix = sourceUrl
+      ? `（小红书 ${sourceUrl}）`
+      : "（原帖已删除，内容据用户上传截图整理）";
+    const paragraph = `${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${paragraph}`;
   }
 

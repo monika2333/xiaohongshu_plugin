@@ -26,7 +26,14 @@ const elements = {
   mergeList: document.querySelector("#merge-list"),
   mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
-  mergeClearButton: document.querySelector("#merge-clear-button")
+  mergeClearButton: document.querySelector("#merge-clear-button"),
+  tabSingle: document.querySelector("#tab-single"),
+  tabMerge: document.querySelector("#tab-merge"),
+  viewSingle: document.querySelector("#view-single"),
+  viewMerge: document.querySelector("#view-merge"),
+  shotSingleUpload: document.querySelector("#shot-single-upload"),
+  shotSingleInput: document.querySelector("#shot-single-input"),
+  shotSingleUrl: document.querySelector("#shot-single-url")
 };
 
 let currentCapture = null;
@@ -34,6 +41,29 @@ let isWorking = false;
 let currentPageContext = null;
 let basketItems = [];
 let lastResultMode = "single";
+let currentView = "single";
+
+function switchView(view) {
+  currentView = view === "merge" ? "merge" : "single";
+  elements.tabSingle.dataset.active = currentView === "single" ? "true" : "false";
+  elements.tabMerge.dataset.active = currentView === "merge" ? "true" : "false";
+  elements.viewSingle.hidden = currentView !== "single";
+  elements.viewMerge.hidden = currentView !== "merge";
+  try {
+    void chrome.storage?.local?.set?.({ xhsPopupView: currentView })?.catch?.(() => {});
+  } catch {
+    // storage 不可用时仅影响视图记忆
+  }
+}
+
+async function restoreStoredView() {
+  try {
+    const stored = await chrome.storage?.local?.get?.("xhsPopupView");
+    if (stored?.xhsPopupView) switchView(stored.xhsPopupView);
+  } catch {
+    // 保持默认视图
+  }
+}
 
 function setStatus({ state = "idle", title, detail, percent = 0, count = null }) {
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -345,8 +375,57 @@ async function downscaleDataUrl(dataUrl, maxEdge = 1600) {
   return canvas.toDataURL("image/jpeg", 0.9);
 }
 
+async function addScreenshotImagesToBasket(images, sourceUrl) {
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SCREENSHOT_ADD",
+    images,
+    sourceUrl
+  });
+  if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
+  basketItems = response.basket || [];
+  renderBasket();
+  const warningNote = response.warnings?.length
+    ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
+    : "";
+  setStatus({
+    state: "done",
+    title: "截图已识别并加入清单",
+    detail: `当前清单共 ${basketItems.length} 条帖文${warningNote}。`,
+    percent: 100
+  });
+  elements.screenshotUrl.value = "";
+}
+
+async function summarizeScreenshotImages(images, sourceUrl) {
+  const recognized = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SCREENSHOT_RECOGNIZE",
+    images,
+    sourceUrl
+  });
+  if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
+  setStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SUMMARIZE",
+    payload: recognized.payload,
+    force: false
+  });
+  if (!response?.ok) throw new Error(response?.error || "概括未完成。");
+  showResult(response.result, recognized.payload);
+  const warningNote = recognized.warnings?.length
+    ? `；${recognized.warnings.length} 项信息未能完全识别（如时间、互动数）`
+    : "";
+  setStatus({
+    state: "done",
+    title: "截图概括完成",
+    detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + warningNote,
+    percent: 100
+  });
+  elements.shotSingleUrl.value = "";
+}
+
 async function uploadScreenshots(files) {
   if (isWorking || !files?.length) return;
+  const sourceUrlInput = currentView === "merge" ? elements.screenshotUrl : elements.shotSingleUrl;
   setWorking(true);
   setStatus({ state: "working", title: "正在识别截图", detail: `共 ${files.length} 张截图，正在提取帖文内容…`, percent: 15 });
   try {
@@ -355,28 +434,16 @@ async function uploadScreenshots(files) {
       if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB，请压缩后重试。`);
       images.push(await downscaleDataUrl(await readImageFile(file)));
     }
-    const response = await chrome.runtime.sendMessage({
-      type: "XHS_AI_SCREENSHOT_ADD",
-      images,
-      sourceUrl: elements.screenshotUrl.value.trim()
-    });
-    if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
-    basketItems = response.basket || [];
-    renderBasket();
-    const warningNote = response.warnings?.length
-      ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
-      : "";
-    setStatus({
-      state: "done",
-      title: "截图已识别并加入清单",
-      detail: `当前清单共 ${basketItems.length} 条帖文${warningNote}。`,
-      percent: 100
-    });
-    elements.screenshotUrl.value = "";
+    if (currentView === "merge") {
+      await addScreenshotImagesToBasket(images, sourceUrlInput.value.trim());
+    } else {
+      await summarizeScreenshotImages(images, sourceUrlInput.value.trim());
+    }
   } catch (error) {
     setStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
   } finally {
     elements.screenshotInput.value = "";
+    elements.shotSingleInput.value = "";
     setWorking(false);
   }
 }
@@ -422,10 +489,16 @@ chrome.runtime.onMessage.addListener((message) => {
 
 elements.extractButton.addEventListener("click", runFullWorkflow);
 elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
+elements.tabSingle.addEventListener("click", () => switchView("single"));
+elements.tabMerge.addEventListener("click", () => switchView("merge"));
 elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
 elements.mergeUploadButton.addEventListener("click", () => elements.screenshotInput.click());
+elements.shotSingleUpload.addEventListener("click", () => elements.shotSingleInput.click());
 elements.screenshotInput.addEventListener("change", () => {
   uploadScreenshots(Array.from(elements.screenshotInput.files || []));
+});
+elements.shotSingleInput.addEventListener("change", () => {
+  uploadScreenshots(Array.from(elements.shotSingleInput.files || []));
 });
 elements.mergeSummarizeButton.addEventListener("click", () => runMergeSummarize(false));
 elements.mergeClearButton.addEventListener("click", clearBasket);
@@ -518,4 +591,6 @@ async function restoreCurrentWorkflow() {
 }
 
 restoreCurrentWorkflow();
+switchView("single");
+restoreStoredView();
 refreshBasket();

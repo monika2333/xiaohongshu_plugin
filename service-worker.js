@@ -29,6 +29,7 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_MERGE_REMOVE",
   "XHS_AI_MERGE_CLEAR",
   "XHS_AI_SCREENSHOT_ADD",
+  "XHS_AI_SCREENSHOT_RECOGNIZE",
   "XHS_AI_MERGE_SUMMARIZE"
 ]);
 const CONTENT_SCRIPT_MESSAGES = new Set([
@@ -579,7 +580,8 @@ async function prepareVisionPayload(message, sender) {
 }
 
 async function summarizePayload(payload, force, progressListener = emitAiProgress, preparedVision = null) {
-  if (!payload?.source?.noteId || !payload?.commentExport || !payload?.media) {
+  const isScreenshot = payload?.source?.origin === "user_screenshot";
+  if (!payload?.commentExport || !payload?.media || (!payload?.source?.noteId && !isScreenshot)) {
     throw new Error("页面采集数据不完整，请重新打开帖文后再试。");
   }
   const [config, secrets, cacheRecord] = await Promise.all([
@@ -786,7 +788,7 @@ function validateScreenshotSourceUrl(value) {
   return parsed.href;
 }
 
-async function addScreenshotToBasket(message) {
+async function recognizeScreenshots(message) {
   const images = (Array.isArray(message?.images) ? message.images : [])
     .filter((item) => typeof item === "string" && item.startsWith("data:image/"));
   if (!images.length) throw new Error("请先选择要识别的帖文截图。");
@@ -804,8 +806,13 @@ async function addScreenshotToBasket(message) {
     sourceUrl,
     screenshotId: crypto.randomUUID?.() || `shot-${Date.now()}-${Math.random().toString(16).slice(2)}`
   });
-  const added = await addToMergeBasket(payload);
-  return { ...added, warnings: payload.uncertainties || [] };
+  return { ok: true, payload, warnings: payload.uncertainties || [] };
+}
+
+async function addScreenshotToBasket(message) {
+  const recognized = await recognizeScreenshots(message);
+  const added = await addToMergeBasket(recognized.payload);
+  return { ...added, warnings: recognized.warnings };
 }
 
 async function summarizeMergeBasket(message) {
@@ -926,6 +933,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_SCREENSHOT_ADD":
       task = addScreenshotToBasket(message);
+      break;
+    case "XHS_AI_SCREENSHOT_RECOGNIZE":
+      task = recognizeScreenshots(message);
       break;
     case "XHS_AI_MERGE_SUMMARIZE":
       task = summarizeMergeBasket(message);
