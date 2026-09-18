@@ -9,7 +9,7 @@
     text: {
       provider: "openai_compatible",
       baseUrl: "https://api.deepseek.com",
-      model: "deepseek-v4-flash"
+      model: "deepseek-flash"
     },
     vision: {
       provider: "openai_compatible",
