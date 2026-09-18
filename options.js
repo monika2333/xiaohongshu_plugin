@@ -43,9 +43,7 @@ function formValue() {
         appId: fields.feishuAppId.value.trim(),
         recipientId: fields.feishuRecipientId.value.trim()
       },
-      rememberApiKeys: fields.rememberKeys.checked,
-      includeVisibleReplies: true,
-      commentLimit: 50
+      rememberApiKeys: fields.rememberKeys.checked
     },
     secrets: {
       textApiKey: fields.textKey.value.trim(),

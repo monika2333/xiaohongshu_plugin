@@ -35,9 +35,6 @@ const selectors = [
   "#evidence-summary",
   "#copy-button",
   "#regenerate-button",
-  "#download-button",
-  "#download-images",
-  ".download-option",
   "#merge-add-button",
   "#merge-upload-button",
   "#screenshot-input",
@@ -239,8 +236,6 @@ vm.runInContext(source, context, { filename: "popup.js" });
   assert.equal(elements["#status-title"].textContent, "合并概括完成");
   assert.match(elements["#result-text"].value, /合并概括测试/);
   assert.match(elements["#evidence-summary"].textContent, /2 条帖文/);
-  assert.equal(elements["#download-button"].hidden, true);
-  assert.equal(elements[".download-option"].hidden, true);
 
   runtimeCalls.length = 0;
   await elements["#regenerate-button"].listeners.click();
@@ -307,7 +302,6 @@ vm.runInContext(source, context, { filename: "popup.js" });
   assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SUMMARIZE"));
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
   assert.match(elements["#result-text"].value, /截图帖文事件/);
-  assert.equal(elements["#download-button"].hidden, false);
   assert.equal(elements["#shot-single-url"].value, "");
 
   process.stdout.write("popup workflow restoration tests passed\n");

@@ -407,7 +407,7 @@
         scope: `first_${options.limit}_top_level_in_api_order`,
         requestedTopLevelCount: options.limit,
         extractedTopLevelCount: commentResult.comments.length,
-        includesOnlyAlreadyVisibleReplies: options.includeVisibleReplies,
+        includesOnlyAlreadyVisibleReplies: true,
         visibleReplyCount: commentResult.comments.reduce((sum, item) => sum + item.visibleReplies.length, 0),
         isCompleteCommentExport: false,
         stopReason: commentResult.reason,
@@ -431,9 +431,7 @@
 
   async function runCapture(rawOptions, onVisionSeed = null) {
     const options = {
-      limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT)),
-      downloadImages: rawOptions?.downloadImages !== false,
-      includeVisibleReplies: rawOptions?.includeVisibleReplies !== false
+      limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT))
     };
 
     await sendProgress("正在读取帖文", "通过微博接口获取正文、互动数和媒体资源", 0);

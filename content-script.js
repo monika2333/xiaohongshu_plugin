@@ -477,16 +477,14 @@
     };
   }
 
-  function collectTopLevelComments(root, limit, includeVisibleReplies) {
+  function collectTopLevelComments(root, limit) {
     const parents = Array.from(root.querySelectorAll(".parent-comment"));
     return parents.slice(0, limit).map((parent) => {
       const topItem = parent.querySelector(":scope > .comment-item");
       if (!topItem) return null;
       const parsed = parseCommentItem(topItem);
-      parsed.visibleReplies = includeVisibleReplies
-        ? Array.from(parent.querySelectorAll(".reply-container .comment-item-sub"))
-            .map((reply) => parseCommentItem(reply, "visible_reply", parsed.id))
-        : [];
+      parsed.visibleReplies = Array.from(parent.querySelectorAll(".reply-container .comment-item-sub"))
+        .map((reply) => parseCommentItem(reply, "visible_reply", parsed.id));
       return parsed;
     }).filter(Boolean);
   }
@@ -555,7 +553,7 @@
     );
     const displayedCommentRaw = textOf(root, ".comments-container .total") ||
       textOf(root, ".chat-wrapper .count");
-    const comments = collectTopLevelComments(root, options.limit, options.includeVisibleReplies);
+    const comments = collectTopLevelComments(root, options.limit);
     const frameImages = collectNoteMedia(root, videoEvidence);
 
     return {
@@ -592,7 +590,7 @@
         scope: `first_${options.limit}_top_level_in_current_page_order`,
         requestedTopLevelCount: options.limit,
         extractedTopLevelCount: comments.length,
-        includesOnlyAlreadyVisibleReplies: options.includeVisibleReplies,
+        includesOnlyAlreadyVisibleReplies: true,
         visibleReplyCount: comments.reduce((sum, item) => sum + item.visibleReplies.length, 0),
         isCompleteCommentExport: false,
         stopReason: loadingResult.reason,
@@ -616,9 +614,7 @@
 
   async function runCapture(rawOptions, onVisionSeed = null) {
     const options = {
-      limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT)),
-      downloadImages: rawOptions?.downloadImages !== false,
-      includeVisibleReplies: rawOptions?.includeVisibleReplies !== false
+      limit: Math.max(1, Math.min(50, Number(rawOptions?.limit) || DEFAULT_LIMIT))
     };
 
     const root = getDetailRoot();

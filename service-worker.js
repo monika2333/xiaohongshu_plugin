@@ -4,7 +4,6 @@ const CONFIG_KEY = "xhsAiConfig";
 const SECRETS_KEY = "xhsAiSecrets";
 const PERSISTENT_SECRETS_KEY = "xhsAiPersistentSecrets";
 const CACHE_KEY = "xhsAiCacheV1";
-const LAST_CAPTURE_KEY = "xhsAiLastCapture";
 const WORKFLOW_STATES_KEY = "xhsAiWorkflowStatesV1";
 const MERGE_BASKET_KEY = "xhsAiMergeBasketV1";
 const MAX_CACHE_ENTRIES = 16;
@@ -21,7 +20,6 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_TEST_FEISHU",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
-  "XHS_AI_DOWNLOAD_LAST",
   "XHS_AI_MERGE_ADD",
   "XHS_AI_MERGE_LIST",
   "XHS_AI_MERGE_REMOVE",
@@ -172,196 +170,6 @@ async function recordMergeCaptureDone(message, sender) {
       percent: 100
     }
   });
-}
-
-function sanitizeFilename(value, fallback = "untitled") {
-  const sanitized = cleanText(value)
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
-    .replace(/[. ]+$/g, "")
-    .slice(0, 64);
-  return sanitized || fallback;
-}
-
-function dataUrl(content, mimeType) {
-  return `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
-}
-
-// 视频截帧以 dataUrl 形式存放，按其 MIME 决定下载扩展名；网页图片仍是 webp。
-function mediaFileExtension(image) {
-  const match = /^data:image\/([a-z0-9.+-]+)/i.exec(String(image?.dataUrl || ""));
-  const mime = match?.[1]?.toLowerCase();
-  if (mime === "jpeg") return "jpg";
-  return mime || "webp";
-}
-
-function csvCell(value) {
-  const text = value == null ? "" : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
-}
-
-function flattenComments(commentExport) {
-  const rows = [];
-  for (const comment of commentExport.comments || []) {
-    rows.push(comment);
-    rows.push(...(comment.visibleReplies || []));
-  }
-  return rows;
-}
-
-function commentsToCsv(payload) {
-  const headers = [
-    "kind",
-    "id",
-    "parent_comment_id",
-    "author",
-    "user_id",
-    "content",
-    "published_display",
-    "location",
-    "likes_raw",
-    "likes_value",
-    "displayed_reply_count",
-    "is_author",
-    "is_pinned"
-  ];
-  const rows = flattenComments(payload.commentExport).map((comment) => [
-    comment.kind,
-    comment.id,
-    comment.parentCommentId,
-    comment.author,
-    comment.userId,
-    comment.content,
-    comment.publishedDisplay,
-    comment.location,
-    comment.likes?.raw,
-    comment.likes?.value,
-    comment.displayedReplyCount,
-    comment.isAuthor,
-    comment.isPinned
-  ]);
-
-  return `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
-}
-
-function payloadToMarkdown(payload) {
-  const { note, interactions, commentExport, media, source } = payload;
-  const lines = [
-    `# ${note.title || "无标题帖文"}`,
-    "",
-    `- 作者：${note.author || "未知"}`,
-    `- 类型：${media.video ? "视频帖" : "图文帖"}`,
-    `- 页面日期：${note.publishedDisplay || "未显示"}`,
-    `- 地点：${note.location || "未显示"}`,
-    `- 点赞：${interactions.likes.raw || "未显示"}`,
-    `- 收藏：${interactions.collects.raw || "未显示"}`,
-    `- 评论：${interactions.comments.raw || "未显示"}`,
-    `- 原始链接：${source.url}`,
-    "",
-    "## 正文",
-    "",
-    note.content || "（无正文）",
-    "",
-    "## 评论摘录",
-    "",
-    `> 当前页面顺序前 ${commentExport.extractedTopLevelCount} 条一级评论；不是完整评论导出。`,
-    ""
-  ];
-
-  if (media.video) {
-    lines.push(
-      "## 视频",
-      "",
-      `- 时长：${media.video.durationSec ? `${media.video.durationSec} 秒` : "未知"}`,
-      `- 口播字幕：${media.video.transcript ? "来自平台自动字幕" : "无自动字幕"}`,
-      ""
-    );
-    if (media.video.transcript) {
-      lines.push(media.video.transcript, "");
-    }
-  }
-
-  commentExport.comments.forEach((comment, index) => {
-    lines.push(`### ${index + 1}. ${comment.author || "匿名用户"}`);
-    lines.push("");
-    lines.push(comment.content || "（无文字内容）");
-    lines.push("");
-    lines.push(`_${[comment.publishedDisplay, comment.location, comment.likes?.raw ? `赞 ${comment.likes.raw}` : null].filter(Boolean).join(" · ")}_`);
-    lines.push("");
-
-    for (const reply of comment.visibleReplies || []) {
-      lines.push(`- **回复 · ${reply.author || "匿名用户"}：** ${reply.content || "（无文字内容）"}`);
-    }
-    if ((comment.visibleReplies || []).length) lines.push("");
-  });
-
-  if (media.images.length) {
-    lines.push(media.video ? "## 视频画面" : "## 图片");
-    lines.push("");
-    media.images.forEach((image, index) => {
-      lines.push(`- images/${String(index + 1).padStart(3, "0")}.${mediaFileExtension(image)}`);
-    });
-    lines.push("");
-  }
-
-  lines.push("---");
-  lines.push(`导出时间：${payload.exportedAt}`);
-  return lines.join("\n");
-}
-
-async function startDownload(url, filename) {
-  return chrome.downloads.download({
-    url,
-    filename,
-    conflictAction: "uniquify",
-    saveAs: false
-  });
-}
-
-async function downloadExport(payload, options) {
-  const noteId = sanitizeFilename(payload.source.noteId, "note");
-  const title = sanitizeFilename(payload.note.title, "untitled");
-  // 微博帖文没有独立标题，目录直接用标题或微博 ID；小红书保持“标题_ID”。
-  const rootDir = payload.source?.platform === "weibo" ? "weibo-export" : "xiaohongshu-export";
-  const baseName = payload.source?.platform === "weibo"
-    ? (payload.note.title ? title : noteId)
-    : `${title}_${noteId}`;
-  const folder = `${rootDir}/${baseName}`;
-  const jobs = [
-    startDownload(
-      dataUrl(JSON.stringify(payload, null, 2), "application/json"),
-      `${folder}/note.json`
-    ),
-    startDownload(
-      dataUrl(payloadToMarkdown(payload), "text/markdown"),
-      `${folder}/note.md`
-    ),
-    startDownload(
-      dataUrl(commentsToCsv(payload), "text/csv"),
-      `${folder}/comments.csv`
-    )
-  ];
-
-  let imageCount = 0;
-  if (options?.downloadImages !== false) {
-    payload.media.images.forEach((image, index) => {
-      imageCount += 1;
-      const filename = `${folder}/images/${String(index + 1).padStart(3, "0")}.${mediaFileExtension(image)}`;
-      jobs.push(startDownload(image.dataUrl || image.url, filename));
-    });
-  }
-
-  const results = await Promise.allSettled(jobs);
-  const metadataFailures = results.slice(0, 3).filter((result) => result.status === "rejected");
-  const imageFailures = results.slice(3).filter((result) => result.status === "rejected");
-  if (metadataFailures.length) {
-    throw new Error("浏览器未能完整保存数据文件，请检查下载权限后重试。");
-  }
-
-  return {
-    ok: true,
-    imageCount: imageCount - imageFailures.length,
-    failedDownloadCount: imageFailures.length
-  };
 }
 
 async function getStoredConfig() {
@@ -627,7 +435,6 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
     chrome.storage.session.get(CACHE_KEY)
   ]);
   const cache = cacheRecord[CACHE_KEY] || {};
-  await chrome.storage.session.set({ [LAST_CAPTURE_KEY]: payload });
   const result = await XhsAi.summarize(
     payload,
     config,
@@ -888,16 +695,6 @@ async function summarizeMergeBasket(message) {
   };
 }
 
-async function downloadLastCapture(options, identity = {}) {
-  const [stored, workflow] = await Promise.all([
-    chrome.storage.session.get(LAST_CAPTURE_KEY),
-    getWorkflowState(identity.tabId, identity.pageSessionId, identity.pageUrl)
-  ]);
-  const payload = workflow?.capture || stored[LAST_CAPTURE_KEY];
-  if (!payload) throw new Error("当前会话中没有可下载的原始数据，请先提取一次。");
-  return downloadExport(payload, options);
-}
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (EXTENSION_PAGE_MESSAGES.has(message?.type)) {
     const extensionRoot = chrome.runtime.getURL("");
@@ -968,9 +765,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPopup(message);
-      break;
-    case "XHS_AI_DOWNLOAD_LAST":
-      task = downloadLastCapture(message.options, message);
       break;
     default:
       return undefined;

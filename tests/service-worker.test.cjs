@@ -4,7 +4,6 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { webcrypto } = require("node:crypto");
 
-const downloads = [];
 const storageState = { local: {}, session: {} };
 const accessLevels = [];
 const runtimeMessages = [];
@@ -29,12 +28,6 @@ function storageArea(name) {
 let context;
 context = {
   chrome: {
-    downloads: {
-      download: async (options) => {
-        downloads.push(options);
-        return downloads.length;
-      }
-    },
     sidePanel: {
       setPanelBehavior: async (behavior) => {
         panelBehaviors.push(behavior);
@@ -158,21 +151,6 @@ const payload = {
   assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
   assert.match(context.XhsPrompts.textSystem, /video\.transcript/);
   assert.equal(context.XhsAi.DEFAULT_CONFIG.promptVersion, context.XhsPrompts.version);
-
-  assert.equal(context.sanitizeFilename("测试/帖文"), "测试-帖文");
-  const csv = context.commentsToCsv(payload);
-  assert.match(csv, /"包含,逗号与""引号"""/);
-  assert.match(csv, /visible_reply/);
-
-  const result = await context.downloadExport(payload, { downloadImages: true });
-  assert.equal(result.ok, true);
-  assert.equal(result.imageCount, 1);
-  assert.equal(downloads.length, 4);
-  assert.ok(downloads.some((item) => item.filename.endsWith("note.json")));
-  assert.ok(downloads.some((item) => item.filename.endsWith("note.md")));
-  assert.ok(downloads.some((item) => item.filename.endsWith("comments.csv")));
-  assert.ok(downloads.some((item) => item.filename.endsWith("images/001.webp")));
-  assert.ok(downloads.every((item) => !item.filename.includes("测试/帖文")));
 
   const structured = {
     headline: "高校教师称被移出工作群",

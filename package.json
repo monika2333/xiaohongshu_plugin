@@ -1,6 +1,6 @@
 {
   "name": "xiaohongshu-note-exporter",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "scripts": {
     "check": "node --check popup.js && node --check options.js && node --check main-world.js && node --check content-script.js && node --check weibo-content-script.js && node --check prompts.js && node --check ai-pipeline.js && node --check service-worker.js && node tests/content-script.test.cjs && node tests/weibo-content-script.test.cjs && node tests/video-capture.test.cjs && node tests/service-worker.test.cjs && node tests/popup.test.cjs && node tests/popup-login.test.cjs && node tests/options.test.cjs"

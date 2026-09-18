@@ -340,7 +340,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
     const { send, runtimeMessages } = createEnvironment();
     const response = await send({
       type: "XHS_CAPTURE_AND_SUMMARIZE",
-      options: { limit: 50, includeVisibleReplies: true },
+      options: { limit: 50 },
       payload: null,
       force: false
     });

@@ -4,6 +4,8 @@
   const MAX_IMAGE_COUNT = 18;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
   const VISION_BATCH_SIZE = 3;
+  // 与内容脚本的采集上限一致：进入模型证据的评论条数兜底上限。
+  const COMMENT_LIMIT = 50;
 
   const DEFAULT_CONFIG = Object.freeze({
     text: {
@@ -22,8 +24,6 @@
       recipientId: ""
     },
     rememberApiKeys: true,
-    includeVisibleReplies: true,
-    commentLimit: 50,
     promptVersion: PROMPT_VERSION
   });
 
@@ -185,8 +185,6 @@
         recipientId: cleanText(raw.feishu?.recipientId || raw.feishu?.recipientOpenId, 160)
       },
       rememberApiKeys: raw.rememberApiKeys !== false,
-      includeVisibleReplies: raw.includeVisibleReplies !== false,
-      commentLimit: Math.max(1, Math.min(50, Number(raw.commentLimit) || 50)),
       promptVersion: PROMPT_VERSION
     };
   }
@@ -508,21 +506,18 @@
     return normalizeScreenshotExtraction(parseJsonResponse(raw), dataUrls.length);
   }
 
-  function compactComment(comment, includeVisibleReplies) {
-    const result = {
+  function compactComment(comment) {
+    return {
       content: cleanText(comment.content, 700),
       likes: comment.likes?.value ?? comment.likes?.raw ?? null,
       isAuthor: Boolean(comment.isAuthor),
-      isPinned: Boolean(comment.isPinned)
-    };
-    if (includeVisibleReplies) {
-      result.visibleReplies = (comment.visibleReplies || []).slice(0, 10).map((reply) => ({
+      isPinned: Boolean(comment.isPinned),
+      visibleReplies: (comment.visibleReplies || []).slice(0, 10).map((reply) => ({
         content: cleanText(reply.content, 400),
         likes: reply.likes?.value ?? reply.likes?.raw ?? null,
         isAuthor: Boolean(reply.isAuthor)
-      }));
-    }
-    return result;
+      }))
+    };
   }
 
   function buildEvidence(payload, vision, config) {
@@ -552,8 +547,8 @@
         transcriptSource: cleanText(video.transcriptSource, 60) || null
       } : null,
       comments: (payload.commentExport?.comments || [])
-        .slice(0, config.commentLimit)
-        .map((comment) => compactComment(comment, config.includeVisibleReplies)),
+        .slice(0, COMMENT_LIMIT)
+        .map((comment) => compactComment(comment)),
       imageEvidence: selectVisionEvidence(vision)
     };
   }

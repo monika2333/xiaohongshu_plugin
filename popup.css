@@ -211,9 +211,6 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .evidence-panel { margin-top: 11px; border-top: 1px dashed var(--line); }
 .evidence-panel summary { padding: 10px 0 6px; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; }
 .evidence-panel p { margin-bottom: 7px; color: var(--muted); font-size: 9px; line-height: 1.55; }
-.download-option { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--muted); font-size: 9px; }
-.download-option input { accent-color: var(--red); }
-.download-button { width: 100%; min-height: 34px; color: var(--ink); background: transparent; border: 1px solid var(--line); cursor: pointer; font-size: 10px; }
 
 footer { display: flex; justify-content: space-between; margin-top: 13px; color: var(--muted); font: 8px/1.3 Consolas, monospace; letter-spacing: .03em; }
 

@@ -17,9 +17,6 @@ const elements = {
   evidenceSummary: document.querySelector("#evidence-summary"),
   copyButton: document.querySelector("#copy-button"),
   regenerateButton: document.querySelector("#regenerate-button"),
-  downloadButton: document.querySelector("#download-button"),
-  downloadImages: document.querySelector("#download-images"),
-  downloadOption: document.querySelector(".download-option"),
   mergeAddButton: document.querySelector("#merge-add-button"),
   mergeUploadButton: document.querySelector("#merge-upload-button"),
   screenshotInput: document.querySelector("#screenshot-input"),
@@ -85,7 +82,6 @@ function setWorking(working) {
   isWorking = working;
   elements.extractButton.disabled = working;
   elements.regenerateButton.disabled = working;
-  elements.downloadButton.disabled = working;
   elements.mergeAddButton.disabled = working;
   elements.mergeUploadButton.disabled = working;
   elements.mergeSummarizeButton.disabled = working;
@@ -149,9 +145,6 @@ function showResult(result, capture) {
     `文字模型 ${evidence.textModel || "—"}`,
     notificationLabel
   ].filter(Boolean).join(" · ");
-  const isMerge = lastResultMode === "merge";
-  elements.downloadButton.hidden = isMerge;
-  if (elements.downloadOption) elements.downloadOption.hidden = isMerge;
   elements.resultCard.hidden = false;
 }
 
@@ -196,7 +189,7 @@ async function startPageWorkflow(payload = null, force = false) {
   const page = await prepareCurrentPage();
   const response = await chrome.tabs.sendMessage(page.tabId, {
     type: "XHS_CAPTURE_AND_SUMMARIZE",
-    options: { limit: LIMIT, includeVisibleReplies: true, downloadImages: false },
+    options: { limit: LIMIT },
     payload,
     force
   });
@@ -328,7 +321,7 @@ async function addCurrentPostToBasket() {
     const page = await prepareCurrentPage();
     const response = await chrome.tabs.sendMessage(page.tabId, {
       type: "XHS_CAPTURE_FOR_MERGE",
-      options: { limit: LIMIT, includeVisibleReplies: true, downloadImages: false }
+      options: { limit: LIMIT }
     });
     if (!response?.ok || !response.payload) throw new Error(response?.error || "采集未完成。");
     const added = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_ADD", payload: response.payload });
@@ -572,31 +565,6 @@ elements.regenerateButton.addEventListener("click", async () => {
     setStatus({ state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 });
   } finally {
     setWorking(false);
-  }
-});
-
-elements.downloadButton.addEventListener("click", async () => {
-  elements.downloadButton.disabled = true;
-  elements.downloadButton.textContent = "正在准备下载…";
-  try {
-    const response = await chrome.runtime.sendMessage({
-      type: "XHS_AI_DOWNLOAD_LAST",
-      tabId: currentPageContext?.tabId,
-      pageSessionId: currentPageContext?.pageSessionId,
-      pageUrl: currentPageContext?.pageUrl,
-      options: { downloadImages: elements.downloadImages.checked }
-    });
-    if (!response?.ok) throw new Error(response?.error || "下载失败。");
-    elements.downloadButton.textContent = response.failedDownloadCount
-      ? `已下载，${response.failedDownloadCount} 张图片失败`
-      : "原始数据已下载";
-  } catch (error) {
-    elements.downloadButton.textContent = error?.message || "下载失败";
-  } finally {
-    setTimeout(() => {
-      elements.downloadButton.textContent = "下载 JSON · MD · CSV · 图片";
-      elements.downloadButton.disabled = false;
-    }, 2200);
   }
 });
 
