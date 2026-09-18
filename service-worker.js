@@ -5,7 +5,6 @@ const SECRETS_KEY = "xhsAiSecrets";
 const PERSISTENT_SECRETS_KEY = "xhsAiPersistentSecrets";
 const CACHE_KEY = "xhsAiCacheV1";
 const LAST_CAPTURE_KEY = "xhsAiLastCapture";
-const LAST_RESULT_KEY = "xhsAiLastResult";
 const WORKFLOW_STATES_KEY = "xhsAiWorkflowStatesV1";
 const MERGE_BASKET_KEY = "xhsAiMergeBasketV1";
 const MAX_CACHE_ENTRIES = 16;
@@ -22,7 +21,6 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_TEST_FEISHU",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
-  "XHS_AI_GET_LAST",
   "XHS_AI_DOWNLOAD_LAST",
   "XHS_AI_MERGE_ADD",
   "XHS_AI_MERGE_LIST",
@@ -582,14 +580,6 @@ async function testFeishuSettings(rawConfig, secrets) {
   };
 }
 
-function emitAiProgress(progress) {
-  chrome.runtime.sendMessage({
-    type: "XHS_AI_PROGRESS",
-    title: progress.stage === "vision" ? "正在识别图片与视频画面" : progress.stage === "text" ? "正在撰写概括" : "概括完成",
-    ...progress
-  }).catch(() => {});
-}
-
 async function prepareVisionPayload(message, sender) {
   const tabId = sender?.tab?.id;
   const payload = message.payload;
@@ -626,7 +616,7 @@ async function prepareVisionPayload(message, sender) {
   };
 }
 
-async function summarizePayload(payload, force, progressListener = emitAiProgress, preparedVision = null) {
+async function summarizePayload(payload, force, progressListener = () => {}, preparedVision = null) {
   const isScreenshot = payload?.source?.origin === "user_screenshot";
   if (!payload?.commentExport || !payload?.media || (!payload?.source?.noteId && !isScreenshot)) {
     throw new Error("页面采集数据不完整，请重新打开帖文后再试。");
@@ -659,10 +649,7 @@ async function summarizePayload(payload, force, progressListener = emitAiProgres
     createdAt: Date.now()
   };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
-  await chrome.storage.session.set({
-    [CACHE_KEY]: boundedCache,
-    [LAST_RESULT_KEY]: storedResult
-  });
+  await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
   return { ok: true, result: storedResult };
 }
 
@@ -901,15 +888,6 @@ async function summarizeMergeBasket(message) {
   };
 }
 
-async function getLastSessionData() {
-  const stored = await chrome.storage.session.get([LAST_CAPTURE_KEY, LAST_RESULT_KEY]);
-  return {
-    ok: true,
-    capture: stored[LAST_CAPTURE_KEY] || null,
-    result: stored[LAST_RESULT_KEY] || null
-  };
-}
-
 async function downloadLastCapture(options, identity = {}) {
   const [stored, workflow] = await Promise.all([
     chrome.storage.session.get(LAST_CAPTURE_KEY),
@@ -936,9 +914,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message?.type) {
     case "XHS_EXPORT_PROGRESS":
       task = recordCaptureProgress(message, sender).then(() => ({ ok: true }));
-      break;
-    case "XHS_EXPORT_DOWNLOAD":
-      task = downloadExport(message.payload, message.options);
       break;
     case "XHS_AI_GET_CONFIG":
       task = Promise.all([getStoredConfig(), getStoredSecrets()]).then(([config, secrets]) => ({ ok: true, config, secrets }));
@@ -993,9 +968,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPopup(message);
-      break;
-    case "XHS_AI_GET_LAST":
-      task = getLastSessionData();
       break;
     case "XHS_AI_DOWNLOAD_LAST":
       task = downloadLastCapture(message.options, message);

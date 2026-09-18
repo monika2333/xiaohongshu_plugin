@@ -257,7 +257,7 @@ async function runVideoCapture({
   const response = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("video capture response timed out")), 8000);
     const keepChannelOpen = messageListener(
-      { type: "XHS_CAPTURE_START", options: { limit: 50 } },
+      { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 50 } },
       {},
       (result) => {
         clearTimeout(timeout);

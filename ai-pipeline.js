@@ -587,12 +587,6 @@
     };
   }
 
-  function originalPageUrl(payload) {
-    const url = cleanText(payload?.source?.url);
-    if (!url) throw new Error("页面采集数据缺少完整原始地址，请重新打开帖文后再试。");
-    return url;
-  }
-
   function withoutTrailingPunctuation(value) {
     return cleanText(value).replace(/[。！？；;,.，\s]+$/g, "");
   }
@@ -1000,7 +994,6 @@
     normalizeConfig,
     validateConfig,
     parseJsonResponse,
-    originalPageUrl,
     platformLabel,
     resolvePublishedDate,
     normalizeVisionItem,

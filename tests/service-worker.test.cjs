@@ -185,10 +185,6 @@ const payload = {
   assert.match(rendered, /12次点赞、100条评论/);
   assert.match(rendered, /部分网民质疑相关管理方式；部分网民猜测事件与职称评定有关。/);
   assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
-  assert.equal(
-    context.XhsAi.originalPageUrl(payload),
-    "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed"
-  );
 
   const relativePayload = {
     ...payload,

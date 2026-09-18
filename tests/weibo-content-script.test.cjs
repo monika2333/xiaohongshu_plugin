@@ -179,7 +179,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
   // —— 基础采集：正文、互动数、图片、评论与楼中楼 ——
   {
     const { send, requests } = createEnvironment();
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 50 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 50 } });
     assert.equal(response.ok, true);
 
     const payload = response.payload;
@@ -236,7 +236,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
   // —— limit 截断 + 翻页游标 ——
   {
     const { send, requests } = createEnvironment();
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 2 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 2 } });
     assert.equal(response.ok, true);
     assert.equal(response.payload.commentExport.extractedTopLevelCount, 2);
     assert.equal(response.payload.commentExport.stopReason, "limit_reached");
@@ -252,7 +252,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
       { ok: 1, total_number: 25, max_id: 0, data: [{ ...COMMENTS_PAGE_1.data[0] }] }
     ];
     const { send } = createEnvironment({ commentPages });
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 50 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 50 } });
     assert.equal(response.payload.commentExport.extractedTopLevelCount, 2);
     assert.equal(response.payload.commentExport.stopReason, "page_exhausted");
   }
@@ -264,7 +264,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
       show,
       longText: { ok: 1, data: { longTextContent: LONG_TEXT_CONTENT } }
     });
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 5 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 5 } });
     assert.equal(response.payload.note.content, LONG_TEXT_CONTENT);
     assert.ok(requests.some((url) => url.startsWith("/ajax/statuses/longtext?")));
   }
@@ -273,7 +273,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
   {
     const show = { ...SHOW_BASE, isLongText: true, text_raw: "这是截断的正文…" };
     const { send } = createEnvironment({ show, longText: { ok: 0 } });
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 5 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 5 } });
     assert.equal(response.payload.note.content, "这是截断的正文…");
     assert.ok(response.payload.uncertainties.some((item) => item.includes("长文")));
   }
@@ -298,7 +298,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
     context.document.querySelectorAll = (selector) => (selector === "video" ? [fakeVideo] : []);
     context.document.createElement = (tag) => (tag === "canvas" ? canvas : {});
 
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 5 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 5 } });
     assert.equal(response.payload.note.type, "video");
     assert.equal(response.payload.media.video.durationSec, 62);
     assert.equal(response.payload.media.video.transcript, null);
@@ -328,7 +328,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
       }
     };
     const { send } = createEnvironment({ show });
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 5 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 5 } });
     assert.equal(response.payload.note.content, "转发理由\n// @原博：原始微博内容");
     assert.equal(response.payload.media.images.length, 1);
     assert.equal(response.payload.media.images[0].url, "https://wx1.sinaimg.cn/large/rt-pic.jpg");
@@ -370,7 +370,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
   // —— 帖文不可访问：接口返回 ok:0 时给出可读错误 ——
   {
     const { send } = createEnvironment({ show: { ok: 0 } });
-    const response = await send({ type: "XHS_CAPTURE_START", options: { limit: 5 } });
+    const response = await send({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 5 } });
     assert.equal(response.ok, false);
     assert.match(response.error, /微博博文接口/);
   }

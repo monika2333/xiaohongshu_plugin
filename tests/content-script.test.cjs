@@ -89,7 +89,7 @@ async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("capture response timed out")), 1000);
     const keepChannelOpen = messageListener(
-      { type: "XHS_CAPTURE_START", options: { limit: 50 } },
+      { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 50 } },
       {},
       (response) => {
         clearTimeout(timeout);
