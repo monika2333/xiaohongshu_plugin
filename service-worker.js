@@ -7,8 +7,11 @@ const CACHE_KEY = "xhsAiCacheV1";
 const LAST_CAPTURE_KEY = "xhsAiLastCapture";
 const LAST_RESULT_KEY = "xhsAiLastResult";
 const WORKFLOW_STATES_KEY = "xhsAiWorkflowStatesV1";
+const MERGE_BASKET_KEY = "xhsAiMergeBasketV1";
 const MAX_CACHE_ENTRIES = 16;
 const MAX_WORKFLOW_STATES = 12;
+const MAX_MERGE_ITEMS = 5;
+const MAX_SCREENSHOT_IMAGES = 8;
 const FEISHU_API_ORIGIN = "https://open.feishu.cn";
 const FEISHU_REQUEST_TIMEOUT_MS = 15000;
 const EXTENSION_PAGE_MESSAGES = new Set([
@@ -20,13 +23,20 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
   "XHS_AI_GET_LAST",
-  "XHS_AI_DOWNLOAD_LAST"
+  "XHS_AI_DOWNLOAD_LAST",
+  "XHS_AI_MERGE_ADD",
+  "XHS_AI_MERGE_LIST",
+  "XHS_AI_MERGE_REMOVE",
+  "XHS_AI_MERGE_CLEAR",
+  "XHS_AI_SCREENSHOT_ADD",
+  "XHS_AI_MERGE_SUMMARIZE"
 ]);
 const CONTENT_SCRIPT_MESSAGES = new Set([
   "XHS_EXPORT_PROGRESS",
   "XHS_AI_PREPARE_VISION",
   "XHS_AI_SUMMARIZE_PAGE",
-  "XHS_AI_WORKFLOW_FAILED"
+  "XHS_AI_WORKFLOW_FAILED",
+  "XHS_AI_MERGE_CAPTURE_DONE"
 ]);
 
 let workflowStateWrite = Promise.resolve();
@@ -124,6 +134,26 @@ async function recordWorkflowFailure(message, sender) {
     status: "error",
     error: detail,
     progress: { state: "error", title: "未能完成", detail, percent: 0 }
+  });
+}
+
+// “加入合并清单”只采集不概括，需要显式把该页 workflow 标记为完成，避免重开弹窗时停留在“正在处理”。
+async function recordMergeCaptureDone(message, sender) {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId)) throw new Error("无法识别正在采集的标签页。");
+  return updateWorkflowState(tabId, message.pageSessionId, {
+    pageUrl: message.pageUrl || sender.url,
+    noteId: message.noteId || null,
+    status: "done",
+    result: null,
+    capture: null,
+    error: null,
+    progress: {
+      state: "done",
+      title: "已采集完成",
+      detail: cleanText(message.detail) || "页面证据已采集完成。",
+      percent: 100
+    }
   });
 }
 
@@ -676,6 +706,143 @@ async function getWorkflowForPopup(message) {
   return { ok: true, workflow };
 }
 
+function basketItemSummary(item) {
+  const payload = item?.payload || {};
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: cleanText(payload.note?.title) || "（无标题帖文）",
+    author: cleanText(payload.note?.author) || null,
+    publishedDisplay: cleanText(payload.note?.publishedDisplay) || null,
+    commentCount: payload.commentExport?.extractedTopLevelCount || 0,
+    imageCount: payload.media?.images?.length || 0,
+    hasUrl: Boolean(cleanText(payload.source?.url)),
+    addedAt: item.addedAt
+  };
+}
+
+async function getMergeBasket() {
+  const stored = await chrome.storage.session.get(MERGE_BASKET_KEY);
+  return stored[MERGE_BASKET_KEY] || [];
+}
+
+async function addToMergeBasket(payload) {
+  if (!payload?.note || !payload?.commentExport || !payload?.source) {
+    throw new Error("要加入清单的采集数据不完整，请重新采集后再试。");
+  }
+  const isScreenshot = payload.source.origin === "user_screenshot";
+  if (!isScreenshot && !payload.source.noteId) {
+    throw new Error("采集数据缺少帖文 ID，无法加入清单。");
+  }
+  const id = isScreenshot
+    ? `shot:${payload.source.screenshotId}`
+    : `note:${payload.source.noteId}`;
+
+  const items = await getMergeBasket();
+  const existingIndex = items.findIndex((item) => item.id === id);
+  const item = { id, kind: isScreenshot ? "user_screenshot" : "live_page", addedAt: Date.now(), payload };
+  if (existingIndex >= 0) {
+    items[existingIndex] = item;
+  } else {
+    if (items.length >= MAX_MERGE_ITEMS) {
+      throw new Error(`合并清单最多保留 ${MAX_MERGE_ITEMS} 条帖文，请先移除部分条目。`);
+    }
+    items.push(item);
+  }
+  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
+  return { ok: true, replaced: existingIndex >= 0, basket: items.map(basketItemSummary) };
+}
+
+async function removeFromMergeBasket(message) {
+  const id = cleanText(message?.id);
+  if (!id) throw new Error("缺少要移除的清单条目。");
+  const items = (await getMergeBasket()).filter((item) => item.id !== id);
+  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
+  return { ok: true, basket: items.map(basketItemSummary) };
+}
+
+async function clearMergeBasket() {
+  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: [] });
+  return { ok: true, basket: [] };
+}
+
+async function listMergeBasket() {
+  return { ok: true, basket: (await getMergeBasket()).map(basketItemSummary) };
+}
+
+function validateScreenshotSourceUrl(value) {
+  const sourceUrl = cleanText(value);
+  if (!sourceUrl) return "";
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error("原始链接不是有效网址。");
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:" || !(host.endsWith("xiaohongshu.com") || host === "xhslink.cn" || host.endsWith(".xhslink.cn"))) {
+    throw new Error("原始链接需为小红书帖文地址（xiaohongshu.com 或 xhslink.cn）。");
+  }
+  return parsed.href;
+}
+
+async function addScreenshotToBasket(message) {
+  const images = (Array.isArray(message?.images) ? message.images : [])
+    .filter((item) => typeof item === "string" && item.startsWith("data:image/"));
+  if (!images.length) throw new Error("请先选择要识别的帖文截图。");
+  if (images.length > MAX_SCREENSHOT_IMAGES) {
+    throw new Error(`单次最多识别 ${MAX_SCREENSHOT_IMAGES} 张截图，请分批上传。`);
+  }
+  const sourceUrl = validateScreenshotSourceUrl(message?.sourceUrl);
+
+  const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  const visionApiKey = secrets.visionApiKey || secrets.qwenApiKey;
+  if (!cleanText(visionApiKey)) throw new Error("识别截图需要先配置图片模型 API Key，请打开设置填写。");
+
+  const extraction = await XhsAi.analyzeScreenshots(images, config, visionApiKey);
+  const payload = XhsAi.buildScreenshotPayload(extraction, {
+    sourceUrl,
+    screenshotId: crypto.randomUUID?.() || `shot-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  });
+  const added = await addToMergeBasket(payload);
+  return { ...added, warnings: payload.uncertainties || [] };
+}
+
+async function summarizeMergeBasket(message) {
+  const items = await getMergeBasket();
+  if (!items.length) throw new Error("合并清单是空的，请先加入帖文或上传截图。");
+  const payloads = items.map((item) => item.payload);
+
+  const [config, secrets, cacheRecord] = await Promise.all([
+    getStoredConfig(),
+    getStoredSecrets(),
+    chrome.storage.session.get(CACHE_KEY)
+  ]);
+  const cache = cacheRecord[CACHE_KEY] || {};
+  const onProgress = (progress) => {
+    chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_PROGRESS", progress }).catch(() => {});
+  };
+
+  const result = await XhsAi.summarizeMerged(payloads, config, secrets, cache, onProgress, Boolean(message?.force));
+  const { cache: updatedCache, ...publicResult } = result;
+  if (hasFeishuSettings(config, secrets)) {
+    onProgress({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+  }
+  const notification = await pushFeishuNotification(publicResult.text, config, secrets);
+  const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
+  await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
+  return {
+    ok: true,
+    result: {
+      ...publicResult,
+      notification,
+      merged: true,
+      postCount: payloads.length,
+      createdAt: Date.now()
+    }
+  };
+}
+
 async function getLastSessionData() {
   const stored = await chrome.storage.session.get([LAST_CAPTURE_KEY, LAST_RESULT_KEY]);
   return {
@@ -741,6 +908,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_WORKFLOW_FAILED":
       task = recordWorkflowFailure(message, sender).then(() => ({ ok: true }));
+      break;
+    case "XHS_AI_MERGE_CAPTURE_DONE":
+      task = recordMergeCaptureDone(message, sender).then(() => ({ ok: true }));
+      break;
+    case "XHS_AI_MERGE_ADD":
+      task = addToMergeBasket(message.payload);
+      break;
+    case "XHS_AI_MERGE_LIST":
+      task = listMergeBasket();
+      break;
+    case "XHS_AI_MERGE_REMOVE":
+      task = removeFromMergeBasket(message);
+      break;
+    case "XHS_AI_MERGE_CLEAR":
+      task = clearMergeBasket();
+      break;
+    case "XHS_AI_SCREENSHOT_ADD":
+      task = addScreenshotToBasket(message);
+      break;
+    case "XHS_AI_MERGE_SUMMARIZE":
+      task = summarizeMergeBasket(message);
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPopup(message);

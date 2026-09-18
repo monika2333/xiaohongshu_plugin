@@ -17,12 +17,23 @@ const elements = {
   copyButton: document.querySelector("#copy-button"),
   regenerateButton: document.querySelector("#regenerate-button"),
   downloadButton: document.querySelector("#download-button"),
-  downloadImages: document.querySelector("#download-images")
+  downloadImages: document.querySelector("#download-images"),
+  downloadOption: document.querySelector(".download-option"),
+  mergeAddButton: document.querySelector("#merge-add-button"),
+  mergeUploadButton: document.querySelector("#merge-upload-button"),
+  screenshotInput: document.querySelector("#screenshot-input"),
+  screenshotUrl: document.querySelector("#screenshot-url"),
+  mergeList: document.querySelector("#merge-list"),
+  mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
+  mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
+  mergeClearButton: document.querySelector("#merge-clear-button")
 };
 
 let currentCapture = null;
 let isWorking = false;
 let currentPageContext = null;
+let basketItems = [];
+let lastResultMode = "single";
 
 function setStatus({ state = "idle", title, detail, percent = 0, count = null }) {
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -38,7 +49,16 @@ function setWorking(working) {
   elements.extractButton.disabled = working;
   elements.regenerateButton.disabled = working;
   elements.downloadButton.disabled = working;
+  elements.mergeAddButton.disabled = working;
+  elements.mergeUploadButton.disabled = working;
+  elements.mergeSummarizeButton.disabled = working;
   elements.buttonLabel.textContent = working ? "正在处理…" : "提取并概括";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
+  ));
 }
 
 function isXhsNoteUrl(url) {
@@ -66,7 +86,8 @@ function formatTime(timestamp) {
 }
 
 function showResult(result, capture) {
-  currentCapture = capture || currentCapture;
+  currentCapture = capture || null;
+  lastResultMode = capture ? "single" : "merge";
   elements.resultText.value = result.text;
   elements.resultTime.textContent = formatTime(result.createdAt);
   const evidence = result.evidence || {};
@@ -75,13 +96,18 @@ function showResult(result, capture) {
     : result.notification?.status === "failed"
       ? "飞书推送失败"
       : null;
+  const postNote = evidence.postCount ? `${evidence.postCount} 条帖文` : null;
   elements.evidenceSummary.textContent = [
+    postNote,
     `${evidence.topLevelComments || 0} 条一级评论`,
     `${evidence.visibleReplies || 0} 条已显示回复`,
     `${evidence.imagesAnalyzed || 0} / ${evidence.imagesFound || 0} 张图片完成识别`,
     `文字模型 ${evidence.textModel || "—"}`,
     notificationLabel
   ].filter(Boolean).join(" · ");
+  const isMerge = lastResultMode === "merge";
+  elements.downloadButton.hidden = isMerge;
+  if (elements.downloadOption) elements.downloadOption.hidden = isMerge;
   elements.resultCard.hidden = false;
 }
 
@@ -138,12 +164,23 @@ function applyWorkflowState(workflow) {
   currentCapture = workflow.capture || currentCapture;
   const progress = workflow.progress || {};
   if (workflow.status === "done" && workflow.result) {
+    lastResultMode = "single";
     showResult(workflow.result, currentCapture);
     setWorking(false);
     setStatus({
       state: "done",
       title: progress.title || "概括完成",
       detail: progress.detail || "已按固定格式生成，可直接复制。",
+      percent: 100
+    });
+    return true;
+  }
+  if (workflow.status === "done" && !workflow.result) {
+    setWorking(false);
+    setStatus({
+      state: "done",
+      title: progress.title || "已采集完成",
+      detail: progress.detail || "页面证据采集完成，可回到插件继续操作。",
       percent: 100
     });
     return true;
@@ -187,12 +224,216 @@ async function runFullWorkflow() {
   }
 }
 
+function mergeProgressTitle(stage) {
+  if (stage === "vision") return "正在识别图片";
+  if (stage === "text") return "正在撰写合并概括";
+  if (stage === "notification") return "正在推送飞书";
+  return "正在合并概括";
+}
+
+function renderBasket() {
+  elements.mergeList.innerHTML = basketItems.map((item) => {
+    const isShot = item.kind === "user_screenshot";
+    const label = [item.author || "未知账号", item.title].filter(Boolean).join("：");
+    const meta = `${item.commentCount || 0} 条评论${item.hasUrl ? "" : " · 无链接"}`;
+    return `<li class="merge-item" data-id="${escapeHtml(item.id)}">` +
+      `<span class="merge-badge ${isShot ? "merge-badge-shot" : "merge-badge-page"}">${isShot ? "截图" : "网页"}</span>` +
+      `<span class="merge-item-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
+      `<span class="merge-item-meta">${escapeHtml(meta)}</span>` +
+      `<button class="merge-remove" type="button" title="移除">✕</button>` +
+      "</li>";
+  }).join("");
+  elements.mergeList.hidden = basketItems.length === 0;
+  elements.mergeClearButton.hidden = basketItems.length === 0;
+  elements.mergeSummarizeButton.hidden = basketItems.length === 0;
+  elements.mergeSummarizeLabel.textContent = basketItems.length > 1
+    ? `合并概括（${basketItems.length} 条帖文）`
+    : "概括这条帖文";
+}
+
+async function refreshBasket() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_LIST" });
+    basketItems = response?.ok ? response.basket || [] : [];
+  } catch {
+    basketItems = [];
+  }
+  renderBasket();
+}
+
+async function addCurrentPostToBasket() {
+  if (isWorking) return;
+  setWorking(true);
+  setStatus({ state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 });
+  try {
+    const page = await prepareCurrentPage();
+    const response = await chrome.tabs.sendMessage(page.tabId, {
+      type: "XHS_CAPTURE_FOR_MERGE",
+      options: { limit: LIMIT, includeVisibleReplies: true, downloadImages: false }
+    });
+    if (!response?.ok || !response.payload) throw new Error(response?.error || "采集未完成。");
+    const added = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_ADD", payload: response.payload });
+    if (!added?.ok) throw new Error(added?.error || "加入清单失败。");
+    basketItems = added.basket || [];
+    renderBasket();
+    setStatus({
+      state: "done",
+      title: added.replaced ? "已替换清单中的同一条帖文" : "已加入合并清单",
+      detail: `当前清单共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`,
+      percent: 100
+    });
+  } catch (error) {
+    setStatus({ state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 });
+  } finally {
+    setWorking(false);
+  }
+}
+
+async function removeBasketItem(id) {
+  if (isWorking) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_REMOVE", id });
+    if (!response?.ok) throw new Error(response?.error || "移除失败。");
+    basketItems = response.basket || [];
+    renderBasket();
+  } catch (error) {
+    setStatus({ state: "error", title: "移除失败", detail: error?.message || "发生未知错误。", percent: 0 });
+  }
+}
+
+async function clearBasket() {
+  if (isWorking || !basketItems.length) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
+    if (!response?.ok) throw new Error(response?.error || "清空失败。");
+  } catch (error) {
+    setStatus({ state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    return;
+  }
+  basketItems = [];
+  renderBasket();
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`读取 ${file.name} 失败。`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片无法解析，请确认文件未损坏。"));
+    image.src = dataUrl;
+  });
+}
+
+// 控制发往后台的消息体积：长边超过 1600px 的截图等比缩小后转 JPEG。
+async function downscaleDataUrl(dataUrl, maxEdge = 1600) {
+  const image = await loadImageElement(dataUrl);
+  const longest = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
+  if (!longest || longest <= maxEdge) return dataUrl;
+  const scale = maxEdge / longest;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
+async function uploadScreenshots(files) {
+  if (isWorking || !files?.length) return;
+  setWorking(true);
+  setStatus({ state: "working", title: "正在识别截图", detail: `共 ${files.length} 张截图，正在提取帖文内容…`, percent: 15 });
+  try {
+    const images = [];
+    for (const file of files) {
+      if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB，请压缩后重试。`);
+      images.push(await downscaleDataUrl(await readImageFile(file)));
+    }
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_SCREENSHOT_ADD",
+      images,
+      sourceUrl: elements.screenshotUrl.value.trim()
+    });
+    if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
+    basketItems = response.basket || [];
+    renderBasket();
+    const warningNote = response.warnings?.length
+      ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
+      : "";
+    setStatus({
+      state: "done",
+      title: "截图已识别并加入清单",
+      detail: `当前清单共 ${basketItems.length} 条帖文${warningNote}。`,
+      percent: 100
+    });
+    elements.screenshotUrl.value = "";
+  } catch (error) {
+    setStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
+  } finally {
+    elements.screenshotInput.value = "";
+    setWorking(false);
+  }
+}
+
+async function runMergeSummarize(force = false) {
+  if (isWorking || !basketItems.length) return;
+  setWorking(true);
+  setStatus({
+    state: "working",
+    title: "正在合并概括",
+    detail: `整合 ${basketItems.length} 条帖文的证据…`,
+    percent: 8
+  });
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
+    if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
+    showResult(response.result, null);
+    setStatus({
+      state: "done",
+      title: force ? "重新生成完成" : "合并概括完成",
+      detail: completionDetail(response.result, `已合并 ${response.result.postCount || basketItems.length} 条帖文，可直接复制。`),
+      percent: 100
+    });
+  } catch (error) {
+    setStatus({ state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 });
+  } finally {
+    setWorking(false);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
+  if (message?.type === "XHS_AI_MERGE_PROGRESS" && isWorking) {
+    const progress = message.progress || {};
+    setStatus({
+      state: "working",
+      title: mergeProgressTitle(progress.stage),
+      detail: progress.detail || "正在处理…",
+      percent: progress.percent || 8
+    });
+  }
 });
 
 elements.extractButton.addEventListener("click", runFullWorkflow);
 elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
+elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
+elements.mergeUploadButton.addEventListener("click", () => elements.screenshotInput.click());
+elements.screenshotInput.addEventListener("change", () => {
+  uploadScreenshots(Array.from(elements.screenshotInput.files || []));
+});
+elements.mergeSummarizeButton.addEventListener("click", () => runMergeSummarize(false));
+elements.mergeClearButton.addEventListener("click", clearBasket);
+elements.mergeList.addEventListener("click", (event) => {
+  const row = event.target?.closest?.(".merge-item");
+  if (!row || !event.target.closest?.(".merge-remove")) return;
+  removeBasketItem(row.dataset?.id);
+});
 
 elements.copyButton.addEventListener("click", async () => {
   try {
@@ -207,6 +448,10 @@ elements.copyButton.addEventListener("click", async () => {
 
 elements.regenerateButton.addEventListener("click", async () => {
   if (isWorking) return;
+  if (lastResultMode === "merge") {
+    await runMergeSummarize(true);
+    return;
+  }
   if (!currentCapture) {
     await runFullWorkflow();
     return;
@@ -273,3 +518,4 @@ async function restoreCurrentWorkflow() {
 }
 
 restoreCurrentWorkflow();
+refreshBasket();

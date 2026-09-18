@@ -39,6 +39,26 @@
         <span class="button-arrow" aria-hidden="true">↘</span>
       </button>
 
+      <section class="merge-panel" aria-labelledby="merge-title">
+        <div class="merge-heading">
+          <h2 id="merge-title">合并概括</h2>
+          <button id="merge-clear-button" class="merge-clear" type="button" hidden>清空清单</button>
+        </div>
+        <p class="merge-hint">同一事件的多条帖文可加入清单后一次性合并概括；原帖已删除的，可上传截图补充为一条帖文证据。</p>
+        <div class="merge-actions">
+          <button id="merge-add-button" class="secondary-button" type="button">当前帖文加入清单</button>
+          <button id="merge-upload-button" class="secondary-button" type="button">上传帖文截图…</button>
+          <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        </div>
+        <input id="screenshot-url" class="screenshot-url" type="url"
+          placeholder="可选：截图对应帖文的原始链接（小红书或 xhslink 地址）">
+        <ul id="merge-list" class="merge-list" hidden></ul>
+        <button id="merge-summarize-button" class="extract-button merge-summarize" type="button" hidden>
+          <span id="merge-summarize-label">合并概括</span>
+          <span class="button-arrow" aria-hidden="true">↘</span>
+        </button>
+      </section>
+
       <section id="result-card" class="result-card" hidden aria-labelledby="result-title">
         <div class="result-heading">
           <div>

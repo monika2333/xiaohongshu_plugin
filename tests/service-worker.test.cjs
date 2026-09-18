@@ -453,6 +453,195 @@ const payload = {
   assert.equal(completedWorkflow.capture.source.pageSessionId, "page-session-1");
   assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_WORKFLOW_STATE"));
 
+  // —— 截图识别与多帖合并 ——
+  assert.match(context.XhsPrompts.screenshotSystem, /visible_comments/);
+  assert.match(context.XhsPrompts.mergeSystem, /posts 数组/);
+  assert.equal(context.XhsAi.parseEngagementCount("1,255"), 1255);
+  assert.equal(context.XhsAi.parseEngagementCount("1.2万"), 12000);
+  assert.equal(context.XhsAi.parseEngagementCount("赞"), null);
+
+  const screenshotPayload = context.XhsAi.buildScreenshotPayload({
+    author: "难道你就一点猪也没有嘛",
+    publishedDisplay: "3天前",
+    title: "关于校园墙的一些看法",
+    contentText: "针对校园墙上部分言论发表个人意见。",
+    hashtags: ["校园墙"],
+    likesRaw: "55",
+    collectsRaw: "",
+    commentsRaw: "998",
+    visibleComments: [
+      { author: "乙", content: "围观", likesRaw: "2", isAuthor: false },
+      { author: "", content: "", likesRaw: "", isAuthor: false }
+    ],
+    uncertainties: [],
+    imageCount: 2
+  }, { sourceUrl: "", screenshotId: "shot-test-1" });
+  assert.equal(screenshotPayload.source.origin, "user_screenshot");
+  assert.equal(screenshotPayload.source.url, null);
+  assert.equal(screenshotPayload.note.publishedDisplay, null);
+  assert.ok(screenshotPayload.uncertainties.some((item) => /3天前/.test(item)));
+  assert.equal(screenshotPayload.interactions.likes.value, 55);
+  assert.equal(screenshotPayload.interactions.comments.value, 998);
+  assert.equal(screenshotPayload.commentExport.extractedTopLevelCount, 1);
+  assert.equal(screenshotPayload.commentExport.comments[0].likes.value, 2);
+
+  const mergedRender = context.XhsAi.renderMergedSummary({
+    headline: "网传某校学生发表不当言论引争议",
+    eventSummary: "账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事；当日另一账号也就该话题发表意见。",
+    opinionPoints: ["部分网民好奇事件全貌", "部分网民分享校园墙截图"]
+  }, [textOnlyPayload, screenshotPayload]);
+  assert.match(mergedRender, /^★ 网传某校学生发表不当言论引争议\n8月8日，/);
+  assert.match(mergedRender, /上述帖文共获67次点赞、1098条评论。/);
+  assert.match(mergedRender, /部分网民好奇事件全貌；部分网民分享校园墙截图。（小红书/);
+  assert.match(mergedRender, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed；另1条原帖已删除）$/);
+
+  const shotOnlyRender = context.XhsAi.renderMergedSummary({
+    headline: "据截图反映某事件",
+    eventSummary: "截图显示有账号发帖反映某事件。",
+    opinionPoints: []
+  }, [screenshotPayload]);
+  assert.match(shotOnlyRender, /截至目前，该帖文获55次点赞、998条评论。/);
+  assert.match(shotOnlyRender, /（原帖已删除，内容据用户上传截图整理）$/);
+
+  storageState.local.xhsAiConfig = context.XhsAi.DEFAULT_CONFIG;
+  storageState.local.xhsAiPersistentSecrets = {
+    textApiKey: "test-deepseek-key",
+    visionApiKey: "test-vision-key"
+  };
+  let mergeTextCalls = 0;
+  let lastMergeRequest = null;
+  context.fetch = async (url, options) => {
+    if (url.includes("dashscope.aliyuncs.com")) {
+      const body = JSON.parse(options.body);
+      assert.equal(options.headers.Authorization, "Bearer test-vision-key");
+      assert.match(body.messages[0].content, /帖文截图识别助手/);
+      assert.equal(body.messages[1].content[body.messages[1].content.length - 1].text, "以上共 1 张截图，来自同一条帖文。请综合全部截图返回一个 JSON 对象，不要输出 Markdown。");
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                author: "溜溜球",
+                published_display: "2026-09-16",
+                title: "闪婚姐是怎么回事",
+                content_text: "询问某校闪婚姐事件。",
+                hashtags: [],
+                likes_raw: "1200",
+                collects_raw: "10",
+                comments_raw: "233",
+                visible_comments: [{ author: "丙", content: "求科普", likes_raw: "3", is_author: false }],
+                uncertainties: ["右上角互动数字被遮挡"]
+              })
+            }
+          }]
+        })
+      };
+    }
+    mergeTextCalls += 1;
+    lastMergeRequest = JSON.parse(options.body);
+    assert.equal(url, "https://api.deepseek.com/chat/completions");
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "网传某校学生婚姻选择言论引争议",
+              event_summary: "小红书平台账号“@溜溜球”发布帖文询问某校“闪婚姐”是怎么回事；当日账号“@难道你就一点猪也没有嘛”也就该话题发表帖文，发表个人意见。",
+              opinion_points: ["部分网民好奇事件全貌", "部分网民分享校园墙相关截图"]
+            })
+          }
+        }]
+      })
+    };
+  };
+
+  await context.clearMergeBasket();
+  const liveAdded = await context.addToMergeBasket(textOnlyPayload);
+  assert.equal(liveAdded.ok, true);
+  assert.equal(liveAdded.basket.length, 1);
+  assert.equal(liveAdded.basket[0].kind, "live_page");
+  const replacedAdd = await context.addToMergeBasket(textOnlyPayload);
+  assert.equal(replacedAdd.replaced, true);
+  assert.equal(replacedAdd.basket.length, 1);
+
+  const invalidLink = await context.addScreenshotToBasket({
+    images: ["data:image/png;base64,QUJD"],
+    sourceUrl: "https://example.com/not-xhs"
+  }).catch((error) => error);
+  assert.match(invalidLink.message, /小红书帖文地址/);
+
+  const shotAdded = await context.addScreenshotToBasket({
+    images: ["data:image/png;base64,QUJD"],
+    sourceUrl: " https://xhslink.cn/o/2CIVt7d2Y6p "
+  });
+  assert.equal(shotAdded.ok, true);
+  assert.equal(shotAdded.basket.length, 2);
+  assert.equal(shotAdded.basket[1].kind, "user_screenshot");
+  assert.equal(shotAdded.basket[1].hasUrl, true);
+  assert.equal(shotAdded.warnings.length, 1);
+  assert.equal(shotAdded.warnings[0], "右上角互动数字被遮挡");
+
+  const listed = await context.listMergeBasket();
+  assert.equal(listed.basket.length, 2);
+  assert.equal(listed.basket[0].id, `note:${textOnlyPayload.source.noteId}`);
+  assert.match(listed.basket[1].id, /^shot:/);
+
+  const mergedResponse = await context.summarizeMergeBasket({ force: true });
+  assert.equal(mergedResponse.ok, true);
+  assert.equal(mergedResponse.result.postCount, 2);
+  assert.equal(mergeTextCalls, 1);
+  assert.equal(lastMergeRequest.messages[0].content, context.XhsPrompts.mergeSystem);
+  const mergedEvidence = lastMergeRequest.messages[1].content;
+  assert.match(mergedEvidence, /"task":"merge_multiple_notes"/);
+  assert.match(mergedEvidence, /"postCount":2/);
+  assert.match(mergedEvidence, /"origin":"live_page"/);
+  assert.match(mergedEvidence, /"origin":"user_screenshot"/);
+  assert.match(mergedResponse.result.text, /^★ 网传某校学生婚姻选择言论引争议\n8月8日，/);
+  assert.match(mergedResponse.result.text, /上述帖文共获1212次点赞、333条评论。/);
+  assert.match(
+    mergedResponse.result.text,
+    /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed；https:\/\/xhslink\.cn\/o\/2CIVt7d2Y6p）$/
+  );
+  assert.equal(mergedResponse.result.evidence.postCount, 2);
+  assert.equal(mergedResponse.result.evidence.topLevelComments, 2);
+  assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_MERGE_PROGRESS"));
+
+  const cachedMerge = await context.summarizeMergeBasket({ force: false });
+  assert.equal(cachedMerge.ok, true);
+  assert.equal(mergeTextCalls, 1);
+
+  for (let index = 0; index < 3; index += 1) {
+    await context.addToMergeBasket({
+      ...textOnlyPayload,
+      source: { ...textOnlyPayload.source, noteId: `6a7602930000000025007${String(index).padStart(2, "0")}` }
+    });
+  }
+  const overflow = await context.addToMergeBasket({
+    ...textOnlyPayload,
+    source: { ...textOnlyPayload.source, noteId: "6a7602930000000025007ff" }
+  }).catch((error) => error);
+  assert.match(overflow.message, /最多保留 5 条/);
+  for (let index = 0; index < 3; index += 1) {
+    await context.removeFromMergeBasket({ id: `note:6a7602930000000025007${String(index).padStart(2, "0")}` });
+  }
+  assert.equal((await context.listMergeBasket()).basket.length, 2);
+
+  const mergeDoneSender = { tab: { id: 43 }, url: textOnlyPayload.source.url };
+  await context.recordMergeCaptureDone({
+    pageSessionId: "page-session-merge",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: textOnlyPayload.source.noteId,
+    detail: "已采集 3 条一级评论和 0 张图片。"
+  }, mergeDoneSender);
+  const mergeDoneWorkflow = await context.getWorkflowState(43, "page-session-merge", textOnlyPayload.source.url);
+  assert.equal(mergeDoneWorkflow.status, "done");
+  assert.equal(mergeDoneWorkflow.result, null);
+  assert.match(mergeDoneWorkflow.progress.detail, /3 条一级评论/);
+
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {
   console.error(error);

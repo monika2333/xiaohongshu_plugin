@@ -70,6 +70,19 @@
     return digits[value] ?? Number.NaN;
   }
 
+  // 用于解析截图 OCR 抄录的互动数字原文（如 "1,255"、"1.2万"）。
+  function parseEngagementCount(raw) {
+    const value = cleanText(raw).replace(/,/g, "");
+    if (!value) return null;
+    const match = value.match(/([\d.]+)\s*(万|千)?/);
+    if (!match) return null;
+    const number = Number.parseFloat(match[1]);
+    if (!Number.isFinite(number)) return null;
+    if (match[2] === "万") return Math.round(number * 10000);
+    if (match[2] === "千") return Math.round(number * 1000);
+    return Math.round(number);
+  }
+
   function resolvedDate(parts, referenceParts, original, source) {
     const year = String(parts.year).padStart(4, "0");
     const month = String(parts.month).padStart(2, "0");
@@ -351,6 +364,133 @@
     return parsed.map((item, offset) => normalizeVisionItem(item, startIndex + offset + 1));
   }
 
+  function normalizeScreenshotExtraction(item, imageCount) {
+    const source = Array.isArray(item) ? item[0] : item;
+    const visibleComments = (Array.isArray(source?.visible_comments) ? source.visible_comments : [])
+      .slice(0, 50)
+      .map((comment) => ({
+        author: cleanText(comment?.author, 200),
+        content: cleanText(comment?.content, 700),
+        likesRaw: cleanText(comment?.likes_raw ?? comment?.likesRaw, 40),
+        isAuthor: Boolean(comment?.is_author)
+      }))
+      .filter((comment) => comment.author || comment.content);
+    return {
+      author: cleanText(source?.author, 200),
+      publishedDisplay: cleanText(source?.published_display ?? source?.publishedDisplay, 100),
+      title: cleanText(source?.title, 500),
+      contentText: cleanText(source?.content_text ?? source?.contentText, 10000),
+      hashtags: stringArray(source?.hashtags),
+      likesRaw: cleanText(source?.likes_raw ?? source?.likesRaw, 40),
+      collectsRaw: cleanText(source?.collects_raw ?? source?.collectsRaw, 40),
+      commentsRaw: cleanText(source?.comments_raw ?? source?.commentsRaw, 40),
+      visibleComments,
+      uncertainties: stringArray(source?.uncertainties),
+      imageCount: Number(imageCount) || 1
+    };
+  }
+
+  // 把截图识别结果组装成与网页采集同 schema 的合成 payload，后续合并概括管线零改动复用。
+  function buildScreenshotPayload(extraction, context = {}) {
+    if (!extraction?.author && !extraction?.title && !extraction?.contentText && !extraction?.visibleComments?.length) {
+      throw new Error("截图未能识别出帖文内容，请确认截图清晰完整后重试。");
+    }
+
+    const uncertainties = [...(extraction.uncertainties || [])];
+    let publishedDisplay = extraction.publishedDisplay;
+    if (publishedDisplay && !/^(?:\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}|\d{1,2}[月\-/.]\d{1,2})/.test(publishedDisplay)) {
+      uncertainties.push(`发帖时间为相对表述（原文“${publishedDisplay}”），截图拍摄时间未知，无法换算为日期。`);
+      publishedDisplay = "";
+    }
+
+    const likes = { raw: extraction.likesRaw || null, value: parseEngagementCount(extraction.likesRaw) };
+    const collects = { raw: extraction.collectsRaw || null, value: parseEngagementCount(extraction.collectsRaw) };
+    const commentsCount = parseEngagementCount(extraction.commentsRaw);
+    const interactions = {
+      likes,
+      collects,
+      comments: { raw: extraction.commentsRaw || null, value: commentsCount },
+      displayedCommentTotalRaw: extraction.commentsRaw || null,
+      displayedCommentTotal: commentsCount
+    };
+    const visibleComments = (extraction.visibleComments || [])
+      .filter((comment) => comment.author || comment.content);
+
+    return {
+      schemaVersion: 1,
+      exportedAt: (context.exportedAt instanceof Date ? context.exportedAt : new Date()).toISOString(),
+      source: {
+        platform: "xiaohongshu",
+        url: cleanText(context.sourceUrl) || null,
+        noteId: null,
+        origin: "user_screenshot",
+        screenshotId: cleanText(context.screenshotId) || "unknown",
+        screenshotCount: extraction.imageCount
+      },
+      note: {
+        title: extraction.title || null,
+        author: extraction.author || null,
+        authorProfileUrl: null,
+        content: extraction.contentText || null,
+        hashtags: extraction.hashtags,
+        publishedDisplay: publishedDisplay || null,
+        location: null,
+        publishedAtInferred: null,
+        publishedAtInferredSource: null
+      },
+      interactions,
+      commentExport: {
+        scope: "user_screenshot_visible_comments",
+        extractedTopLevelCount: visibleComments.length,
+        includesOnlyAlreadyVisibleReplies: false,
+        visibleReplyCount: 0,
+        isCompleteCommentExport: false,
+        stopReason: "screenshot",
+        comments: visibleComments.map((comment) => ({
+          id: null,
+          parentCommentId: null,
+          kind: "top_level",
+          author: comment.author || null,
+          userId: null,
+          content: comment.content || null,
+          publishedDisplay: null,
+          location: null,
+          likes: { raw: comment.likesRaw || null, value: parseEngagementCount(comment.likesRaw) },
+          displayedReplyCount: 0,
+          isAuthor: comment.isAuthor,
+          isPinned: false,
+          visibleReplies: []
+        }))
+      },
+      media: {
+        images: [],
+        note: "内容来自用户上传的帖文截图，图片二进制不保存。"
+      },
+      uncertainties
+    };
+  }
+
+  async function analyzeScreenshots(dataUrls, config, apiKey) {
+    if (!Array.isArray(dataUrls) || !dataUrls.length) throw new Error("没有可识别的截图。");
+    const content = [];
+    dataUrls.forEach((dataUrl, index) => {
+      content.push({ type: "text", text: XhsPrompts.imageLabel(index + 1) });
+      content.push({ type: "image_url", image_url: { url: dataUrl } });
+    });
+    content.push({ type: "text", text: XhsPrompts.screenshotInstruction(dataUrls.length) });
+    const raw = await callChat({
+      baseUrl: config.vision.baseUrl,
+      apiKey,
+      model: config.vision.model,
+      messages: [
+        { role: "system", content: XhsPrompts.screenshotSystem },
+        { role: "user", content }
+      ],
+      temperature: 0
+    });
+    return normalizeScreenshotExtraction(parseJsonResponse(raw), dataUrls.length);
+  }
+
   function compactComment(comment, includeVisibleReplies) {
     const result = {
       content: cleanText(comment.content, 700),
@@ -373,8 +513,9 @@
     return {
       source: {
         platform: "小红书",
-        url: originalPageUrl(payload),
-        noteId: payload.source?.noteId || null
+        url: cleanText(payload?.source?.url) || null,
+        noteId: payload.source?.noteId || null,
+        origin: payload.source?.origin === "user_screenshot" ? "user_screenshot" : "live_page"
       },
       note: {
         title: cleanText(payload.note?.title, 500),
@@ -382,7 +523,8 @@
         publishedDate: publishedDate?.display || null,
         publishedDateIso: publishedDate?.iso || null,
         content: cleanText(payload.note?.content, 10000),
-        hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100))
+        hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100)),
+        uncertainties: stringArray(payload?.uncertainties || [])
       },
       comments: (payload.commentExport?.comments || [])
         .slice(0, config.commentLimit)
@@ -596,6 +738,206 @@
     };
   }
 
+  function sortPayloadsChronologically(payloads) {
+    return payloads
+      .map((payload, index) => ({ payload, index, date: resolvePublishedDate(payload) }))
+      .sort((left, right) => {
+        if (left.date?.iso && right.date?.iso) return left.date.iso.localeCompare(right.date.iso);
+        if (left.date?.iso) return -1;
+        if (right.date?.iso) return 1;
+        return left.index - right.index;
+      })
+      .map((entry) => entry.payload);
+  }
+
+  function buildMergedEvidence(payloads, visions, config) {
+    return {
+      task: "merge_multiple_notes",
+      postCount: payloads.length,
+      posts: payloads.map((payload, index) => buildEvidence(payload, visions[index], config))
+    };
+  }
+
+  async function createMergedSummary(payloads, visions, config, apiKey) {
+    const evidence = buildMergedEvidence(payloads, visions, config);
+    const raw = await callChat({
+      baseUrl: config.text.baseUrl,
+      apiKey,
+      model: config.text.model,
+      messages: [
+        { role: "system", content: XhsPrompts.mergeSystem },
+        { role: "user", content: XhsPrompts.mergeEvidence(evidence) }
+      ],
+      temperature: 0.2
+    });
+    const parsed = parseJsonResponse(raw);
+    if (!parsed || Array.isArray(parsed) || !cleanText(parsed.headline) || !cleanText(parsed.event_summary)) {
+      throw new Error("文字模型返回结果缺少标题或事件概括。");
+    }
+    return {
+      headline: cleanText(parsed.headline, 160).replace(/^★\s*/, ""),
+      eventSummary: cleanText(parsed.event_summary, 2400),
+      opinionPoints: (Array.isArray(parsed.opinion_points) ? parsed.opinion_points : [])
+        .slice(0, 4)
+        .map((item) => cleanText(item, 500))
+        .filter(Boolean)
+    };
+  }
+
+  function renderMergedSummary(structured, payloads) {
+    const urls = [];
+    let missingLinkCount = 0;
+    let likesTotal = 0;
+    let likesKnown = 0;
+    let commentsTotal = 0;
+    let commentsKnown = 0;
+    let earliest = null;
+
+    for (const payload of payloads) {
+      const url = cleanText(payload?.source?.url);
+      if (url) urls.push(url);
+      else missingLinkCount += 1;
+      const likes = payload.interactions?.likes?.value;
+      if (Number.isFinite(likes) && likes > 0) {
+        likesTotal += likes;
+        likesKnown += 1;
+      }
+      const comments = payload.interactions?.comments?.value ?? payload.interactions?.displayedCommentTotal;
+      if (Number.isFinite(comments) && comments > 0) {
+        commentsTotal += comments;
+        commentsKnown += 1;
+      }
+      const date = resolvePublishedDate(payload);
+      if (date?.iso && (!earliest || date.iso < earliest.iso)) earliest = date;
+    }
+
+    const singular = payloads.length === 1;
+    let engagement = "";
+    if (singular) {
+      if (likesKnown && commentsKnown) engagement = `截至目前，该帖文获${likesTotal}次点赞、${commentsTotal}条评论。`;
+      else if (likesKnown) engagement = `截至目前，该帖文获${likesTotal}次点赞。`;
+      else if (commentsKnown) engagement = `截至目前，该帖文有${commentsTotal}条评论。`;
+    } else if (likesKnown && commentsKnown) engagement = `截至目前，上述帖文共获${likesTotal}次点赞、${commentsTotal}条评论。`;
+    else if (likesKnown) engagement = `截至目前，上述帖文共获${likesTotal}次点赞。`;
+    else if (commentsKnown) engagement = `截至目前，上述帖文共有${commentsTotal}条评论。`;
+
+    let eventBody = cleanText(structured.eventSummary);
+    for (const url of urls) eventBody = eventBody.split(url).join("");
+    eventBody = withoutLeadingPublishDate(eventBody);
+    const eventSummary = earliest?.display ? `${earliest.display}，${eventBody}` : eventBody;
+    const opinionPoints = (structured.opinionPoints || [])
+      .map((item) => withoutTrailingPunctuation(cleanText(item)))
+      .filter(Boolean);
+    const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
+
+    let sourceSuffix;
+    if (!urls.length) {
+      sourceSuffix = payloads.length > 1
+        ? "（原帖均已删除，内容据用户上传截图整理）"
+        : "（原帖已删除，内容据用户上传截图整理）";
+    } else if (missingLinkCount > 0) {
+      sourceSuffix = `（小红书 ${[...urls, `另${missingLinkCount}条原帖已删除`].join("；")}）`;
+    } else {
+      sourceSuffix = `（小红书 ${urls.join("；")}）`;
+    }
+
+    return `★ ${withoutTrailingPunctuation(structured.headline)}\n${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
+  }
+
+  function mergedTextCacheKey(payloads, config, visions) {
+    const evidence = buildMergedEvidence(payloads, visions, config);
+    const ids = payloads
+      .map((payload) => payload.source?.noteId || payload.source?.screenshotId || "unknown")
+      .join(",");
+    return `merge:${ids}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+  }
+
+  async function summarizeMerged(
+    payloads,
+    rawConfig,
+    secrets,
+    cache = {},
+    emitProgress = () => {},
+    force = false
+  ) {
+    if (!Array.isArray(payloads) || !payloads.length) {
+      throw new Error("合并清单是空的，请先加入帖文或上传截图。");
+    }
+    const config = validateConfig(normalizeConfig(rawConfig));
+    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
+    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
+
+    const ordered = sortPayloadsChronologically(payloads);
+    const visions = [];
+    let imagesFound = 0;
+    let imagesAnalyzed = 0;
+    let imagesSelected = 0;
+    let visionModelUsed = false;
+
+    for (let index = 0; index < ordered.length; index += 1) {
+      const payload = ordered[index];
+      imagesFound += payload.media?.images?.length || 0;
+      if (payload.source?.origin === "user_screenshot") {
+        visions.push([]);
+        continue;
+      }
+      const percentBase = 30 + Math.round(((index + 0.5) / ordered.length) * 30);
+      const resolved = await resolveVision(payload, config, visionApiKey, cache, (progress) => {
+        emitProgress({
+          stage: "vision",
+          percent: percentBase,
+          detail: `帖文 ${index + 1}/${ordered.length}：${progress.detail || "正在识别图片"}`
+        });
+      });
+      visions.push(resolved.items);
+      imagesAnalyzed += resolved.items.length;
+      imagesSelected += selectVisionEvidence(resolved.items).length;
+      if (resolved.items.length) visionModelUsed = true;
+    }
+
+    const tKey = mergedTextCacheKey(ordered, config, visions);
+    let structured = !force ? cache[tKey] : null;
+    if (structured) {
+      emitProgress({ stage: "text", percent: 88, detail: "已复用合并概括缓存" });
+    } else {
+      emitProgress({
+        stage: "text",
+        percent: 68,
+        detail: `文字模型正在整合 ${ordered.length} 条帖文的正文、图片与评论`
+      });
+      structured = await createMergedSummary(ordered, visions, config, textApiKey);
+      cache[tKey] = structured;
+    }
+
+    emitProgress({ stage: "done", percent: 94, detail: "合并概括已经生成" });
+    const totalTopLevel = ordered.reduce(
+      (sum, payload) => sum + (payload.commentExport?.extractedTopLevelCount || 0), 0
+    );
+    const totalReplies = ordered.reduce(
+      (sum, payload) => sum + (payload.commentExport?.visibleReplyCount || 0), 0
+    );
+    return {
+      text: renderMergedSummary(structured, ordered),
+      structured,
+      evidence: {
+        postCount: ordered.length,
+        posts: ordered.map((payload) => ({
+          noteId: payload.source?.noteId || null,
+          origin: payload.source?.origin === "user_screenshot" ? "user_screenshot" : "live_page"
+        })),
+        topLevelComments: totalTopLevel,
+        visibleReplies: totalReplies,
+        imagesFound,
+        imagesAnalyzed,
+        imagesSelected,
+        visionModel: visionModelUsed ? config.vision.model : null,
+        textModel: config.text.model
+      },
+      cache
+    };
+  }
+
   async function testProvider(provider, rawConfig, secrets) {
     const config = validateConfig(normalizeConfig(rawConfig));
     const isVision = provider === "vision";
@@ -628,6 +970,14 @@
     prepareVision,
     summarize,
     testProvider,
-    hashText
+    hashText,
+    parseEngagementCount,
+    normalizeScreenshotExtraction,
+    buildScreenshotPayload,
+    analyzeScreenshots,
+    sortPayloadsChronologically,
+    buildMergedEvidence,
+    renderMergedSummary,
+    summarizeMerged
   };
 })();

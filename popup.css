@@ -128,6 +128,31 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .extract-button:disabled { cursor: wait; opacity: .7; }
 .button-arrow { color: #ff5b52; font: 22px/1 Georgia, serif; }
 
+.merge-panel { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--ink); }
+.merge-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.merge-heading h2 { margin: 0; font-size: 18px; }
+.merge-clear { padding: 4px 9px; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; font-size: 9px; font-weight: 700; }
+.merge-clear:hover { color: var(--red-dark); border-color: var(--red-dark); }
+.merge-hint { margin: 0 0 10px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.merge-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.merge-actions button { min-height: 36px; cursor: pointer; font-size: 11px; font-weight: 700; }
+.screenshot-url { width: 100%; margin-top: 8px; padding: 8px 10px; color: var(--ink); background: var(--paper-soft); border: 1px solid var(--line); border-radius: 0; font-size: 10px; }
+.screenshot-url:focus { outline: none; border-color: var(--ink); }
+.screenshot-url::placeholder { color: var(--muted); }
+.merge-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.merge-item { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; padding: 7px 2px; border-bottom: 1px dashed var(--line); font-size: 10px; }
+.merge-badge { padding: 2px 6px; border-radius: 3px; color: var(--paper); font-size: 9px; font-weight: 700; white-space: nowrap; }
+.merge-badge-page { background: var(--green); }
+.merge-badge-shot { background: var(--red-dark); }
+.merge-item-label { overflow: hidden; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; font-weight: 700; }
+.merge-item-meta { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.merge-remove { padding: 2px 7px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 3px; cursor: pointer; font-size: 11px; line-height: 1.4; }
+.merge-remove:hover { color: var(--red-dark); border-color: var(--red-dark); }
+.merge-summarize { margin-top: 12px; min-height: 44px; box-shadow: 4px 4px 0 var(--ink); font-size: 14px; }
+.merge-summarize .button-arrow { color: var(--paper); }
+.merge-summarize:hover { transform: translate(-1px,-1px); box-shadow: 6px 6px 0 var(--ink); }
+.merge-summarize:active { transform: translate(3px,3px); box-shadow: 1px 1px 0 var(--ink); }
+
 .result-card {
   margin-top: 18px;
   padding-top: 15px;

@@ -348,6 +348,15 @@
     };
   }
 
+  function startVisionPreparation(visionSeed) {
+    if (!visionSeed?.media?.images?.length) return null;
+    return chrome.runtime.sendMessage({
+      type: "XHS_AI_PREPARE_VISION",
+      payload: visionSeed,
+      pageSessionId: PAGE_SESSION_ID
+    }).catch(() => null);
+  }
+
   async function runCaptureAndSummarize(rawOptions, suppliedPayload, force) {
     let payload = suppliedPayload || null;
     let visionPreparationPromise = null;
@@ -355,12 +364,7 @@
       await sendProgress("正在重新生成", "复用本页面已经采集的证据", payload.commentExport?.extractedTopLevelCount || 0);
     } else {
       payload = (await runCapture(rawOptions, (visionSeed) => {
-        if (!visionSeed.media.images.length) return;
-        visionPreparationPromise = chrome.runtime.sendMessage({
-          type: "XHS_AI_PREPARE_VISION",
-          payload: visionSeed,
-          pageSessionId: PAGE_SESSION_ID
-        }).catch(() => null);
+        visionPreparationPromise = startVisionPreparation(visionSeed);
       })).payload;
     }
 
@@ -377,6 +381,42 @@
     });
     if (!response?.ok) throw new Error(response?.error || "概括未完成。");
     return { ok: true, result: response.result, capture: payload };
+  }
+
+  // 供“加入合并清单”使用：完整采集并等待后台图片识别写入缓存，但不调用文字模型。
+  async function runCaptureForMerge(rawOptions) {
+    let visionPreparationPromise = null;
+    const captured = await runCapture(rawOptions, (visionSeed) => {
+      visionPreparationPromise = startVisionPreparation(visionSeed);
+    });
+    if (visionPreparationPromise) await visionPreparationPromise;
+
+    const payload = captured.payload;
+    const detail = `已采集 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} 张图片。`;
+    await Promise.allSettled([
+      chrome.runtime.sendMessage({
+        type: "XHS_AI_MERGE_CAPTURE_DONE",
+        pageSessionId: PAGE_SESSION_ID,
+        pageUrl: location.href,
+        noteId: payload.source?.noteId || null,
+        detail
+      }),
+      chrome.storage.local.set({
+        xhsExporterStatus: {
+          state: "done",
+          title: "已采集完成",
+          detail: "页面证据已采集，可回到插件加入合并清单。",
+          count: payload.commentExport.extractedTopLevelCount,
+          updatedAt: Date.now()
+        }
+      })
+    ]);
+    return {
+      ok: true,
+      payload,
+      topLevelCount: captured.topLevelCount,
+      imageCount: captured.imageCount
+    };
   }
 
   async function notifyWorkflowFailure(error) {
@@ -414,7 +454,7 @@
       return false;
     }
 
-    if (!message || !["XHS_CAPTURE_START", "XHS_EXPORT_START", "XHS_CAPTURE_AND_SUMMARIZE"].includes(message.type)) {
+    if (!message || !["XHS_CAPTURE_START", "XHS_EXPORT_START", "XHS_CAPTURE_AND_SUMMARIZE", "XHS_CAPTURE_FOR_MERGE"].includes(message.type)) {
       return undefined;
     }
 
@@ -422,11 +462,15 @@
       ? runCapture(message.options)
       : message.type === "XHS_EXPORT_START"
         ? runExtraction(message.options)
-        : startAiWorkflow(message);
+        : message.type === "XHS_CAPTURE_FOR_MERGE"
+          ? runCaptureForMerge(message.options)
+          : startAiWorkflow(message);
     operation
       .then(sendResponse)
       .catch(async (error) => {
-        if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") await notifyWorkflowFailure(error);
+        if (["XHS_CAPTURE_AND_SUMMARIZE", "XHS_CAPTURE_FOR_MERGE"].includes(message.type)) {
+          await notifyWorkflowFailure(error);
+        }
         const status = {
           state: "error",
           title: "摘录失败",

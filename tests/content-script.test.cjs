@@ -206,6 +206,112 @@ async function captureAndSummarizeWithOverlappingVision() {
   assert.equal(summaryMessage.preparedVision.key, "vision-key");
 }
 
+async function captureForMergeWithOverlappingVision() {
+  let commentLoaded = false;
+  const image = {
+    currentSrc: "https://sns-webpic-qc.xhscdn.com/merge-test.webp",
+    src: "https://sns-webpic-qc.xhscdn.com/merge-test.webp",
+    naturalWidth: 1080,
+    naturalHeight: 1440
+  };
+  const commentItem = {
+    id: "comment-merge",
+    querySelector: () => null
+  };
+  const commentParent = {
+    querySelector: () => commentItem,
+    querySelectorAll: () => []
+  };
+  const scroller = {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 500,
+    dispatchEvent() { commentLoaded = true; }
+  };
+  const detailRoot = createDetailRoot();
+  const baseQuerySelector = detailRoot.querySelector.bind(detailRoot);
+  detailRoot.querySelector = (selector) => selector === ".note-scroller" ? scroller : baseQuerySelector(selector);
+  detailRoot.querySelectorAll = (selector) => {
+    if (selector === ".img-container img, .note-slider-img img, [class*='slider'] img") return [image];
+    if (selector === ".parent-comment") return commentLoaded ? [commentParent] : [];
+    return [];
+  };
+
+  let messageListener;
+  let resolveVision;
+  let signalVisionStarted;
+  const visionStarted = new Promise((resolve) => { signalVisionStarted = resolve; });
+  const runtimeMessages = [];
+  const document = {
+    title: "清华听涛园食堂异物 - 小红书",
+    querySelector: (selector) => selector === "#noteContainer" ? detailRoot : null
+  };
+  const chrome = {
+    runtime: {
+      onMessage: { addListener(listener) { messageListener = listener; } },
+      sendMessage(message) {
+        runtimeMessages.push(message);
+        if (message.type === "XHS_AI_PREPARE_VISION") {
+          signalVisionStarted();
+          return new Promise((resolve) => {
+            resolveVision = () => resolve({ ok: true, preparedVision: { key: "vision-key", items: [], status: "analyzed" } });
+          });
+        }
+        return Promise.resolve({ ok: true });
+      }
+    },
+    storage: { local: { set: async () => {} } }
+  };
+  const context = {
+    chrome,
+    crypto: { randomUUID: () => "merge-page-session" },
+    document,
+    Event,
+    globalThis: null,
+    location: {
+      href: `https://www.xiaohongshu.com/explore/${NOTE_ID}`,
+      pathname: `/explore/${NOTE_ID}`
+    },
+    setTimeout,
+    URL
+  };
+  context.globalThis = context;
+  vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
+    context,
+    { filename: "content-script.js" }
+  );
+
+  const responsePromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("merge capture response timed out")), 2000);
+    const keepChannelOpen = messageListener(
+      { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 1 } },
+      {},
+      (response) => {
+        clearTimeout(timeout);
+        resolve(response);
+      }
+    );
+    assert.equal(keepChannelOpen, true);
+  });
+
+  await visionStarted;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // 图片识别尚未返回前不应结束采集，也不应触发文字概括。
+  assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_MERGE_CAPTURE_DONE"), false);
+  assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
+  resolveVision();
+
+  const response = await responsePromise;
+  assert.equal(response.ok, true);
+  assert.equal(response.payload.source.noteId, NOTE_ID);
+  assert.equal(response.payload.commentExport.extractedTopLevelCount, 1);
+  const doneMessage = runtimeMessages.find((message) => message.type === "XHS_AI_MERGE_CAPTURE_DONE");
+  assert.ok(doneMessage);
+  assert.equal(doneMessage.noteId, NOTE_ID);
+  assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
+}
+
 (async () => {
   const directPage = await captureFromPage("#noteContainer");
   assert.equal(directPage.ok, true);
@@ -220,6 +326,7 @@ async function captureAndSummarizeWithOverlappingVision() {
   assert.equal(modalPage.payload.note.content, "帖文正文");
 
   await captureAndSummarizeWithOverlappingVision();
+  await captureForMergeWithOverlappingVision();
 
   console.log("content-script tests passed");
 })().catch((error) => {
