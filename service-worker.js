@@ -170,6 +170,14 @@ function dataUrl(content, mimeType) {
   return `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
 }
 
+// 视频截帧以 dataUrl 形式存放，按其 MIME 决定下载扩展名；网页图片仍是 webp。
+function mediaFileExtension(image) {
+  const match = /^data:image\/([a-z0-9.+-]+)/i.exec(String(image?.dataUrl || ""));
+  const mime = match?.[1]?.toLowerCase();
+  if (mime === "jpeg") return "jpg";
+  return mime || "webp";
+}
+
 function csvCell(value) {
   const text = value == null ? "" : String(value);
   return `"${text.replace(/"/g, '""')}"`;
@@ -225,6 +233,7 @@ function payloadToMarkdown(payload) {
     `# ${note.title || "无标题帖文"}`,
     "",
     `- 作者：${note.author || "未知"}`,
+    `- 类型：${media.video ? "视频帖" : "图文帖"}`,
     `- 页面日期：${note.publishedDisplay || "未显示"}`,
     `- 地点：${note.location || "未显示"}`,
     `- 点赞：${interactions.likes.raw || "未显示"}`,
@@ -242,6 +251,19 @@ function payloadToMarkdown(payload) {
     ""
   ];
 
+  if (media.video) {
+    lines.push(
+      "## 视频",
+      "",
+      `- 时长：${media.video.durationSec ? `${media.video.durationSec} 秒` : "未知"}`,
+      `- 口播字幕：${media.video.transcript ? "来自平台自动字幕" : "无自动字幕"}`,
+      ""
+    );
+    if (media.video.transcript) {
+      lines.push(media.video.transcript, "");
+    }
+  }
+
   commentExport.comments.forEach((comment, index) => {
     lines.push(`### ${index + 1}. ${comment.author || "匿名用户"}`);
     lines.push("");
@@ -257,9 +279,11 @@ function payloadToMarkdown(payload) {
   });
 
   if (media.images.length) {
-    lines.push("## 图片");
+    lines.push(media.video ? "## 视频画面" : "## 图片");
     lines.push("");
-    media.images.forEach((_, index) => lines.push(`- images/${String(index + 1).padStart(3, "0")}.webp`));
+    media.images.forEach((image, index) => {
+      lines.push(`- images/${String(index + 1).padStart(3, "0")}.${mediaFileExtension(image)}`);
+    });
     lines.push("");
   }
 
@@ -300,8 +324,8 @@ async function downloadExport(payload, options) {
   if (options?.downloadImages !== false) {
     payload.media.images.forEach((image, index) => {
       imageCount += 1;
-      const filename = `${folder}/images/${String(index + 1).padStart(3, "0")}.webp`;
-      jobs.push(startDownload(image.url, filename));
+      const filename = `${folder}/images/${String(index + 1).padStart(3, "0")}.${mediaFileExtension(image)}`;
+      jobs.push(startDownload(image.dataUrl || image.url, filename));
     });
   }
 
@@ -538,7 +562,7 @@ async function testFeishuSettings(rawConfig, secrets) {
 function emitAiProgress(progress) {
   chrome.runtime.sendMessage({
     type: "XHS_AI_PROGRESS",
-    title: progress.stage === "vision" ? "正在识别图片" : progress.stage === "text" ? "正在撰写概括" : "概括完成",
+    title: progress.stage === "vision" ? "正在识别图片与视频画面" : progress.stage === "text" ? "正在撰写概括" : "概括完成",
     ...progress
   }).catch(() => {});
 }
@@ -638,14 +662,14 @@ async function summarizePagePayload(message, sender) {
     progress: {
       state: "working",
       title: "页面证据已就绪",
-      detail: `已读取 ${payload?.commentExport?.extractedTopLevelCount || 0} 条一级评论和 ${payload?.media?.images?.length || 0} 张图片`,
+      detail: `已读取 ${payload?.commentExport?.extractedTopLevelCount || 0} 条一级评论和 ${payload?.media?.images?.length || 0} ${payload?.media?.video ? "帧视频画面" : "张图片"}`,
       percent: 30
     }
   });
 
   const onProgress = (progress) => {
     const title = progress.stage === "vision"
-      ? "正在识别图片"
+      ? "正在识别图片与视频画面"
       : progress.stage === "text"
         ? "正在撰写概括"
         : progress.stage === "notification"
@@ -718,6 +742,7 @@ function basketItemSummary(item) {
     publishedDisplay: cleanText(payload.note?.publishedDisplay) || null,
     commentCount: payload.commentExport?.extractedTopLevelCount || 0,
     imageCount: payload.media?.images?.length || 0,
+    isVideo: Boolean(payload.media?.video),
     hasUrl: Boolean(cleanText(payload.source?.url)),
     addedAt: item.addedAt
   };

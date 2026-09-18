@@ -295,6 +295,10 @@
   }
 
   async function imageToDataUrl(image) {
+    // 视频截帧已经是 dataUrl，无需再抓取
+    if (typeof image?.dataUrl === "string" && image.dataUrl.startsWith("data:image/")) {
+      return image.dataUrl;
+    }
     const response = await fetch(image.url, { credentials: "omit" });
     if (!response.ok) throw new Error(`图片读取失败（HTTP ${response.status}）`);
     const buffer = await response.arrayBuffer();
@@ -342,7 +346,13 @@
     const content = [];
     for (let offset = 0; offset < images.length; offset += 1) {
       const dataUrl = await imageToDataUrl(images[offset]);
-      content.push({ type: "text", text: XhsPrompts.imageLabel(startIndex + offset + 1) });
+      content.push({
+        type: "text",
+        text: XhsPrompts.imageLabel(
+          startIndex + offset + 1,
+          images[offset]?.source === "video_frame" ? images[offset] : null
+        )
+      });
       content.push({ type: "image_url", image_url: { url: dataUrl } });
     }
     content.push({
@@ -510,6 +520,8 @@
 
   function buildEvidence(payload, vision, config) {
     const publishedDate = resolvePublishedDate(payload);
+    const video = payload?.media?.video || null;
+    const isVideoNote = Boolean(video) || payload?.note?.type === "video";
     return {
       source: {
         platform: "小红书",
@@ -520,12 +532,18 @@
       note: {
         title: cleanText(payload.note?.title, 500),
         author: cleanText(payload.note?.author, 200),
+        noteType: isVideoNote ? "video" : "normal",
         publishedDate: publishedDate?.display || null,
         publishedDateIso: publishedDate?.iso || null,
         content: cleanText(payload.note?.content, 10000),
         hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100)),
         uncertainties: stringArray(payload?.uncertainties || [])
       },
+      video: video ? {
+        durationSec: Number(video.durationSec) || null,
+        transcript: cleanText(video.transcript, 6000) || null,
+        transcriptSource: cleanText(video.transcriptSource, 60) || null
+      } : null,
       comments: (payload.commentExport?.comments || [])
         .slice(0, config.commentLimit)
         .map((comment) => compactComment(comment, config.includeVisibleReplies)),
@@ -618,7 +636,9 @@
   }
 
   function visionCacheKey(payload, config) {
-    const urls = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT).map((item) => stableImageUrl(item.url));
+    const urls = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT).map((item) => (
+      item?.dataUrl ? `frame:${hashText(item.dataUrl)}` : stableImageUrl(item.url)
+    ));
     return `vision:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
   }
 

@@ -75,6 +75,8 @@ async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
       href: `https://www.xiaohongshu.com/explore/${NOTE_ID}`,
       pathname: `/explore/${NOTE_ID}`
     },
+    setTimeout,
+    clearTimeout,
     URL
   };
   context.globalThis = context;
@@ -171,6 +173,7 @@ async function captureAndSummarizeWithOverlappingVision() {
       pathname: `/explore/${NOTE_ID}`
     },
     setTimeout,
+    clearTimeout,
     URL
   };
   context.globalThis = context;
@@ -273,6 +276,7 @@ async function captureForMergeWithOverlappingVision() {
       pathname: `/explore/${NOTE_ID}`
     },
     setTimeout,
+    clearTimeout,
     URL
   };
   context.globalThis = context;

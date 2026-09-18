@@ -10,6 +10,15 @@
   const MAX_SCROLL_ROUNDS = 80;
   const SCROLL_WAIT_MS = 650;
 
+  // 视频帖证据：自动字幕 + 按时长比例截帧。截帧位置避开片头片尾，长边压到 720px。
+  const STATE_REQUEST_TIMEOUT_MS = 1500;
+  const VIDEO_TRANSCRIPT_LIMIT = 6000;
+  const VIDEO_FRAME_POSITIONS = [0.08, 0.24, 0.4, 0.56, 0.72, 0.88];
+  const VIDEO_FRAME_MAX_EDGE = 720;
+  const VIDEO_FRAME_QUALITY = 0.62;
+  const VIDEO_LOAD_TIMEOUT_MS = 15000;
+  const VIDEO_SEEK_TIMEOUT_MS = 6000;
+
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function cleanText(value) {
@@ -40,6 +49,293 @@
   function getNoteId() {
     return location.pathname.match(/\/explore\/([0-9a-f]{24})/i)?.[1] || null;
   }
+
+  // ---- 视频帖：读取页面主世界的 __INITIAL_STATE__，拿到视频流与自动字幕地址 ----
+
+  function requestNoteDetail(noteId) {
+    if (!noteId || typeof window?.addEventListener !== "function") return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let settled = false;
+      const finish = (note) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener("XHS_AI_STATE_RESPONSE", onResponse);
+        resolve(note || null);
+      };
+      const timer = setTimeout(() => finish(null), STATE_REQUEST_TIMEOUT_MS);
+      const onResponse = (event) => {
+        if (event?.detail?.requestId !== requestId) return;
+        finish(event.detail?.note || null);
+      };
+      window.addEventListener("XHS_AI_STATE_RESPONSE", onResponse);
+      try {
+        window.dispatchEvent(new CustomEvent("XHS_AI_STATE_REQUEST", { detail: { requestId, noteId } }));
+      } catch {
+        finish(null);
+      }
+    });
+  }
+
+  // 桥接脚本缺失时（注入失败或旧版浏览器）退回解析 SSR 内联脚本。
+  function parseInitialStateFromScript() {
+    const scripts = Array.from(document.querySelectorAll("script:not([src])"));
+    const marker = "window.__INITIAL_STATE__=";
+    for (const script of scripts) {
+      const text = script.textContent || "";
+      const start = text.indexOf(marker);
+      if (start < 0) continue;
+      try {
+        return JSON.parse(text.slice(start + marker.length));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  async function requestNoteDetailWithFallback(noteId) {
+    const bridged = await requestNoteDetail(noteId);
+    if (bridged) return bridged;
+    try {
+      const state = parseInitialStateFromScript();
+      const map = state?.note?.noteDetailMap || {};
+      const entry = map[noteId] ||
+        Object.values(map).find((item) => item?.note?.noteId === noteId) ||
+        null;
+      return entry?.note ? JSON.parse(JSON.stringify(entry.note)) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function httpsMediaUrl(url) {
+    const text = cleanText(url);
+    return text ? text.replace(/^http:\/\//i, "https://") : null;
+  }
+
+  function pickStreamUrl(entry) {
+    return httpsMediaUrl(
+      entry?.masterUrl || entry?.master_url ||
+      (Array.isArray(entry?.backupUrls) ? entry.backupUrls[0] : null) ||
+      (Array.isArray(entry?.backup_urls) ? entry.backup_urls[0] : null)
+    );
+  }
+
+  // 页面状态的数据形态会随登录态或版本变化（stream 的键名在 h264 与 EF4 等
+  // 编码名之间切换，字幕可能整体缺失），因此先按已知路径读取，再用受限深扫兜底。
+  function scanVideoSubtree(video) {
+    const mp4Urls = [];
+    const srtUrls = [];
+    const visit = (value, path, depth) => {
+      if (value == null || depth > 8) return;
+      if (typeof value === "object") {
+        for (const key of Object.keys(value)) visit(value[key], `${path}.${key}`, depth + 1);
+        return;
+      }
+      if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return;
+      if (/\.mp4(\?|$)/i.test(value)) mp4Urls.push({ url: value, path });
+      else if (/\.srt(\?|$)/i.test(value)) srtUrls.push({ url: value, path });
+    };
+    visit(video, "video", 0);
+    return { mp4Urls, srtUrls };
+  }
+
+  function buildVideoInfo(noteDetail) {
+    if (!noteDetail || noteDetail.type !== "video") return null;
+    const video = noteDetail.video || {};
+
+    const streamMap = video.media?.stream || {};
+    const knownEntries = [];
+    for (const value of Object.values(streamMap)) {
+      if (Array.isArray(value)) knownEntries.push(...value.filter((item) => item && typeof item === "object"));
+    }
+    const h264Entries = Array.isArray(streamMap.h264) ? streamMap.h264 : [];
+    const preferredKnown =
+      h264Entries.find((item) => item?.masterUrl || item?.master_url) ||
+      h264Entries[0] ||
+      knownEntries.find((item) => item?.masterUrl || item?.master_url) ||
+      knownEntries[0] ||
+      null;
+
+    const { mp4Urls, srtUrls } = scanVideoSubtree(video);
+    const streamUrl = pickStreamUrl(preferredKnown) ||
+      httpsMediaUrl(mp4Urls.find((item) => !/backup/i.test(item.path))?.url || mp4Urls[0]?.url);
+    const subtitleUrl = httpsMediaUrl(
+      srtUrls.find((item) => /zh/i.test(item.path))?.url || srtUrls[0]?.url
+    );
+    if (!streamUrl && !subtitleUrl) return null;
+
+    const durationSource = preferredKnown || null;
+    const streamDurationMs = Number(durationSource?.duration) || null;
+    const mediaV2Video = video.mediaV2?.video || {};
+    const v2DurationSec = Number(mediaV2Video.duration) || null;
+    return {
+      streamUrl,
+      subtitleUrl,
+      // stream.duration 是毫秒，mediaV2.video.duration 是取整后的秒
+      durationMs: streamDurationMs || (v2DurationSec ? v2DurationSec * 1000 : null),
+      width: Number(durationSource?.width) || Number(mediaV2Video.width) || null,
+      height: Number(durationSource?.height) || Number(mediaV2Video.height) || null
+    };
+  }
+
+  function parseSrtTranscript(text) {
+    const cues = [];
+    for (const block of String(text || "").replace(/\r/g, "").split(/\n{2,}/)) {
+      const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+      const timeIndex = lines.findIndex((line) => line.includes("-->"));
+      if (timeIndex < 0) continue;
+      const content = lines.slice(timeIndex + 1).join(" ").replace(/<[^>]+>/g, "").trim();
+      if (content && cues[cues.length - 1] !== content) cues.push(content);
+    }
+    return cues;
+  }
+
+  async function fetchVideoTranscript(subtitleUrl) {
+    if (!subtitleUrl) return null;
+    const response = await fetch(subtitleUrl, { credentials: "omit" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const transcript = parseSrtTranscript(await response.text()).join(" ");
+    return transcript ? transcript.slice(0, VIDEO_TRANSCRIPT_LIMIT) : null;
+  }
+
+  function drawVideoFrame(video) {
+    const scale = Math.min(1, VIDEO_FRAME_MAX_EDGE / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    return {
+      dataUrl: canvas.toDataURL("image/jpeg", VIDEO_FRAME_QUALITY),
+      width: canvas.width,
+      height: canvas.height
+    };
+  }
+
+  function captureFrameAt(video, timeSec) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.removeEventListener("seeked", onSeeked);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish(null), VIDEO_SEEK_TIMEOUT_MS);
+      const onSeeked = () => {
+        try {
+          const frame = drawVideoFrame(video);
+          finish({ ...frame, timestampSec: Math.round(timeSec), source: "video_frame" });
+        } catch {
+          finish(null);
+        }
+      };
+      video.addEventListener("seeked", onSeeked);
+      video.currentTime = Math.min(Math.max(timeSec, 0), Math.max(0, (video.duration || timeSec) - 0.1));
+    });
+  }
+
+  // 用独立的隐藏 video 元素截帧，不干扰用户正在观看的播放器；
+  // crossOrigin="anonymous" 保证画布可导出，加载失败时降级为当前播放器画面。
+  async function captureVideoFrames(streamUrl, durationMs) {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.preload = "auto";
+    video.setAttribute("playsinline", "");
+    video.style.position = "fixed";
+    video.style.left = "-9999px";
+    video.style.top = "0";
+    video.style.width = "2px";
+    video.style.height = "2px";
+    document.body.appendChild(video);
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("加载超时")), VIDEO_LOAD_TIMEOUT_MS);
+        video.addEventListener("loadedmetadata", () => { clearTimeout(timer); resolve(); }, { once: true });
+        video.addEventListener("error", () => { clearTimeout(timer); reject(new Error("视频流无法加载")); }, { once: true });
+        video.src = streamUrl;
+      });
+      const duration = Number.isFinite(video.duration) && video.duration > 0
+        ? video.duration
+        : (Number(durationMs) || 0) / 1000;
+      if (!duration) return [];
+      const frames = [];
+      for (const fraction of VIDEO_FRAME_POSITIONS) {
+        const frame = await captureFrameAt(video, duration * fraction);
+        if (frame) frames.push(frame);
+      }
+      return frames;
+    } finally {
+      video.remove();
+    }
+  }
+
+  function captureLivePlayerFrame(root) {
+    const live = root.querySelector("video");
+    if (!live || live.readyState < 2 || !live.videoWidth) return null;
+    try {
+      return {
+        ...drawVideoFrame(live),
+        timestampSec: Math.round(live.currentTime || 0),
+        source: "video_frame"
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function loadVideoEvidence(root, videoInfo, onDetail) {
+    const evidence = {
+      durationMs: videoInfo.durationMs || null,
+      width: videoInfo.width || null,
+      height: videoInfo.height || null,
+      transcript: null,
+      transcriptSource: null,
+      frames: [],
+      warnings: []
+    };
+
+    if (videoInfo.subtitleUrl) {
+      evidence.transcriptSource = "auto_subtitle";
+      try {
+        evidence.transcript = await fetchVideoTranscript(videoInfo.subtitleUrl);
+        onDetail?.(evidence.transcript ? "已读取视频自动字幕" : "该视频的自动字幕为空");
+      } catch (error) {
+        evidence.warnings.push(`视频自动字幕读取失败（${error?.message || "未知错误"}），口播内容缺失。`);
+      }
+    } else {
+      evidence.warnings.push("该视频没有平台自动字幕，口播内容无法读取。");
+    }
+
+    if (videoInfo.streamUrl) {
+      try {
+        evidence.frames = await captureVideoFrames(videoInfo.streamUrl, videoInfo.durationMs);
+        onDetail?.(evidence.frames.length ? `已截取 ${evidence.frames.length} 帧视频画面` : "未能截取视频画面");
+      } catch (error) {
+        evidence.warnings.push(`视频画面截取失败（${error?.message || "未知错误"}）。`);
+        const liveFrame = captureLivePlayerFrame(root);
+        if (liveFrame) evidence.frames.push(liveFrame);
+      }
+    }
+
+    return evidence;
+  }
+
+  function buildVideoEvidence(root, noteId, onDetail) {
+    if (!noteId) return Promise.resolve(null);
+    return requestNoteDetailWithFallback(noteId)
+      .then((noteDetail) => {
+        const videoInfo = buildVideoInfo(noteDetail);
+        if (!videoInfo) return null;
+        return loadVideoEvidence(root, videoInfo, onDetail);
+      })
+      .catch(() => null);
+  }
+
 
   function getDetailRoot() {
     const roots = [
@@ -113,7 +409,22 @@
     return images;
   }
 
-  function buildVisionSeed(root) {
+  // 视频帖没有轮播图，画面证据就是截帧（dataUrl 直接随消息传给后台识别）。
+  function collectNoteMedia(root, videoEvidence) {
+    if (videoEvidence) {
+      return videoEvidence.frames.map((frame) => ({
+        url: null,
+        dataUrl: frame.dataUrl,
+        width: frame.width || null,
+        height: frame.height || null,
+        timestampSec: frame.timestampSec,
+        source: "video_frame"
+      }));
+    }
+    return collectMedia(root);
+  }
+
+  function buildVisionSeed(root, videoEvidence) {
     const noteId = getNoteId();
     if (!noteId) throw new Error("无法识别当前帖文 ID。");
     return {
@@ -124,7 +435,12 @@
         pageSessionId: PAGE_SESSION_ID
       },
       media: {
-        images: collectMedia(root),
+        images: collectNoteMedia(root, videoEvidence),
+        video: videoEvidence ? {
+          durationSec: videoEvidence.durationMs ? Math.round(videoEvidence.durationMs / 1000) : null,
+          transcript: videoEvidence.transcript,
+          transcriptSource: videoEvidence.transcriptSource
+        } : null,
         note: "页面当前可访问的图片版本，不保证为创作者上传的未压缩原文件。"
       }
     };
@@ -233,7 +549,7 @@
     }
   }
 
-  function extractNote(root, options, loadingResult) {
+  function extractNote(root, options, loadingResult, videoEvidence = null) {
     const noteId = getNoteId();
     if (!noteId) throw new Error("无法识别当前帖文 ID。");
 
@@ -243,6 +559,7 @@
     const displayedCommentRaw = textOf(root, ".comments-container .total") ||
       textOf(root, ".chat-wrapper .count");
     const comments = collectTopLevelComments(root, options.limit, options.includeVisibleReplies);
+    const frameImages = collectNoteMedia(root, videoEvidence);
 
     return {
       schemaVersion: 1,
@@ -258,6 +575,7 @@
         author: textOf(root, ".author-wrapper .username") || null,
         authorProfileUrl: root.querySelector(".author-wrapper a.name")?.href || null,
         content: textOf(root, "#detail-desc .note-text, #detail-desc, .desc .note-text") || null,
+        type: videoEvidence ? "video" : "normal",
         hashtags: Array.from(root.querySelectorAll("#detail-desc a.tag, .desc a.tag"))
           .map((node) => cleanText(node.textContent))
           .filter(Boolean),
@@ -284,9 +602,18 @@
         comments
       },
       media: {
-        images: collectMedia(root),
+        images: frameImages,
+        video: videoEvidence ? {
+          durationSec: videoEvidence.durationMs ? Math.round(videoEvidence.durationMs / 1000) : null,
+          width: videoEvidence.width,
+          height: videoEvidence.height,
+          transcript: videoEvidence.transcript,
+          transcriptSource: videoEvidence.transcriptSource,
+          frameTimestamps: videoEvidence.frames.map((frame) => frame.timestampSec)
+        } : null,
         note: "页面当前可访问的图片版本，不保证为创作者上传的未压缩原文件。"
-      }
+      },
+      uncertainties: videoEvidence?.warnings?.length ? videoEvidence.warnings : undefined
     };
   }
 
@@ -303,11 +630,14 @@
     }
 
     await sendProgress("正在读取帖文", "获取元信息、互动数和媒体资源", 0);
-    if (typeof onVisionSeed === "function") onVisionSeed(buildVisionSeed(root));
+    const videoEvidence = await buildVideoEvidence(root, getNoteId(), (detail) => {
+      return sendProgress("正在读取视频", detail, 0);
+    });
+    if (typeof onVisionSeed === "function") onVisionSeed(buildVisionSeed(root, videoEvidence));
     const loadingResult = await loadTopLevelComments(root, options.limit);
-    await sendProgress("正在整理证据", "汇总正文、互动数据、图片和评论", Math.min(options.limit, loadingResult.loaded));
+    await sendProgress("正在整理证据", "汇总正文、互动数据、媒体和评论", Math.min(options.limit, loadingResult.loaded));
 
-    const payload = extractNote(root, options, loadingResult);
+    const payload = extractNote(root, options, loadingResult, videoEvidence);
     return {
       ok: true,
       payload,
@@ -392,7 +722,8 @@
     if (visionPreparationPromise) await visionPreparationPromise;
 
     const payload = captured.payload;
-    const detail = `已采集 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} 张图片。`;
+    const mediaUnit = payload.media.video ? "帧视频画面" : "张图片";
+    const detail = `已采集 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} ${mediaUnit}。`;
     await Promise.allSettled([
       chrome.runtime.sendMessage({
         type: "XHS_AI_MERGE_CAPTURE_DONE",

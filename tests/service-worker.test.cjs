@@ -136,10 +136,11 @@ const payload = {
 };
 
 (async () => {
-  assert.equal(context.XhsPrompts.version, "2026-08-20-v3");
+  assert.equal(context.XhsPrompts.version, "2026-09-18-v4");
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
   assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
+  assert.match(context.XhsPrompts.textSystem, /video\.transcript/);
   assert.equal(context.XhsAi.DEFAULT_CONFIG.promptVersion, context.XhsPrompts.version);
 
   assert.equal(context.sanitizeFilename("测试/帖文"), "测试-帖文");

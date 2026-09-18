@@ -157,6 +157,9 @@ async function prepareCurrentPage() {
   if (!(await hasXhsLoginSession(tab.url))) {
     throw new Error(LOGIN_REQUIRED_MESSAGE);
   }
+  // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
+  // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
+  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
   await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
   const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
   if (!context?.ok || !context.pageSessionId) {
@@ -265,7 +268,7 @@ function renderBasket() {
   elements.mergeList.innerHTML = basketItems.map((item) => {
     const isShot = item.kind === "user_screenshot";
     const label = [item.author || "未知账号", item.title].filter(Boolean).join("：");
-    const meta = `${item.commentCount || 0} 条评论${item.hasUrl ? "" : " · 无链接"}`;
+    const meta = `${item.isVideo ? "视频 · " : ""}${item.commentCount || 0} 条评论${item.hasUrl ? "" : " · 无链接"}`;
     return `<li class="merge-item" data-id="${escapeHtml(item.id)}">` +
       `<span class="merge-badge ${isShot ? "merge-badge-shot" : "merge-badge-page"}">${isShot ? "截图" : "网页"}</span>` +
       `<span class="merge-item-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
