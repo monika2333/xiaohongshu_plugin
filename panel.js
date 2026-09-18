@@ -54,7 +54,7 @@ function switchView(view) {
     elements.extractButton.after(elements.statusCard);
   }
   try {
-    void chrome.storage?.local?.set?.({ xhsPopupView: currentView })?.catch?.(() => {});
+    void chrome.storage?.local?.set?.({ xhsPanelView: currentView })?.catch?.(() => {});
   } catch {
     // storage 不可用时仅影响视图记忆
   }
@@ -62,8 +62,8 @@ function switchView(view) {
 
 async function restoreStoredView() {
   try {
-    const stored = await chrome.storage?.local?.get?.("xhsPopupView");
-    if (stored?.xhsPopupView) switchView(stored.xhsPopupView);
+    const stored = await chrome.storage?.local?.get?.("xhsPanelView");
+    if (stored?.xhsPanelView) switchView(stored.xhsPanelView);
   } catch {
     // 保持默认视图
   }

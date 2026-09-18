@@ -73,7 +73,7 @@ vm.runInContext(source, context, { filename: "service-worker.js" });
 // —— 侧边栏形态：图标点击开/关面板，不再使用弹出气泡 ——
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
-assert.equal(manifest.side_panel?.default_path, "popup.html");
+assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
 // 面板行为对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
 assert.equal(panelBehaviors.length, 1);

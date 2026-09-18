@@ -544,7 +544,7 @@ async function summarizePagePayload(message, sender) {
   }
 }
 
-async function getWorkflowForPopup(message) {
+async function getWorkflowForPanel(message) {
   const workflow = await getWorkflowState(message.tabId, message.pageSessionId, message.pageUrl);
   return { ok: true, workflow };
 }
@@ -764,7 +764,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       task = summarizeMergeBasket(message);
       break;
     case "XHS_AI_GET_WORKFLOW":
-      task = getWorkflowForPopup(message);
+      task = getWorkflowForPanel(message);
       break;
     default:
       return undefined;

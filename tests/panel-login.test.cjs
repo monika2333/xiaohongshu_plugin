@@ -97,8 +97,8 @@ function createPopupEnvironment({ tabUrl, cookieImpl }) {
   };
 
   vm.createContext(context);
-  const source = fs.readFileSync(path.join(__dirname, "..", "popup.js"), "utf8");
-  vm.runInContext(source, context, { filename: "popup.js" });
+  const source = fs.readFileSync(path.join(__dirname, "..", "panel.js"), "utf8");
+  vm.runInContext(source, context, { filename: "panel.js" });
 
   return { elements, state };
 }
@@ -178,7 +178,7 @@ async function settle(rounds = 2) {
     assert.match(elements["#status-detail"].textContent, /请先打开小红书或微博帖文详情页/);
   }
 
-  process.stdout.write("popup login preflight tests passed\n");
+  process.stdout.write("panel login preflight tests passed\n");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

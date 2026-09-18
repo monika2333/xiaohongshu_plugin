@@ -115,8 +115,8 @@ const context = {
 };
 
 vm.createContext(context);
-const source = fs.readFileSync(path.join(__dirname, "..", "popup.js"), "utf8");
-vm.runInContext(source, context, { filename: "popup.js" });
+const source = fs.readFileSync(path.join(__dirname, "..", "panel.js"), "utf8");
+vm.runInContext(source, context, { filename: "panel.js" });
 
 (async () => {
   await new Promise((resolve) => setImmediate(resolve));
@@ -304,7 +304,7 @@ vm.runInContext(source, context, { filename: "popup.js" });
   assert.match(elements["#result-text"].value, /截图帖文事件/);
   assert.equal(elements["#shot-single-url"].value, "");
 
-  process.stdout.write("popup workflow restoration tests passed\n");
+  process.stdout.write("panel workflow restoration tests passed\n");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
