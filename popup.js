@@ -49,6 +49,12 @@ function switchView(view) {
   elements.tabMerge.dataset.active = currentView === "merge" ? "true" : "false";
   elements.viewSingle.hidden = currentView !== "single";
   elements.viewMerge.hidden = currentView !== "merge";
+  // 状态卡两个视图共用：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后
+  if (currentView === "merge") {
+    elements.viewMerge.appendChild(elements.statusCard);
+  } else {
+    elements.extractButton.after(elements.statusCard);
+  }
   try {
     void chrome.storage?.local?.set?.({ xhsPopupView: currentView })?.catch?.(() => {});
   } catch {

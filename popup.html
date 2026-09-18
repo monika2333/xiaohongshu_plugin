@@ -35,6 +35,16 @@
           <span class="button-arrow" aria-hidden="true">↘</span>
         </button>
 
+        <section id="status-card" class="status-card" aria-live="polite">
+          <div class="status-topline">
+            <span class="status-dot"></span>
+            <strong id="status-title">准备就绪</strong>
+            <span id="status-count">0%</span>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+          <p id="status-detail">请先打开一个小红书帖文详情页。</p>
+        </section>
+
         <section class="screenshot-panel" aria-labelledby="shot-title">
           <div class="merge-heading">
             <h2 id="shot-title">帖文截图概括</h2>
@@ -69,16 +79,6 @@
             <span class="button-arrow" aria-hidden="true">↘</span>
           </button>
         </section>
-      </section>
-
-      <section id="status-card" class="status-card" aria-live="polite">
-        <div class="status-topline">
-          <span class="status-dot"></span>
-          <strong id="status-title">准备就绪</strong>
-          <span id="status-count">0%</span>
-        </div>
-        <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-        <p id="status-detail">请先打开一个小红书帖文详情页。</p>
       </section>
 
       <section id="result-card" class="result-card" hidden aria-labelledby="result-title">

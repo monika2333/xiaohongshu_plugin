@@ -14,7 +14,9 @@ function createElement() {
     style: {},
     listeners: {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
-    select() {}
+    select() {},
+    after() {},
+    appendChild() {}
   };
 }
 
