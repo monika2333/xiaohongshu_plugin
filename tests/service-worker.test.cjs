@@ -8,6 +8,7 @@ const downloads = [];
 const storageState = { local: {}, session: {} };
 const accessLevels = [];
 const runtimeMessages = [];
+const panelBehaviors = [];
 
 function storageArea(name) {
   return {
@@ -32,6 +33,12 @@ context = {
       download: async (options) => {
         downloads.push(options);
         return downloads.length;
+      }
+    },
+    sidePanel: {
+      setPanelBehavior: async (behavior) => {
+        panelBehaviors.push(behavior);
+        return undefined;
       }
     },
     runtime: {
@@ -69,6 +76,13 @@ context = {
 vm.createContext(context);
 const source = fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8");
 vm.runInContext(source, context, { filename: "service-worker.js" });
+
+// —— 侧边栏形态：图标点击开/关面板，不再使用弹出气泡 ——
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest.json"), "utf8"));
+assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
+assert.equal(manifest.side_panel?.default_path, "popup.html");
+assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
+assert.deepEqual(panelBehaviors, [{ openPanelOnActionClick: true }]);
 
 const payload = {
   exportedAt: "2026-08-16T00:00:00.000Z",

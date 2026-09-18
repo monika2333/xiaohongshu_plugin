@@ -46,6 +46,8 @@ const storageAccessReady = typeof chrome.storage.local.setAccessLevel === "funct
   ? chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
   : Promise.resolve();
 
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(() => {});
+
 function cleanText(value) {
   return String(value ?? "").replace(/\r?\n/g, " ").trim();
 }
