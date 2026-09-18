@@ -53,11 +53,27 @@ function cleanText(value) {
 }
 
 function isXhsPageUrl(value) {
+  return postPagePlatform(value) === "xiaohongshu";
+}
+
+// 内容脚本消息的来源校验：小红书与微博帖文页均放行。
+function isPostPageUrl(value) {
+  return postPagePlatform(value) !== null;
+}
+
+function postPagePlatform(value) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname.endsWith("xiaohongshu.com") && /\/explore\/[0-9a-f]{24}/i.test(url.pathname);
+    if (url.protocol !== "https:") return null;
+    if (url.hostname === "weibo.com" || url.hostname.endsWith(".weibo.com")) {
+      return /^\/\d+\/[0-9A-Za-z]+\/?$/.test(url.pathname) ? "weibo" : null;
+    }
+    if (url.hostname.endsWith("xiaohongshu.com") && /\/explore\/[0-9a-f]{24}/i.test(url.pathname)) {
+      return "xiaohongshu";
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -306,7 +322,12 @@ async function startDownload(url, filename) {
 async function downloadExport(payload, options) {
   const noteId = sanitizeFilename(payload.source.noteId, "note");
   const title = sanitizeFilename(payload.note.title, "untitled");
-  const folder = `xiaohongshu-export/${title}_${noteId}`;
+  // 微博帖文没有独立标题，目录直接用标题或微博 ID；小红书保持“标题_ID”。
+  const rootDir = payload.source?.platform === "weibo" ? "weibo-export" : "xiaohongshu-export";
+  const baseName = payload.source?.platform === "weibo"
+    ? (payload.note.title ? title : noteId)
+    : `${title}_${noteId}`;
+  const folder = `${rootDir}/${baseName}`;
   const jobs = [
     startDownload(
       dataUrl(JSON.stringify(payload, null, 2), "application/json"),
@@ -579,7 +600,7 @@ async function prepareVisionPayload(message, sender) {
     !pageSessionId ||
     !payload?.source?.noteId ||
     !payload?.media ||
-    !isXhsPageUrl(pageUrl)
+    !isPostPageUrl(pageUrl)
   ) {
     throw new Error("无法确认图片所属的帖文页面，请刷新页面后重试。");
   }
@@ -650,7 +671,7 @@ async function summarizePagePayload(message, sender) {
   const payload = message.payload;
   const pageSessionId = cleanText(message.pageSessionId || payload?.source?.pageSessionId);
   const pageUrl = cleanText(payload?.source?.url || sender?.url);
-  if (!Number.isInteger(tabId) || !pageSessionId || !isXhsPageUrl(pageUrl)) {
+  if (!Number.isInteger(tabId) || !pageSessionId || !isPostPageUrl(pageUrl)) {
     throw new Error("无法确认当前帖文页面，请刷新页面后重试。");
   }
 
@@ -739,6 +760,7 @@ function basketItemSummary(item) {
   return {
     id: item.id,
     kind: item.kind,
+    platform: payload.source?.platform === "weibo" ? "weibo" : "xiaohongshu",
     title: cleanText(payload.note?.title) || "（无标题帖文）",
     author: cleanText(payload.note?.author) || null,
     publishedDisplay: cleanText(payload.note?.publishedDisplay) || null,
@@ -763,9 +785,11 @@ async function addToMergeBasket(payload) {
   if (!isScreenshot && !payload.source.noteId) {
     throw new Error("采集数据缺少帖文 ID，无法加入清单。");
   }
+  // 微博 ID 与小红书 ID 的命名空间不同，清单条目 ID 带平台前缀避免混淆。
+  const liveIdPrefix = payload.source.platform === "weibo" ? "wbnote:" : "note:";
   const id = isScreenshot
     ? `shot:${payload.source.screenshotId}`
-    : `note:${payload.source.noteId}`;
+    : `${liveIdPrefix}${payload.source.noteId}`;
 
   const items = await getMergeBasket();
   const existingIndex = items.findIndex((item) => item.id === id);
@@ -904,8 +928,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
   }
-  if (CONTENT_SCRIPT_MESSAGES.has(message?.type) && (!isXhsPageUrl(sender?.url) || !Number.isInteger(sender?.tab?.id))) {
-    sendResponse({ ok: false, error: "该操作只能从小红书帖文页面发起。" });
+  if (CONTENT_SCRIPT_MESSAGES.has(message?.type) && (!isPostPageUrl(sender?.url) || !Number.isInteger(sender?.tab?.id))) {
+    sendResponse({ ok: false, error: "该操作只能从小红书或微博帖文页面发起。" });
     return false;
   }
   let task;

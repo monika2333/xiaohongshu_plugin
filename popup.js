@@ -1,5 +1,6 @@
 const LIMIT = 50;
 const LOGIN_REQUIRED_MESSAGE = "检测到当前小红书页面尚未登录。请先登录并刷新帖文详情页，再点击“提取并概括”。";
+const WEIBO_LOGIN_REQUIRED_MESSAGE = "检测到当前微博页面尚未登录。请先登录 weibo.com 并刷新帖文页面，再点击“提取并概括”。";
 
 const elements = {
   extractButton: document.querySelector("#extract-button"),
@@ -97,12 +98,19 @@ function escapeHtml(value) {
   ));
 }
 
-function isXhsNoteUrl(url) {
+function detectPostPlatform(url) {
   try {
     const parsed = new URL(url);
-    return parsed.hostname.endsWith("xiaohongshu.com") && /\/explore\/[0-9a-f]{24}/i.test(parsed.pathname);
+    if (parsed.protocol !== "https:") return null;
+    if (parsed.hostname === "weibo.com" || parsed.hostname.endsWith(".weibo.com")) {
+      return /^\/\d+\/[0-9A-Za-z]+\/?$/.test(parsed.pathname) ? "weibo" : null;
+    }
+    if (parsed.hostname.endsWith("xiaohongshu.com")) {
+      return /\/explore\/[0-9a-f]{24}/i.test(parsed.pathname) ? "xiaohongshu" : null;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -111,8 +119,8 @@ async function getActiveTab() {
   return tab;
 }
 
-async function hasXhsLoginSession(url) {
-  const session = await chrome.cookies.get({ url, name: "web_session" });
+async function hasLoginCookie(url, name) {
+  const session = await chrome.cookies.get({ url, name });
   return Boolean(session?.value);
 }
 
@@ -157,16 +165,25 @@ function completionDetail(result, fallback) {
 
 async function prepareCurrentPage() {
   const tab = await getActiveTab();
-  if (!tab?.id || !isXhsNoteUrl(tab.url || "")) {
-    throw new Error("请先打开小红书帖文详情页，再点击提取并概括。");
+  const platform = detectPostPlatform(tab?.url || "");
+  if (!tab?.id || !platform) {
+    throw new Error("请先打开小红书或微博帖文详情页，再点击提取并概括。");
   }
-  if (!(await hasXhsLoginSession(tab.url))) {
-    throw new Error(LOGIN_REQUIRED_MESSAGE);
+  if (platform === "xiaohongshu") {
+    if (!(await hasLoginCookie(tab.url, "web_session"))) {
+      throw new Error(LOGIN_REQUIRED_MESSAGE);
+    }
+    // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
+    // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
+  } else {
+    if (!(await hasLoginCookie("https://weibo.com", "SUB"))) {
+      throw new Error(WEIBO_LOGIN_REQUIRED_MESSAGE);
+    }
+    // 微博采集走页面同源的 /ajax/ 接口，内容脚本直接携带会话 Cookie，无需主世界桥接。
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["weibo-content-script.js"] });
   }
-  // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
-  // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
   const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
   if (!context?.ok || !context.pageSessionId) {
     throw new Error(context?.error || "无法确认当前页面状态，请刷新后重试。");
@@ -273,10 +290,13 @@ function mergeProgressTitle(stage) {
 function renderBasket() {
   elements.mergeList.innerHTML = basketItems.map((item) => {
     const isShot = item.kind === "user_screenshot";
+    const isWeibo = !isShot && item.platform === "weibo";
+    const badgeLabel = isShot ? "截图" : isWeibo ? "微博" : "网页";
+    const badgeClass = isShot ? "merge-badge-shot" : isWeibo ? "merge-badge-weibo" : "merge-badge-page";
     const label = [item.author || "未知账号", item.title].filter(Boolean).join("：");
     const meta = `${item.isVideo ? "视频 · " : ""}${item.commentCount || 0} 条评论${item.hasUrl ? "" : " · 无链接"}`;
     return `<li class="merge-item" data-id="${escapeHtml(item.id)}">` +
-      `<span class="merge-badge ${isShot ? "merge-badge-shot" : "merge-badge-page"}">${isShot ? "截图" : "网页"}</span>` +
+      `<span class="merge-badge ${badgeClass}">${badgeLabel}</span>` +
       `<span class="merge-item-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
       `<span class="merge-item-meta">${escapeHtml(meta)}</span>` +
       `<button class="merge-remove" type="button" title="移除">✕</button>` +

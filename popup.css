@@ -168,6 +168,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .merge-badge { padding: 2px 6px; border-radius: 3px; color: var(--paper); font-size: 9px; font-weight: 700; white-space: nowrap; }
 .merge-badge-page { background: var(--green); }
 .merge-badge-shot { background: var(--red-dark); }
+.merge-badge-weibo { background: #d26a1f; }
 .merge-item-label { overflow: hidden; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; font-weight: 700; }
 .merge-item-meta { color: var(--muted); font-size: 9px; white-space: nowrap; }
 .merge-remove { padding: 2px 7px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 3px; cursor: pointer; font-size: 11px; line-height: 1.4; }

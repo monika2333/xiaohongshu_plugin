@@ -82,7 +82,9 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "popup.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.deepEqual(panelBehaviors, [{ openPanelOnActionClick: true }]);
+// 面板行为对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
+assert.equal(panelBehaviors.length, 1);
+assert.equal(panelBehaviors[0].openPanelOnActionClick, true);
 
 const payload = {
   exportedAt: "2026-08-16T00:00:00.000Z",
@@ -150,7 +152,7 @@ const payload = {
 };
 
 (async () => {
-  assert.equal(context.XhsPrompts.version, "2026-09-18-v4");
+  assert.equal(context.XhsPrompts.version, "2026-09-18-v5");
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
   assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);

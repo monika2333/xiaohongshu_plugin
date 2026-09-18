@@ -160,6 +160,13 @@
     return cleanText(value).replace(/\/+$/, "");
   }
 
+  function platformLabel(source) {
+    const platform = cleanText(source?.platform, 40).toLowerCase();
+    if (platform === "weibo") return "微博";
+    if (platform === "xiaohongshu" || !platform) return "小红书";
+    return platform;
+  }
+
   function normalizeConfig(raw = {}) {
     return {
       text: {
@@ -524,7 +531,7 @@
     const isVideoNote = Boolean(video) || payload?.note?.type === "video";
     return {
       source: {
-        platform: "小红书",
+        platform: platformLabel(payload?.source),
         url: cleanText(payload?.source?.url) || null,
         noteId: payload.source?.noteId || null,
         origin: payload.source?.origin === "user_screenshot" ? "user_screenshot" : "live_page"
@@ -629,7 +636,7 @@
       .filter(Boolean);
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
     const sourceSuffix = sourceUrl
-      ? `（小红书 ${sourceUrl}）`
+      ? `（${platformLabel(payload?.source)} ${sourceUrl}）`
       : "（原帖已删除，内容据用户上传截图整理）";
     const paragraph = `${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${paragraph}`;
@@ -639,7 +646,7 @@
     const urls = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT).map((item) => (
       item?.dataUrl ? `frame:${hashText(item.dataUrl)}` : stableImageUrl(item.url)
     ));
-    return `vision:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
+    return `vision:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
   }
 
   async function resolveVision(payload, config, visionApiKey, cache, emitProgress) {
@@ -707,7 +714,7 @@
 
   function textCacheKey(payload, config, vision) {
     const evidence = buildEvidence(payload, vision, config);
-    return `text:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+    return `text:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
   }
 
   async function summarize(
@@ -810,7 +817,7 @@
   }
 
   function renderMergedSummary(structured, payloads) {
-    const urls = [];
+    const sources = [];
     let missingLinkCount = 0;
     let likesTotal = 0;
     let likesKnown = 0;
@@ -820,7 +827,7 @@
 
     for (const payload of payloads) {
       const url = cleanText(payload?.source?.url);
-      if (url) urls.push(url);
+      if (url) sources.push({ platform: platformLabel(payload?.source), url });
       else missingLinkCount += 1;
       const likes = payload.interactions?.likes?.value;
       if (Number.isFinite(likes) && likes > 0) {
@@ -847,7 +854,7 @@
     else if (commentsKnown) engagement = `截至目前，上述帖文共有${commentsTotal}条评论。`;
 
     let eventBody = cleanText(structured.eventSummary);
-    for (const url of urls) eventBody = eventBody.split(url).join("");
+    for (const { url } of sources) eventBody = eventBody.split(url).join("");
     eventBody = withoutLeadingPublishDate(eventBody);
     const eventSummary = earliest?.display ? `${earliest.display}，${eventBody}` : eventBody;
     const opinionPoints = (structured.opinionPoints || [])
@@ -855,15 +862,21 @@
       .filter(Boolean);
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
 
+    // 同一平台时沿用“（小红书 链接1；链接2）”的形式；跨平台混排时逐条标注来源平台。
+    const platformLabels = [...new Set(sources.map((source) => source.platform))];
+    const sourcePrefix = platformLabels.length === 1 ? `${platformLabels[0]} ` : "";
+    const sourceEntries = sources.map((source) => (
+      platformLabels.length === 1 ? source.url : `${source.platform} ${source.url}`
+    ));
     let sourceSuffix;
-    if (!urls.length) {
+    if (!sources.length) {
       sourceSuffix = payloads.length > 1
         ? "（原帖均已删除，内容据用户上传截图整理）"
         : "（原帖已删除，内容据用户上传截图整理）";
     } else if (missingLinkCount > 0) {
-      sourceSuffix = `（小红书 ${[...urls, `另${missingLinkCount}条原帖已删除`].join("；")}）`;
+      sourceSuffix = `（${sourcePrefix}${[...sourceEntries, `另${missingLinkCount}条原帖已删除`].join("；")}）`;
     } else {
-      sourceSuffix = `（小红书 ${urls.join("；")}）`;
+      sourceSuffix = `（${sourcePrefix}${sourceEntries.join("；")}）`;
     }
 
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
@@ -872,7 +885,7 @@
   function mergedTextCacheKey(payloads, config, visions) {
     const evidence = buildMergedEvidence(payloads, visions, config);
     const ids = payloads
-      .map((payload) => payload.source?.noteId || payload.source?.screenshotId || "unknown")
+      .map((payload) => `${platformLabel(payload?.source)}:${payload.source?.noteId || payload.source?.screenshotId || "unknown"}`)
       .join(",");
     return `merge:${ids}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
   }
@@ -988,6 +1001,7 @@
     validateConfig,
     parseJsonResponse,
     originalPageUrl,
+    platformLabel,
     resolvePublishedDate,
     normalizeVisionItem,
     selectVisionEvidence,
@@ -1001,6 +1015,7 @@
     buildScreenshotPayload,
     analyzeScreenshots,
     sortPayloadsChronologically,
+    buildEvidence,
     buildMergedEvidence,
     renderMergedSummary,
     summarizeMerged
