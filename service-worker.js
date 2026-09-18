@@ -188,8 +188,8 @@ async function getStoredSecrets() {
   const persistentSecrets = localStored[PERSISTENT_SECRETS_KEY] || {};
   const saved = { ...persistentSecrets, ...sessionSecrets };
   return {
-    textApiKey: saved.textApiKey || saved.deepseekApiKey || "",
-    visionApiKey: saved.visionApiKey || saved.qwenApiKey || "",
+    textApiKey: saved.textApiKey || "",
+    visionApiKey: saved.visionApiKey || "",
     feishuWebhookUrl: saved.feishuWebhookUrl || "",
     feishuWebhookSecret: saved.feishuWebhookSecret || "",
     feishuAppSecret: saved.feishuAppSecret || ""
@@ -643,7 +643,7 @@ async function recognizeScreenshots(message) {
   const sourceUrl = validateScreenshotSourceUrl(message?.sourceUrl);
 
   const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
-  const visionApiKey = secrets.visionApiKey || secrets.qwenApiKey;
+  const visionApiKey = secrets.visionApiKey;
   if (!cleanText(visionApiKey)) throw new Error("识别截图需要先配置图片模型 API Key，请打开设置填写。");
 
   const extraction = await XhsAi.analyzeScreenshots(images, config, visionApiKey);

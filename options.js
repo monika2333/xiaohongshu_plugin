@@ -140,7 +140,7 @@ async function restoreSettings() {
   fields.visionBaseUrl.value = response.config.vision.baseUrl;
   fields.visionModel.value = response.config.vision.model;
   fields.feishuAppId.value = response.config.feishu?.appId || "";
-  fields.feishuRecipientId.value = response.config.feishu?.recipientId || response.config.feishu?.recipientOpenId || "";
+  fields.feishuRecipientId.value = response.config.feishu?.recipientId || "";
   const mode = response.config.feishu?.mode === "app" ? "app" : "webhook";
   const modeInput = document.querySelector(`input[name="feishu-mode"][value="${mode}"]`);
   if (modeInput) modeInput.checked = true;

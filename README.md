@@ -35,7 +35,7 @@
 
 推荐预设（所有字段都可以修改）：
 
-- DeepSeek：`https://api.deepseek.com`，模型 `deepseek-v4-flash`
+- DeepSeek：`https://api.deepseek.com`，模型 `deepseek-flash`
 - Qwen：`https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3-vl-plus`
 
 也可以改用其他提供 OpenAI-compatible Chat Completions 接口的模型。保存或测试时，浏览器会针对所填写的 HTTPS API 域名单独请求访问权限。

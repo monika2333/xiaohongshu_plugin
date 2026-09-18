@@ -182,7 +182,7 @@
       feishu: {
         mode: raw.feishu?.mode === "app" ? "app" : "webhook",
         appId: cleanText(raw.feishu?.appId, 160),
-        recipientId: cleanText(raw.feishu?.recipientId || raw.feishu?.recipientOpenId, 160)
+        recipientId: cleanText(raw.feishu?.recipientId, 160)
       },
       rememberApiKeys: raw.rememberApiKeys !== false,
       promptVersion: PROMPT_VERSION
@@ -696,7 +696,7 @@
 
   async function prepareVision(payload, rawConfig, secrets, cache = {}, emitProgress = () => {}) {
     const config = validateConfig(normalizeConfig(rawConfig));
-    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    const visionApiKey = secrets?.visionApiKey;
     const prepared = await resolveVision(payload, config, visionApiKey, cache, emitProgress);
     return { ...prepared, cache };
   }
@@ -716,8 +716,8 @@
     preparedVision = null
   ) {
     const config = validateConfig(normalizeConfig(rawConfig));
-    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
-    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    const textApiKey = secrets?.textApiKey;
+    const visionApiKey = secrets?.visionApiKey;
     if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
 
     const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
@@ -891,8 +891,8 @@
       throw new Error("合并清单是空的，请先加入帖文或上传截图。");
     }
     const config = validateConfig(normalizeConfig(rawConfig));
-    const textApiKey = secrets?.textApiKey || secrets?.deepseekApiKey;
-    const visionApiKey = secrets?.visionApiKey || secrets?.qwenApiKey;
+    const textApiKey = secrets?.textApiKey;
+    const visionApiKey = secrets?.visionApiKey;
     if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
 
     const ordered = sortPayloadsChronologically(payloads);
@@ -969,9 +969,7 @@
     const config = validateConfig(normalizeConfig(rawConfig));
     const isVision = provider === "vision";
     const target = isVision ? config.vision : config.text;
-    const apiKey = isVision
-      ? secrets?.visionApiKey || secrets?.qwenApiKey
-      : secrets?.textApiKey || secrets?.deepseekApiKey;
+    const apiKey = isVision ? secrets?.visionApiKey : secrets?.textApiKey;
     if (!cleanText(apiKey)) throw new Error(`请先填写${isVision ? "图片" : "文字"}模型 API Key。`);
     const answer = await callChat({
       baseUrl: target.baseUrl,
