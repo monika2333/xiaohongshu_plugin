@@ -156,6 +156,7 @@ function createEnvironment({ show = { ...SHOW_BASE }, longText = null, commentPa
   };
   context.globalThis = context;
   vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
     fs.readFileSync(path.join(__dirname, "..", "weibo-content-script.js"), "utf8"),
     context,
     { filename: "weibo-content-script.js" }

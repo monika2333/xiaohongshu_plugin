@@ -81,6 +81,7 @@ async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
   };
   context.globalThis = context;
   vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
     fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
     context,
     { filename: "content-script.js" }
@@ -178,6 +179,7 @@ async function captureAndSummarizeWithOverlappingVision() {
   };
   context.globalThis = context;
   vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
     fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
     context,
     { filename: "content-script.js" }
@@ -281,6 +283,7 @@ async function captureForMergeWithOverlappingVision() {
   };
   context.globalThis = context;
   vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
     fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
     context,
     { filename: "content-script.js" }

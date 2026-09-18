@@ -157,8 +157,11 @@ async function settle(rounds = 2) {
     await elements["#extract-button"].listeners.click();
 
     assert.equal(state.pageMessages, 3); // 恢复工作流 + PAGE_CONTEXT + 采集概括
-    const files = state.scriptExecutions.map((item) => item.files?.[0]).filter(Boolean);
-    assert.deepEqual(files, ["weibo-content-script.js", "weibo-content-script.js"]);
+    const files = state.scriptExecutions.map((item) => (item.files || []).join(",")).filter(Boolean);
+    assert.deepEqual(files, [
+      "capture-common.js,weibo-content-script.js",
+      "capture-common.js,weibo-content-script.js"
+    ]);
     assert.ok(state.scriptExecutions.every((item) => !item.world));
   }
 

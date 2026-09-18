@@ -1,10 +1,15 @@
 (() => {
   if (globalThis.__WEIBO_POST_EXPORTER_INSTALLED__) return;
   globalThis.__WEIBO_POST_EXPORTER_INSTALLED__ = true;
-  const PAGE_SESSION_ID = globalThis.__WEIBO_POST_EXPORTER_PAGE_SESSION_ID__ ||
-    globalThis.crypto?.randomUUID?.() ||
-    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  globalThis.__WEIBO_POST_EXPORTER_PAGE_SESSION_ID__ = PAGE_SESSION_ID;
+  const { cleanText, httpsMediaUrl } = globalThis.XhsCaptureCommon;
+  const PAGE_SESSION_ID = globalThis.XhsCaptureCommon.ensurePageSessionId("__WEIBO_POST_EXPORTER_PAGE_SESSION_ID__");
+
+  // 消息协议、进度上报与工作流尾部在 capture-common.js，本文件只保留微博差异逻辑。
+  const { sendProgress, startMessageListener } = globalThis.XhsCaptureCommon.createCaptureWorkflow({
+    pageSessionId: PAGE_SESSION_ID,
+    getNoteId,
+    runCapture
+  });
 
   const DEFAULT_LIMIT = 50;
   // 评论按平台默认热度序分页拉取；条数上限与小红书一致（50 条一级评论）。
@@ -14,14 +19,6 @@
   const FRAME_MAX_EDGE = 720;
   const FRAME_QUALITY = 0.62;
 
-  function cleanText(value) {
-    return String(value || "")
-      .replace(/\u00a0/g, " ")
-      .replace(/[ \t]+/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  }
-
   function stripSharedFragments(text) {
     // 微博正文里常见“ ​​​”零宽占位与“收起d”等界面碎片，避免进入模型证据。
     return cleanText(String(text || "").replace(/[\u200b-\u200f\u202a-\u202e\ufeff]/g, ""));
@@ -29,11 +26,6 @@
 
   function getNoteId() {
     return location.pathname.match(/^\/\d+\/([0-9A-Za-z]+)/)?.[1] || null;
-  }
-
-  function httpsMediaUrl(url) {
-    const text = cleanText(url);
-    return text ? text.replace(/^http:\/\//i, "https://") : null;
   }
 
   async function fetchWeiboJson(path, errorLabel) {
@@ -256,20 +248,6 @@
     return parsed;
   }
 
-  async function sendProgress(title, detail, count) {
-    const status = {
-      state: "working",
-      title,
-      detail,
-      count,
-      pageSessionId: PAGE_SESSION_ID,
-      pageUrl: location.href,
-      noteId: getNoteId(),
-      updatedAt: Date.now()
-    };
-    await chrome.runtime.sendMessage({ type: "XHS_EXPORT_PROGRESS", ...status }).catch(() => {});
-  }
-
   async function loadComments(noteId, limit) {
     const referenceYear = Number(zonedTimeParts(new Date()).year);
     const comments = [];
@@ -471,116 +449,5 @@
     };
   }
 
-  function startVisionPreparation(visionSeed) {
-    if (!visionSeed?.media?.images?.length) return null;
-    return chrome.runtime.sendMessage({
-      type: "XHS_AI_PREPARE_VISION",
-      payload: visionSeed,
-      pageSessionId: PAGE_SESSION_ID
-    }).catch(() => null);
-  }
-
-  async function runCaptureAndSummarize(rawOptions, suppliedPayload, force) {
-    let payload = suppliedPayload || null;
-    let visionPreparationPromise = null;
-    if (payload) {
-      await sendProgress("正在重新生成", "复用本页面已经采集的证据", payload.commentExport?.extractedTopLevelCount || 0);
-    } else {
-      payload = (await runCapture(rawOptions, (visionSeed) => {
-        visionPreparationPromise = startVisionPreparation(visionSeed);
-      })).payload;
-    }
-
-    const visionPreparationResponse = visionPreparationPromise
-      ? await visionPreparationPromise
-      : null;
-
-    const response = await chrome.runtime.sendMessage({
-      type: "XHS_AI_SUMMARIZE_PAGE",
-      payload,
-      force: Boolean(force),
-      pageSessionId: PAGE_SESSION_ID,
-      preparedVision: visionPreparationResponse?.ok ? visionPreparationResponse.preparedVision : null
-    });
-    if (!response?.ok) throw new Error(response?.error || "概括未完成。");
-    return { ok: true, result: response.result, capture: payload };
-  }
-
-  // 供“加入合并清单”使用：完整采集并等待后台图片识别写入缓存，但不调用文字模型。
-  async function runCaptureForMerge(rawOptions) {
-    let visionPreparationPromise = null;
-    const captured = await runCapture(rawOptions, (visionSeed) => {
-      visionPreparationPromise = startVisionPreparation(visionSeed);
-    });
-    if (visionPreparationPromise) await visionPreparationPromise;
-
-    const payload = captured.payload;
-    const mediaUnit = payload.media.video ? "帧视频画面" : "张图片";
-    const detail = `已采集 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} ${mediaUnit}。`;
-    await chrome.runtime.sendMessage({
-      type: "XHS_AI_MERGE_CAPTURE_DONE",
-      pageSessionId: PAGE_SESSION_ID,
-      pageUrl: location.href,
-      noteId: payload.source?.noteId || null,
-      detail
-    }).catch(() => {});
-    return {
-      ok: true,
-      payload,
-      topLevelCount: captured.topLevelCount,
-      imageCount: captured.imageCount
-    };
-  }
-
-  async function notifyWorkflowFailure(error) {
-    const detail = error?.message || "未知错误";
-    await chrome.runtime.sendMessage({
-      type: "XHS_AI_WORKFLOW_FAILED",
-      pageSessionId: PAGE_SESSION_ID,
-      pageUrl: location.href,
-      noteId: getNoteId(),
-      error: detail
-    }).catch(() => {});
-    return detail;
-  }
-
-  let activeAiWorkflow = null;
-
-  function startAiWorkflow(message) {
-    if (activeAiWorkflow) return activeAiWorkflow;
-    const operation = runCaptureAndSummarize(message.options, message.payload, message.force);
-    const tracked = operation.finally(() => {
-      if (activeAiWorkflow === tracked) activeAiWorkflow = null;
-    });
-    activeAiWorkflow = tracked;
-    return tracked;
-  }
-
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type === "XHS_PAGE_CONTEXT") {
-      sendResponse({
-        ok: true,
-        pageSessionId: PAGE_SESSION_ID,
-        pageUrl: location.href,
-        noteId: getNoteId()
-      });
-      return false;
-    }
-
-    if (!message || !["XHS_CAPTURE_AND_SUMMARIZE", "XHS_CAPTURE_FOR_MERGE"].includes(message.type)) {
-      return undefined;
-    }
-
-    const operation = message.type === "XHS_CAPTURE_FOR_MERGE"
-      ? runCaptureForMerge(message.options)
-      : startAiWorkflow(message);
-    operation
-      .then(sendResponse)
-      .catch(async (error) => {
-        await notifyWorkflowFailure(error);
-        sendResponse({ ok: false, error: error?.message || "未知错误" });
-      });
-
-    return true;
-  });
+  startMessageListener();
 })();

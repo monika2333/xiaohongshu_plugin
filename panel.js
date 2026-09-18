@@ -169,13 +169,13 @@ async function prepareCurrentPage() {
     // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
     // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content-script.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "content-script.js"] });
   } else {
     if (!(await hasLoginCookie("https://weibo.com", "SUB"))) {
       throw new Error(WEIBO_LOGIN_REQUIRED_MESSAGE);
     }
     // 微博采集走页面同源的 /ajax/ 接口，内容脚本直接携带会话 Cookie，无需主世界桥接。
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["weibo-content-script.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "weibo-content-script.js"] });
   }
   const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
   if (!context?.ok || !context.pageSessionId) {
