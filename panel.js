@@ -38,12 +38,20 @@ const elements = {
   shotSingleUrl: document.querySelector("#shot-single-url")
 };
 
-let currentCapture = null;
 let isWorking = false;
 let currentPageContext = null;
 let basketItems = [];
-let lastResultMode = "single";
 let currentView = "single";
+
+// 状态与概括结果归属产生它们的页签：合并结果只出现在合并页签，单条结果只出现在单条页签。
+const DEFAULT_STATUS = {
+  single: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
+  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
+};
+const viewState = {
+  single: { status: null, result: null, capture: null },
+  merge: { status: null, result: null }
+};
 
 function switchView(view) {
   currentView = view === "merge" ? "merge" : "single";
@@ -57,6 +65,7 @@ function switchView(view) {
   } else {
     elements.extractButton.after(elements.statusCard);
   }
+  applyViewOutput(currentView);
   try {
     void chrome.storage?.local?.set?.({ xhsPanelView: currentView })?.catch?.(() => {});
   } catch {
@@ -73,13 +82,33 @@ async function restoreStoredView() {
   }
 }
 
-function setStatus({ state = "idle", title, detail, percent = 0, count = null }) {
-  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
-  elements.statusCard.dataset.state = state;
-  elements.statusTitle.textContent = title;
-  elements.statusDetail.textContent = detail;
-  elements.statusCount.textContent = count == null ? `${safePercent}%` : `${Math.min(count, LIMIT)} / ${LIMIT}`;
+function renderStatus(status) {
+  const safePercent = Math.max(0, Math.min(100, Number(status.percent) || 0));
+  elements.statusCard.dataset.state = status.state;
+  elements.statusTitle.textContent = status.title;
+  elements.statusDetail.textContent = status.detail;
+  elements.statusCount.textContent = status.count == null ? `${safePercent}%` : `${Math.min(status.count, LIMIT)} / ${LIMIT}`;
   elements.progressBar.style.width = `${safePercent}%`;
+}
+
+// mode 缺省为当前页签；后台推送（工作流进度、合并进度）必须显式指定归属页签。
+function setStatus(status, mode = currentView) {
+  const slot = viewState[mode];
+  if (!slot) return;
+  slot.status = { ...status };
+  if (mode === currentView) renderStatus(slot.status);
+}
+
+// 切换页签时重放该页签自己的状态与结果；没有结果就隐藏结果卡。
+function applyViewOutput(mode) {
+  const slot = viewState[mode];
+  renderStatus(slot.status || DEFAULT_STATUS[mode]);
+  if (slot.result) {
+    renderResult(slot.result);
+  } else {
+    elements.resultCard.hidden = true;
+    elements.resultText.value = "";
+  }
 }
 
 function setWorking(working) {
@@ -130,9 +159,7 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp));
 }
 
-function showResult(result, capture) {
-  currentCapture = capture || null;
-  lastResultMode = capture ? "single" : "merge";
+function renderResult(result) {
   elements.resultText.value = result.text;
   elements.resultTime.textContent = formatTime(result.createdAt);
   const evidence = result.evidence || {};
@@ -151,6 +178,15 @@ function showResult(result, capture) {
     notificationLabel
   ].filter(Boolean).join(" · ");
   elements.resultCard.hidden = false;
+}
+
+// capture 非空为单条结果，否则为合并结果；结果只渲染在归属页签上。
+function showResult(result, capture, mode = capture ? "single" : "merge") {
+  const slot = viewState[mode];
+  if (!slot) return;
+  slot.result = result;
+  if (mode === "single") slot.capture = capture || null;
+  if (mode === currentView) renderResult(result);
 }
 
 function completionDetail(result, fallback) {
@@ -215,18 +251,17 @@ function workflowMatchesCurrentPage(workflow) {
 
 function applyWorkflowState(workflow) {
   if (!workflowMatchesCurrentPage(workflow)) return false;
-  currentCapture = workflow.capture || currentCapture;
+  if (workflow.capture) viewState.single.capture = workflow.capture;
   const progress = workflow.progress || {};
   if (workflow.status === "done" && workflow.result) {
-    lastResultMode = "single";
-    showResult(workflow.result, currentCapture);
+    showResult(workflow.result, viewState.single.capture, "single");
     setWorking(false);
     setStatus({
       state: "done",
       title: progress.title || "概括完成",
       detail: progress.detail || "已按固定格式生成，可直接复制。",
       percent: 100
-    });
+    }, "single");
     return true;
   }
   if (workflow.status === "done" && !workflow.result) {
@@ -236,7 +271,7 @@ function applyWorkflowState(workflow) {
       title: progress.title || "已采集完成",
       detail: progress.detail || "页面证据采集完成，可回到插件继续操作。",
       percent: 100
-    });
+    }, "single");
     return true;
   }
   if (workflow.status === "error") {
@@ -246,7 +281,7 @@ function applyWorkflowState(workflow) {
       title: progress.title || "未能完成",
       detail: progress.detail || workflow.error || "发生未知错误。",
       percent: progress.percent || 0
-    });
+    }, "single");
     return true;
   }
   setWorking(true);
@@ -256,13 +291,13 @@ function applyWorkflowState(workflow) {
     detail: progress.detail || "正在恢复当前任务状态…",
     percent: progress.percent || 3,
     count: progress.count
-  });
+  }, "single");
   return true;
 }
 
 async function runFullWorkflow() {
   setWorking(true);
-  setStatus({ state: "working", title: "正在连接页面", detail: "检查当前帖文详情页…", percent: 3 });
+  setStatus({ state: "working", title: "正在连接页面", detail: "检查当前帖文详情页…", percent: 3 }, "single");
   try {
     const response = await startPageWorkflow(null, false);
     setStatus({
@@ -270,9 +305,9 @@ async function runFullWorkflow() {
       title: "概括完成",
       detail: completionDetail(response.result, "已按固定格式生成，可直接复制。"),
       percent: 100
-    });
+    }, "single");
   } catch (error) {
-    setStatus({ state: "error", title: "未能完成", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "未能完成", detail: error?.message || "发生未知错误。", percent: 0 }, "single");
   } finally {
     setWorking(false);
   }
@@ -321,7 +356,7 @@ async function refreshBasket() {
 async function addCurrentPostToBasket() {
   if (isWorking) return;
   setWorking(true);
-  setStatus({ state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 });
+  setStatus({ state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 }, "merge");
   try {
     const page = await prepareCurrentPage();
     const response = await chrome.tabs.sendMessage(page.tabId, {
@@ -338,9 +373,9 @@ async function addCurrentPostToBasket() {
       title: added.replaced ? "已替换清单中的同一条帖文" : "已加入合并清单",
       detail: `当前清单共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`,
       percent: 100
-    });
+    }, "merge");
   } catch (error) {
-    setStatus({ state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 }, "merge");
   } finally {
     setWorking(false);
   }
@@ -354,7 +389,7 @@ async function removeBasketItem(id) {
     basketItems = response.basket || [];
     renderBasket();
   } catch (error) {
-    setStatus({ state: "error", title: "移除失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "移除失败", detail: error?.message || "发生未知错误。", percent: 0 }, "merge");
   }
 }
 
@@ -364,7 +399,7 @@ async function clearBasket() {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
     if (!response?.ok) throw new Error(response?.error || "清空失败。");
   } catch (error) {
-    setStatus({ state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 }, "merge");
     return;
   }
   basketItems = [];
@@ -419,7 +454,7 @@ async function addScreenshotImagesToBasket(images, sourceUrl) {
     title: "截图已识别并加入清单",
     detail: `当前清单共 ${basketItems.length} 条帖文${warningNote}。`,
     percent: 100
-  });
+  }, "merge");
   elements.screenshotUrl.value = "";
 }
 
@@ -430,7 +465,7 @@ async function summarizeScreenshotImages(images, sourceUrl) {
     sourceUrl
   });
   if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
-  setStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
+  setStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 }, "single");
   const response = await chrome.runtime.sendMessage({
     type: "XHS_AI_SUMMARIZE",
     payload: recognized.payload,
@@ -446,7 +481,7 @@ async function summarizeScreenshotImages(images, sourceUrl) {
     title: "截图概括完成",
     detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + warningNote,
     percent: 100
-  });
+  }, "single");
   elements.shotSingleUrl.value = "";
 }
 
@@ -510,7 +545,7 @@ async function commitStagedScreenshots(view) {
   const staged = stagedScreenshots[view];
   if (isWorking || !staged.length) return;
   setWorking(true);
-  setStatus({ state: "working", title: "正在识别截图", detail: `共 ${staged.length} 张截图，正在提取帖文内容…`, percent: 15 });
+  setStatus({ state: "working", title: "正在识别截图", detail: `共 ${staged.length} 张截图，正在提取帖文内容…`, percent: 15 }, view);
   const committedIds = new Set(staged.map((item) => item.id));
   try {
     const images = staged.map((item) => item.dataUrl);
@@ -524,7 +559,7 @@ async function commitStagedScreenshots(view) {
     stagedScreenshots[view] = stagedScreenshots[view].filter((item) => !committedIds.has(item.id));
     renderStaging();
   } catch (error) {
-    setStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 }, view);
   } finally {
     setWorking(false);
   }
@@ -538,7 +573,7 @@ async function runMergeSummarize(force = false) {
     title: "正在合并概括",
     detail: `整合 ${basketItems.length} 条帖文的证据…`,
     percent: 8
-  });
+  }, "merge");
   try {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
     if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
@@ -548,9 +583,9 @@ async function runMergeSummarize(force = false) {
       title: force ? "重新生成完成" : "合并概括完成",
       detail: completionDetail(response.result, `已合并 ${response.result.postCount || basketItems.length} 条帖文，可直接复制。`),
       percent: 100
-    });
+    }, "merge");
   } catch (error) {
-    setStatus({ state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    setStatus({ state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 }, "merge");
   } finally {
     setWorking(false);
   }
@@ -565,7 +600,7 @@ chrome.runtime.onMessage.addListener((message) => {
       title: mergeProgressTitle(progress.stage),
       detail: progress.detail || "正在处理…",
       percent: progress.percent || 8
-    });
+    }, "merge");
   }
 });
 
@@ -651,26 +686,27 @@ elements.copyButton.addEventListener("click", async () => {
 
 elements.regenerateButton.addEventListener("click", async () => {
   if (isWorking) return;
-  if (lastResultMode === "merge") {
+  // 结果卡只显示当前页签自己的结果，“重新生成”跟随当前页签。
+  if (currentView === "merge") {
     await runMergeSummarize(true);
     return;
   }
-  if (!currentCapture) {
+  if (!viewState.single.capture) {
     await runFullWorkflow();
     return;
   }
   setWorking(true);
-  setStatus({ state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 });
+  setStatus({ state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 }, "single");
   try {
-    const response = await startPageWorkflow(currentCapture, true);
+    const response = await startPageWorkflow(viewState.single.capture, true);
     setStatus({
       state: "done",
       title: "重新生成完成",
       detail: completionDetail(response.result, "新版本已替换原概括。"),
       percent: 100
-    });
+    }, "single");
   } catch (error) {
-    setStatus({ state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 });
+    setStatus({ state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 }, "single");
   } finally {
     setWorking(false);
   }

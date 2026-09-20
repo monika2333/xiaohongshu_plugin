@@ -124,10 +124,16 @@ vm.createContext(context);
 const source = fs.readFileSync(path.join(__dirname, "..", "panel.js"), "utf8");
 vm.runInContext(source, context, { filename: "panel.js" });
 
-(async () => {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+async function settle() {
+  for (let index = 0; index < 2; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 
+(async () => {
+  await settle();
+
+  // —— 启动：恢复单条工作流进度（只属于单条页签） ——
   assert.equal(elements["#extract-button"].disabled, true);
   assert.equal(elements[".button-label"].textContent, "正在处理…");
   assert.equal(elements["#status-title"].textContent, "正在读取评论");
@@ -135,12 +141,18 @@ vm.runInContext(source, context, { filename: "panel.js" });
   assert.equal(elements["#status-count"].textContent, "17 / 50");
   assert.equal(elements["#result-card"].hidden, true);
 
+  // 单条页签可见时，合并进度不得推进可见状态卡
   runtimeListener({
     type: "XHS_AI_MERGE_PROGRESS",
     progress: { stage: "vision", percent: 40, detail: "帖文 1/2：准备识别 3 张图片" }
   });
+  assert.equal(elements["#status-title"].textContent, "正在读取评论");
+  // 切到合并页签后能看到合并进度；切回单条页签恢复自己的进度
+  await elements["#tab-merge"].listeners.click();
   assert.equal(elements["#status-title"].textContent, "正在识别图片");
   assert.equal(elements["#status-detail"].textContent, "帖文 1/2：准备识别 3 张图片");
+  await elements["#tab-single"].listeners.click();
+  assert.equal(elements["#status-title"].textContent, "正在读取评论");
 
   runtimeListener({
     type: "XHS_AI_WORKFLOW_STATE",
@@ -203,31 +215,25 @@ vm.runInContext(source, context, { filename: "panel.js" });
     addedAt: Date.now()
   };
   const runtimeCalls = [];
+  let resolveMergeSummarize = null;
   context.chrome.runtime.sendMessage = async (message) => {
     runtimeCalls.push(message.type);
     if (message.type === "XHS_AI_MERGE_ADD") return { ok: true, replaced: false, basket: [basketItem] };
     if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket: [basketItem] };
     if (message.type === "XHS_AI_MERGE_SUMMARIZE") {
-      return {
-        ok: true,
-        result: {
-          text: "★ 合并概括测试\n9月10日，甲发帖。（小红书 https://example.com/a）",
-          createdAt: Date.now(),
-          postCount: 2,
-          evidence: {
-            postCount: 2,
-            topLevelComments: 6,
-            visibleReplies: 1,
-            imagesFound: 0,
-            imagesAnalyzed: 0,
-            textModel: "deepseek-v4-flash"
-          },
-          notification: null
-        }
-      };
+      return new Promise((resolve) => { resolveMergeSummarize = resolve; });
     }
     return { ok: true };
   };
+
+  await elements["#tab-merge"].listeners.click();
+  // 单条页签的结果不允许串到合并页签：合并页签还没有自己的结果，结果卡应隐藏
+  assert.equal(elements["#view-merge"].hidden, false);
+  assert.equal(elements["#result-card"].hidden, true);
+  assert.equal(elements["#result-text"].value, "");
+  // 状态卡重放合并页签自己最近的状态（第二步存入的合并进度）
+  assert.equal(elements["#status-title"].textContent, "正在识别图片");
+
   await elements["#merge-add-button"].listeners.click();
   assert.ok(runtimeCalls.includes("XHS_AI_MERGE_ADD"));
   assert.equal(elements["#status-title"].textContent, "已加入合并清单");
@@ -237,25 +243,134 @@ vm.runInContext(source, context, { filename: "panel.js" });
   assert.equal(elements["#merge-summarize-button"].hidden, false);
   assert.equal(elements["#merge-summarize-label"].textContent, "概括这条帖文");
 
-  await elements["#merge-summarize-button"].listeners.click();
+  runtimeCalls.length = 0;
+  const mergeClick = elements["#merge-summarize-button"].listeners.click();
+  await settle();
   assert.ok(runtimeCalls.includes("XHS_AI_MERGE_SUMMARIZE"));
+  assert.equal(elements["#status-title"].textContent, "正在合并概括");
+  runtimeListener({
+    type: "XHS_AI_MERGE_PROGRESS",
+    progress: { stage: "vision", percent: 40, detail: "帖文 1/2：准备识别 3 张图片" }
+  });
+  assert.equal(elements["#status-title"].textContent, "正在识别图片");
+  resolveMergeSummarize({
+    ok: true,
+    result: {
+      text: "★ 合并概括测试\n9月10日，甲发帖。（小红书 https://example.com/a）",
+      createdAt: Date.now(),
+      postCount: 2,
+      evidence: {
+        postCount: 2,
+        topLevelComments: 6,
+        visibleReplies: 1,
+        imagesFound: 0,
+        imagesAnalyzed: 0,
+        textModel: "deepseek-v4-flash"
+      },
+      notification: null
+    }
+  });
+  await mergeClick;
   assert.equal(elements["#status-title"].textContent, "合并概括完成");
+  assert.equal(elements["#status-count"].textContent, "100%");
+  assert.equal(elements["#result-card"].hidden, false);
   assert.match(elements["#result-text"].value, /合并概括测试/);
   assert.match(elements["#evidence-summary"].textContent, /2 条帖文/);
 
+  // 合并页签内“重新生成”走合并概括
   runtimeCalls.length = 0;
-  await elements["#regenerate-button"].listeners.click();
+  const mergeRegenerate = elements["#regenerate-button"].listeners.click();
+  await settle();
   assert.ok(runtimeCalls.includes("XHS_AI_MERGE_SUMMARIZE"));
+  resolveMergeSummarize({
+    ok: true,
+    result: {
+      text: "★ 合并概括测试\n9月10日，甲发帖。（小红书 https://example.com/a）",
+      createdAt: Date.now(),
+      postCount: 2,
+      evidence: { postCount: 2, topLevelComments: 6, visibleReplies: 1, imagesFound: 0, imagesAnalyzed: 0, textModel: "deepseek-v4-flash" },
+      notification: null
+    }
+  });
+  await mergeRegenerate;
 
-  // —— 视图切换与单条截图概括 ——
-  await elements["#tab-merge"].listeners.click();
-  assert.equal(elements["#tab-merge"].dataset.active, "true");
-  assert.equal(elements["#tab-single"].dataset.active, "false");
-  assert.equal(elements["#view-single"].hidden, true);
-  assert.equal(elements["#view-merge"].hidden, false);
+  // —— 切回单条页签：显示单条自己的结果与状态，合并结果不带过来 ——
   await elements["#tab-single"].listeners.click();
   assert.equal(elements["#view-single"].hidden, false);
   assert.equal(elements["#view-merge"].hidden, true);
+  assert.equal(elements["#result-card"].hidden, false);
+  assert.match(elements["#result-text"].value, /测试正文/);
+  assert.doesNotMatch(elements["#result-text"].value, /合并概括测试/);
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+
+  // 切回合并页签：合并结果与合并页签自己的状态仍在
+  await elements["#tab-merge"].listeners.click();
+  assert.equal(elements["#result-card"].hidden, false);
+  assert.match(elements["#result-text"].value, /合并概括测试/);
+  assert.equal(elements["#status-title"].textContent, "重新生成完成");
+  await elements["#tab-single"].listeners.click();
+
+  // —— 单条页签：提取并概括只写入单条页签 ——
+  const singleCapture = {
+    source: { platform: "xiaohongshu", noteId: pageContext.noteId, pageSessionId: "page-session-1", url: pageUrl },
+    note: { title: "单条帖文", author: "乙" },
+    commentExport: { extractedTopLevelCount: 4 },
+    media: { images: [] }
+  };
+  context.chrome.tabs.sendMessage = async (_tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContext;
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      return {
+        ok: true,
+        result: {
+          text: "★ 测试概括\n测试正文。（小红书 https://example.com）",
+          createdAt: Date.now(),
+          evidence: {
+            topLevelComments: 4,
+            visibleReplies: 2,
+            imagesFound: 3,
+            imagesAnalyzed: 3,
+            textModel: "deepseek-v4-flash"
+          },
+          notification: null
+        },
+        capture: singleCapture
+      };
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  };
+  await elements["#extract-button"].listeners.click();
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+  assert.equal(elements["#result-card"].hidden, false);
+  assert.match(elements["#result-text"].value, /测试正文/);
+
+  // 单条页签内“重新生成”复用采集证据，不影响合并页签的结果
+  context.chrome.tabs.sendMessage = async (_tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContext;
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      assert.equal(message.force, true);
+      assert.deepEqual(message.payload, singleCapture);
+      return {
+        ok: true,
+        result: {
+          text: "★ 测试概括（新版本）\n测试正文二。（小红书 https://example.com）",
+          createdAt: Date.now(),
+          evidence: { topLevelComments: 4, visibleReplies: 2, imagesFound: 3, imagesAnalyzed: 3, textModel: "deepseek-v4-flash" },
+          notification: null
+        },
+        capture: singleCapture
+      };
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  };
+  await elements["#regenerate-button"].listeners.click();
+  assert.equal(elements["#status-title"].textContent, "重新生成完成");
+  assert.match(elements["#result-text"].value, /新版本/);
+
+  await elements["#tab-merge"].listeners.click();
+  assert.match(elements["#result-text"].value, /合并概括测试/);
+  await elements["#tab-single"].listeners.click();
+  assert.match(elements["#result-text"].value, /新版本/);
 
   runtimeCalls.length = 0;
   context.chrome.runtime.sendMessage = async (message) => {
@@ -315,14 +430,14 @@ vm.runInContext(source, context, { filename: "panel.js" });
   elements["#shot-single-url"].value = " https://xhslink.cn/o/abc ";
   elements["#shot-single-input"].files = [{ name: "shot.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
   await elements["#shot-single-input"].listeners.change();
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.equal(elements["#shot-single-staging"].hidden, false);
   assert.match(elements["#shot-single-staging"].innerHTML, /staging-item/);
   assert.match(elements["#shot-single-run"].textContent, /识别这张截图并概括/);
   runtimeCalls.length = 0;
   await elements["#shot-single-run"].listeners.click();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
   assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE"));
   assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SUMMARIZE"));
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
@@ -338,16 +453,16 @@ vm.runInContext(source, context, { filename: "panel.js" });
   runtimeCalls.length = 0;
   const firstPaste = pasteImage("paste-1.png");
   documentListeners.paste(firstPaste);
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.equal(firstPaste.defaultPrevented, true);
   assert.equal(elements["#shot-single-staging"].hidden, false);
   assert.match(elements["#shot-single-run"].textContent, /识别这张截图并概括/);
   documentListeners.paste(pasteImage("paste-2.png"));
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.match(elements["#shot-single-run"].textContent, /识别这 2 张截图并概括/);
   await elements["#shot-single-run"].listeners.click();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
   const recognizeCall = runtimeCalls.find((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE");
   assert.ok(recognizeCall);
   assert.equal(recognizeCall.images.length, 2);
@@ -357,7 +472,7 @@ vm.runInContext(source, context, { filename: "panel.js" });
   // 纯文本粘贴（如往链接框贴 URL）不拦截、不进暂存区
   const textPasteEvent = makeDataTransferEvent({ files: [] });
   documentListeners.paste(textPasteEvent);
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.equal(textPasteEvent.defaultPrevented, false);
   assert.equal(elements["#shot-single-staging"].hidden, true);
 
@@ -368,12 +483,12 @@ vm.runInContext(source, context, { filename: "panel.js" });
     types: ["Files"],
     files: [{ name: "shot-2.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }]
   }));
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.equal(elements["#screenshot-staging"].hidden, false);
   assert.match(elements["#screenshot-run"].textContent, /识别这张截图并加入清单/);
   await elements["#screenshot-run"].listeners.click();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
+  await settle();
   const addCall = runtimeCalls.find((message) => message.type === "XHS_AI_SCREENSHOT_ADD");
   assert.ok(addCall);
   assert.equal(addCall.images.length, 1);
@@ -385,7 +500,7 @@ vm.runInContext(source, context, { filename: "panel.js" });
     files: [{ name: "notes.txt", type: "text/plain", size: 10 }]
   });
   documentListeners.drop(nonImageDropEvent);
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.equal(nonImageDropEvent.defaultPrevented, true);
   assert.equal(elements["#screenshot-staging"].hidden, true);
 
