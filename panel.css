@@ -13,6 +13,9 @@
 
 * { box-sizing: border-box; }
 
+/* .view-tabs、.staging-list 等设了 display:grid/flex，会盖过浏览器对 [hidden] 的默认处理，统一兜底 */
+[hidden] { display: none !important; }
+
 body {
   width: 100%;
   min-height: 100vh;
@@ -160,9 +163,48 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .merge-hint { margin: 0 0 10px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .merge-hint[data-error="true"] { color: var(--red-dark); font-weight: 700; }
 .screenshot-panel { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--ink); }
-.screenshot-panel .merge-actions { grid-template-columns: 1fr; }
-.merge-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.merge-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .merge-actions button { min-height: 36px; cursor: pointer; font-size: 11px; font-weight: 700; }
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 16px 12px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--paper-soft);
+  border: 1.5px dashed var(--muted);
+  transition: border-color .15s ease, background .15s ease;
+}
+.dropzone strong { font-size: 12px; font-weight: 700; color: var(--ink); }
+.dropzone span { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.dropzone:hover, .dropzone:focus-visible { border-color: var(--ink); }
+.dropzone:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.dropzone[data-dragover="true"] { border-color: var(--red); border-style: solid; background: var(--paper-deep); }
+.staging-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+.staging-item { position: relative; }
+.staging-item img { display: block; width: 100%; height: 64px; object-fit: cover; border: 1px solid var(--line); }
+.staging-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--ink);
+  line-height: 1;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  font-size: 12px;
+  cursor: pointer;
+}
+.staging-remove:hover { color: var(--paper); background: var(--red); }
+.staging-run { width: 100%; margin-top: 10px; min-height: 36px; cursor: pointer; font-size: 11px; font-weight: 700; }
+.staging-run[disabled] { cursor: default; }
 .screenshot-url { width: 100%; margin-top: 8px; padding: 8px 10px; color: var(--ink); background: var(--paper-soft); border: 1px solid var(--line); border-radius: 0; font-size: 10px; }
 .screenshot-url:focus { outline: none; border-color: var(--ink); }
 .screenshot-url::placeholder { color: var(--muted); }
