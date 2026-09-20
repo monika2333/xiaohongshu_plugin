@@ -22,6 +22,7 @@ function createElement() {
 }
 
 const selectors = [
+  ".view-tabs",
   "#extract-button",
   ".button-label",
   "#settings-button",
@@ -556,8 +557,9 @@ async function settle() {
   assert.equal(elements["#view-history"].hidden, false);
   assert.equal(elements["#view-single"].hidden, true);
   assert.equal(elements["#view-merge"].hidden, true);
-  // 历史屏没有进度可言，状态卡隐藏
+  // 历史屏没有进度可言，状态卡隐藏；概括页签栏也一并收起
   assert.equal(elements["#status-card"].hidden, true);
+  assert.equal(elements[".view-tabs"].hidden, true);
   await settle();
   assert.ok(runtimeCalls.includes("XHS_AI_HISTORY_LIST"));
   assert.equal(elements["#history-list"].hidden, false);
@@ -597,6 +599,7 @@ async function settle() {
   assert.equal(elements["#view-history"].hidden, true);
   assert.equal(elements["#history-button"].dataset.active, "false");
   assert.equal(elements["#status-card"].hidden, false);
+  assert.equal(elements[".view-tabs"].hidden, false);
   assert.match(elements["#result-text"].value, /截图帖文事件/);
   assert.equal(elements["#regenerate-button"].hidden, false);
   assert.equal(elements["#open-source-button"].hidden, true);

@@ -3,6 +3,7 @@ const LOGIN_REQUIRED_MESSAGE = "检测到当前小红书页面尚未登录。请
 const WEIBO_LOGIN_REQUIRED_MESSAGE = "检测到当前微博页面尚未登录。请先登录 weibo.com 并刷新帖文页面，再点击“提取并概括”。";
 
 const elements = {
+  viewTabs: document.querySelector(".view-tabs"),
   extractButton: document.querySelector("#extract-button"),
   buttonLabel: document.querySelector(".button-label"),
   settingsButton: document.querySelector("#settings-button"),
@@ -75,6 +76,8 @@ function switchView(view) {
   elements.viewSingle.hidden = currentView !== "single";
   elements.viewMerge.hidden = currentView !== "merge";
   elements.viewHistory.hidden = currentView !== "history";
+  // 概括页签栏只服务两个概括页签；历史屏内退出历史即回到概括页签，无需常驻入口
+  elements.viewTabs.hidden = currentView === "history";
   // 状态卡只服务两个概括页签：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后
   elements.statusCard.hidden = currentView === "history";
   if (currentView === "merge") {

@@ -22,6 +22,7 @@ function createElement() {
 }
 
 const selectors = [
+  ".view-tabs",
   "#extract-button",
   ".button-label",
   "#settings-button",
