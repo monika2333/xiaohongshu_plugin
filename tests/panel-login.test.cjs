@@ -83,7 +83,8 @@ function createPopupEnvironment({ tabUrl, cookieImpl }) {
     },
     document: {
       querySelector: (selector) => elements[selector] || null,
-      execCommand: () => true
+      execCommand: () => true,
+      addEventListener: () => {}
     },
     navigator: { clipboard: { writeText: async () => {} } },
     console,

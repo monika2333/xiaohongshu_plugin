@@ -522,6 +522,31 @@ elements.screenshotInput.addEventListener("change", () => {
 elements.shotSingleInput.addEventListener("change", () => {
   uploadScreenshots(Array.from(elements.shotSingleInput.files || []));
 });
+
+// 粘贴/拖入的图片与文件上传共用同一条识别管线；纯文本粘贴不拦截，链接输入框可正常贴 URL。
+function imageFilesFromDataTransfer(dataTransfer) {
+  return Array.from(dataTransfer?.files || []).filter((file) => file.type?.startsWith("image/"));
+}
+
+document.addEventListener("paste", (event) => {
+  const files = imageFilesFromDataTransfer(event.clipboardData);
+  if (!files.length) return;
+  event.preventDefault();
+  uploadScreenshots(files);
+});
+
+document.addEventListener("dragover", (event) => {
+  // 不阻止 dragover 默认行为，drop 不会触发
+  if (event.dataTransfer?.types?.includes("Files")) event.preventDefault();
+});
+
+document.addEventListener("drop", (event) => {
+  if (!event.dataTransfer?.types?.includes("Files")) return;
+  // 拦下浏览器“用拖入文件替换页面”的默认行为，再只挑图片走识别
+  event.preventDefault();
+  const files = imageFilesFromDataTransfer(event.dataTransfer);
+  if (files.length) uploadScreenshots(files);
+});
 elements.mergeSummarizeButton.addEventListener("click", () => runMergeSummarize(false));
 elements.mergeClearButton.addEventListener("click", clearBasket);
 elements.mergeList.addEventListener("click", (event) => {
