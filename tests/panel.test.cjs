@@ -36,7 +36,9 @@ const selectors = [
   "#copy-button",
   "#regenerate-button",
   "#merge-add-button",
-  "#merge-upload-button",
+  "#merge-dropzone",
+  "#screenshot-staging",
+  "#screenshot-run",
   "#screenshot-input",
   "#screenshot-url",
   "#merge-list",
@@ -47,7 +49,9 @@ const selectors = [
   "#tab-merge",
   "#view-single",
   "#view-merge",
-  "#shot-single-upload",
+  "#shot-single-dropzone",
+  "#shot-single-staging",
+  "#shot-single-run",
   "#shot-single-input",
   "#shot-single-url"
 ];
@@ -298,18 +302,6 @@ vm.runInContext(source, context, { filename: "panel.js" });
       this.onload();
     }
   };
-  elements["#shot-single-url"].value = " https://xhslink.cn/o/abc ";
-  elements["#shot-single-input"].files = [{ name: "shot.png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
-  await elements["#shot-single-input"].listeners.change();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE"));
-  assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SUMMARIZE"));
-  assert.equal(elements["#status-title"].textContent, "截图概括完成");
-  assert.match(elements["#result-text"].value, /截图帖文事件/);
-  assert.equal(elements["#shot-single-url"].value, "");
-
-  // —— 剪贴板粘贴上传（单条视图） ——
   function makeDataTransferEvent(clipboard) {
     return {
       clipboardData: clipboard,
@@ -318,40 +310,76 @@ vm.runInContext(source, context, { filename: "panel.js" });
       preventDefault() { this.defaultPrevented = true; }
     };
   }
-  const pastedImage = { name: "image.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" };
-  const pasteEvent = makeDataTransferEvent({ files: [pastedImage] });
+
+  // —— 文件选择进暂存区，按钮统一提交（单条视图） ——
+  elements["#shot-single-url"].value = " https://xhslink.cn/o/abc ";
+  elements["#shot-single-input"].files = [{ name: "shot.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  await elements["#shot-single-input"].listeners.change();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(elements["#shot-single-staging"].hidden, false);
+  assert.match(elements["#shot-single-staging"].innerHTML, /staging-item/);
+  assert.match(elements["#shot-single-run"].textContent, /识别这张截图并概括/);
   runtimeCalls.length = 0;
-  documentListeners.paste(pasteEvent);
+  await elements["#shot-single-run"].listeners.click();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(pasteEvent.defaultPrevented, true);
   assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE"));
   assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SUMMARIZE"));
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  assert.match(elements["#result-text"].value, /截图帖文事件/);
+  assert.equal(elements["#shot-single-url"].value, "");
+  assert.equal(elements["#shot-single-staging"].hidden, true);
+  assert.equal(elements["#shot-single-run"].hidden, true);
 
-  // 纯文本粘贴（如往链接框贴 URL）不拦截、不触发识别
-  const textPasteEvent = makeDataTransferEvent({ files: [] });
+  // —— 剪贴板粘贴进暂存区（单条视图），两张一起提交 ——
+  const pasteImage = (name) => makeDataTransferEvent({
+    files: [{ name, type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }]
+  });
   runtimeCalls.length = 0;
+  const firstPaste = pasteImage("paste-1.png");
+  documentListeners.paste(firstPaste);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(firstPaste.defaultPrevented, true);
+  assert.equal(elements["#shot-single-staging"].hidden, false);
+  assert.match(elements["#shot-single-run"].textContent, /识别这张截图并概括/);
+  documentListeners.paste(pasteImage("paste-2.png"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(elements["#shot-single-run"].textContent, /识别这 2 张截图并概括/);
+  await elements["#shot-single-run"].listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const recognizeCall = runtimeCalls.find((message) => message.type === "XHS_AI_SCREENSHOT_RECOGNIZE");
+  assert.ok(recognizeCall);
+  assert.equal(recognizeCall.images.length, 2);
+  assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  assert.equal(elements["#shot-single-staging"].hidden, true);
+
+  // 纯文本粘贴（如往链接框贴 URL）不拦截、不进暂存区
+  const textPasteEvent = makeDataTransferEvent({ files: [] });
   documentListeners.paste(textPasteEvent);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(textPasteEvent.defaultPrevented, false);
-  assert.equal(runtimeCalls.length, 0);
+  assert.equal(elements["#shot-single-staging"].hidden, true);
 
-  // —— 拖拽上传（合并视图），非图片文件仅拦截默认行为 ——
+  // —— 拖拽进暂存区（合并视图），按钮提交后加入清单；非图片文件仅拦截默认行为 ——
   await elements["#tab-merge"].listeners.click();
   runtimeCalls.length = 0;
-  const dropEvent = makeDataTransferEvent({
+  documentListeners.drop(makeDataTransferEvent({
     types: ["Files"],
     files: [{ name: "shot-2.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }]
-  });
-  documentListeners.drop(dropEvent);
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(elements["#screenshot-staging"].hidden, false);
+  assert.match(elements["#screenshot-run"].textContent, /识别这张截图并加入清单/);
+  await elements["#screenshot-run"].listeners.click();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(dropEvent.defaultPrevented, true);
-  assert.ok(runtimeCalls.some((message) => message.type === "XHS_AI_SCREENSHOT_ADD"));
+  const addCall = runtimeCalls.find((message) => message.type === "XHS_AI_SCREENSHOT_ADD");
+  assert.ok(addCall);
+  assert.equal(addCall.images.length, 1);
   assert.equal(elements["#status-title"].textContent, "截图已识别并加入清单");
+  assert.equal(elements["#screenshot-staging"].hidden, true);
 
-  runtimeCalls.length = 0;
   const nonImageDropEvent = makeDataTransferEvent({
     types: ["Files"],
     files: [{ name: "notes.txt", type: "text/plain", size: 10 }]
@@ -359,7 +387,7 @@ vm.runInContext(source, context, { filename: "panel.js" });
   documentListeners.drop(nonImageDropEvent);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(nonImageDropEvent.defaultPrevented, true);
-  assert.equal(runtimeCalls.length, 0);
+  assert.equal(elements["#screenshot-staging"].hidden, true);
 
   process.stdout.write("panel workflow restoration tests passed\n");
 })().catch((error) => {

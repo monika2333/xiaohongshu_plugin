@@ -49,11 +49,14 @@
           <div class="merge-heading">
             <h2 id="shot-title">帖文截图概括</h2>
           </div>
-          <p class="merge-hint">原帖已删除、只剩截图？上传、Ctrl+V 粘贴或拖入截图（可附原始链接），识别后直接生成一条概括。</p>
-          <div class="merge-actions single-upload">
-            <button id="shot-single-upload" class="secondary-button" type="button">上传帖文截图…</button>
-            <input id="shot-single-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <p class="merge-hint">原帖已删除、只剩截图？把同一帖文的截图都加进来（可附原始链接），一起识别后直接生成一条概括。</p>
+          <div id="shot-single-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
+            <strong>点击选择截图</strong>
+            <span>或直接 Ctrl+V 粘贴、拖入图片，可连续添加多张</span>
           </div>
+          <ul id="shot-single-staging" class="staging-list" hidden></ul>
+          <button id="shot-single-run" class="secondary-button staging-run" type="button" hidden>识别并概括</button>
+          <input id="shot-single-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
           <input id="shot-single-url" class="screenshot-url" type="url"
             placeholder="可选：截图对应帖文的原始链接（小红书或 xhslink 地址）">
         </section>
@@ -65,12 +68,17 @@
             <h2 id="merge-title">合并清单</h2>
             <button id="merge-clear-button" class="merge-clear" type="button" hidden>清空清单</button>
           </div>
-          <p class="merge-hint">把同一事件的多条帖文加入清单（原帖已删除的可用截图补充，支持 Ctrl+V 粘贴或拖入），一次性合并成一条简报。</p>
+          <p class="merge-hint">把同一事件的多条帖文加入清单（原帖已删除的可用截图补充），一次性合并成一条简报。</p>
           <div class="merge-actions">
             <button id="merge-add-button" class="secondary-button" type="button">当前帖文加入清单</button>
-            <button id="merge-upload-button" class="secondary-button" type="button">上传帖文截图…</button>
-            <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
           </div>
+          <div id="merge-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
+            <strong>点击选择截图</strong>
+            <span>或直接 Ctrl+V 粘贴、拖入图片，一起识别后作为一条帖文加入清单</span>
+          </div>
+          <ul id="screenshot-staging" class="staging-list" hidden></ul>
+          <button id="screenshot-run" class="secondary-button staging-run" type="button" hidden>识别并加入清单</button>
+          <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
           <input id="screenshot-url" class="screenshot-url" type="url"
             placeholder="可选：截图对应帖文的原始链接（小红书或 xhslink 地址）">
           <ul id="merge-list" class="merge-list" hidden></ul>

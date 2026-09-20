@@ -18,7 +18,9 @@ const elements = {
   copyButton: document.querySelector("#copy-button"),
   regenerateButton: document.querySelector("#regenerate-button"),
   mergeAddButton: document.querySelector("#merge-add-button"),
-  mergeUploadButton: document.querySelector("#merge-upload-button"),
+  mergeDropzone: document.querySelector("#merge-dropzone"),
+  screenshotStaging: document.querySelector("#screenshot-staging"),
+  screenshotRun: document.querySelector("#screenshot-run"),
   screenshotInput: document.querySelector("#screenshot-input"),
   screenshotUrl: document.querySelector("#screenshot-url"),
   mergeList: document.querySelector("#merge-list"),
@@ -29,7 +31,9 @@ const elements = {
   tabMerge: document.querySelector("#tab-merge"),
   viewSingle: document.querySelector("#view-single"),
   viewMerge: document.querySelector("#view-merge"),
-  shotSingleUpload: document.querySelector("#shot-single-upload"),
+  shotSingleDropzone: document.querySelector("#shot-single-dropzone"),
+  shotSingleStaging: document.querySelector("#shot-single-staging"),
+  shotSingleRun: document.querySelector("#shot-single-run"),
   shotSingleInput: document.querySelector("#shot-single-input"),
   shotSingleUrl: document.querySelector("#shot-single-url")
 };
@@ -83,7 +87,8 @@ function setWorking(working) {
   elements.extractButton.disabled = working;
   elements.regenerateButton.disabled = working;
   elements.mergeAddButton.disabled = working;
-  elements.mergeUploadButton.disabled = working;
+  elements.screenshotRun.disabled = working;
+  elements.shotSingleRun.disabled = working;
   elements.mergeSummarizeButton.disabled = working;
   elements.buttonLabel.textContent = working ? "正在处理…" : "提取并概括";
 }
@@ -445,27 +450,82 @@ async function summarizeScreenshotImages(images, sourceUrl) {
   elements.shotSingleUrl.value = "";
 }
 
-async function uploadScreenshots(files) {
-  if (isWorking || !files?.length) return;
-  const sourceUrlInput = currentView === "merge" ? elements.screenshotUrl : elements.shotSingleUrl;
-  setWorking(true);
-  setStatus({ state: "working", title: "正在识别截图", detail: `共 ${files.length} 张截图，正在提取帖文内容…`, percent: 15 });
-  try {
-    const images = [];
-    for (const file of files) {
-      if (file.size > 12 * 1024 * 1024) throw new Error(`${file.name} 超过 12 MB，请压缩后重试。`);
-      images.push(await downscaleDataUrl(await readImageFile(file)));
+const ACCEPTED_SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const stagedScreenshots = { single: [], merge: [] };
+
+// 点击拖放区、Ctrl+V 粘贴或拖入的图片都先进暂存区，凑齐同一条帖文的截图后由按钮统一提交识别。
+async function stageScreenshotFiles(files) {
+  if (!files?.length) return;
+  const staged = stagedScreenshots[currentView];
+  const failures = [];
+  for (const file of files) {
+    const label = file.name || "剪贴板图片";
+    if (!ACCEPTED_SCREENSHOT_TYPES.includes(file.type)) {
+      failures.push(`${label} 不是支持的图片格式（PNG / JPEG / WebP）。`);
+      continue;
     }
-    if (currentView === "merge") {
+    if (file.size > 12 * 1024 * 1024) {
+      failures.push(`${label} 超过 12 MB，请压缩后重试。`);
+      continue;
+    }
+    try {
+      staged.push({
+        id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        name: label,
+        dataUrl: await downscaleDataUrl(await readImageFile(file))
+      });
+    } catch (error) {
+      failures.push(error?.message || `读取 ${label} 失败。`);
+    }
+  }
+  renderStaging();
+  if (failures.length) {
+    setStatus({
+      state: "error",
+      title: failures.length === files.length ? "截图未能添加" : "部分截图未能添加",
+      detail: failures[0],
+      percent: 0
+    });
+  }
+}
+
+function renderStaging() {
+  for (const view of ["single", "merge"]) {
+    const staged = stagedScreenshots[view];
+    const list = view === "single" ? elements.shotSingleStaging : elements.screenshotStaging;
+    const runButton = view === "single" ? elements.shotSingleRun : elements.screenshotRun;
+    list.innerHTML = staged.map((item) => (
+      `<li class="staging-item"><img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
+      `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="移除 ${escapeHtml(item.name)}">×</button></li>`
+    )).join("");
+    list.hidden = !staged.length;
+    runButton.hidden = !staged.length;
+    runButton.textContent = view === "single"
+      ? (staged.length > 1 ? `识别这 ${staged.length} 张截图并概括` : "识别这张截图并概括")
+      : (staged.length > 1 ? `识别这 ${staged.length} 张截图并加入清单` : "识别这张截图并加入清单");
+  }
+}
+
+async function commitStagedScreenshots(view) {
+  const staged = stagedScreenshots[view];
+  if (isWorking || !staged.length) return;
+  setWorking(true);
+  setStatus({ state: "working", title: "正在识别截图", detail: `共 ${staged.length} 张截图，正在提取帖文内容…`, percent: 15 });
+  const committedIds = new Set(staged.map((item) => item.id));
+  try {
+    const images = staged.map((item) => item.dataUrl);
+    const sourceUrlInput = view === "merge" ? elements.screenshotUrl : elements.shotSingleUrl;
+    if (view === "merge") {
       await addScreenshotImagesToBasket(images, sourceUrlInput.value.trim());
     } else {
       await summarizeScreenshotImages(images, sourceUrlInput.value.trim());
     }
+    // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
+    stagedScreenshots[view] = stagedScreenshots[view].filter((item) => !committedIds.has(item.id));
+    renderStaging();
   } catch (error) {
     setStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
   } finally {
-    elements.screenshotInput.value = "";
-    elements.shotSingleInput.value = "";
     setWorking(false);
   }
 }
@@ -514,16 +574,37 @@ elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptio
 elements.tabSingle.addEventListener("click", () => switchView("single"));
 elements.tabMerge.addEventListener("click", () => switchView("merge"));
 elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
-elements.mergeUploadButton.addEventListener("click", () => elements.screenshotInput.click());
-elements.shotSingleUpload.addEventListener("click", () => elements.shotSingleInput.click());
-elements.screenshotInput.addEventListener("change", () => {
-  uploadScreenshots(Array.from(elements.screenshotInput.files || []));
-});
-elements.shotSingleInput.addEventListener("change", () => {
-  uploadScreenshots(Array.from(elements.shotSingleInput.files || []));
-});
+for (const [view, zone, input, runButton, stagingList] of [
+  ["single", elements.shotSingleDropzone, elements.shotSingleInput, elements.shotSingleRun, elements.shotSingleStaging],
+  ["merge", elements.mergeDropzone, elements.screenshotInput, elements.screenshotRun, elements.screenshotStaging]
+]) {
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  input.addEventListener("change", () => {
+    stageScreenshotFiles(Array.from(input.files || []));
+    input.value = "";
+  });
+  runButton.addEventListener("click", () => commitStagedScreenshots(view));
+  stagingList.addEventListener("click", (event) => {
+    const button = event.target?.closest?.(".staging-remove");
+    if (!button) return;
+    stagedScreenshots[view] = stagedScreenshots[view].filter((item) => item.id !== button.dataset?.id);
+    renderStaging();
+  });
+  zone.addEventListener("dragenter", (event) => {
+    if (event.dataTransfer?.types?.includes("Files")) zone.dataset.dragover = "true";
+  });
+  zone.addEventListener("dragleave", (event) => {
+    if (!zone.contains(event.relatedTarget)) zone.dataset.dragover = "false";
+  });
+}
 
-// 粘贴/拖入的图片与文件上传共用同一条识别管线；纯文本粘贴不拦截，链接输入框可正常贴 URL。
+// 粘贴/拖入的图片与文件选择共用同一个暂存区；纯文本粘贴不拦截，链接输入框可正常贴 URL。
 function imageFilesFromDataTransfer(dataTransfer) {
   return Array.from(dataTransfer?.files || []).filter((file) => file.type?.startsWith("image/"));
 }
@@ -532,7 +613,7 @@ document.addEventListener("paste", (event) => {
   const files = imageFilesFromDataTransfer(event.clipboardData);
   if (!files.length) return;
   event.preventDefault();
-  uploadScreenshots(files);
+  stageScreenshotFiles(files);
 });
 
 document.addEventListener("dragover", (event) => {
@@ -542,10 +623,12 @@ document.addEventListener("dragover", (event) => {
 
 document.addEventListener("drop", (event) => {
   if (!event.dataTransfer?.types?.includes("Files")) return;
-  // 拦下浏览器“用拖入文件替换页面”的默认行为，再只挑图片走识别
+  // 拦下浏览器“用拖入文件替换页面”的默认行为，再只挑图片进暂存区
   event.preventDefault();
+  elements.shotSingleDropzone.dataset.dragover = "false";
+  elements.mergeDropzone.dataset.dragover = "false";
   const files = imageFilesFromDataTransfer(event.dataTransfer);
-  if (files.length) uploadScreenshots(files);
+  if (files.length) stageScreenshotFiles(files);
 });
 elements.mergeSummarizeButton.addEventListener("click", () => runMergeSummarize(false));
 elements.mergeClearButton.addEventListener("click", clearBasket);

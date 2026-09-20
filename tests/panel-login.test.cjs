@@ -36,7 +36,9 @@ const selectors = [
   "#copy-button",
   "#regenerate-button",
   "#merge-add-button",
-  "#merge-upload-button",
+  "#merge-dropzone",
+  "#screenshot-staging",
+  "#screenshot-run",
   "#screenshot-input",
   "#screenshot-url",
   "#merge-list",
@@ -47,7 +49,9 @@ const selectors = [
   "#tab-merge",
   "#view-single",
   "#view-merge",
-  "#shot-single-upload",
+  "#shot-single-dropzone",
+  "#shot-single-staging",
+  "#shot-single-run",
   "#shot-single-input",
   "#shot-single-url"
 ];
