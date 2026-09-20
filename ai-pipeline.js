@@ -24,7 +24,6 @@
       recipientId: ""
     },
     rememberApiKeys: true,
-    saveHistory: true,
     promptVersion: PROMPT_VERSION
   });
 
@@ -186,7 +185,6 @@
         recipientId: cleanText(raw.feishu?.recipientId, 160)
       },
       rememberApiKeys: raw.rememberApiKeys !== false,
-      saveHistory: raw.saveHistory !== false,
       promptVersion: PROMPT_VERSION
     };
   }

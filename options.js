@@ -10,8 +10,7 @@ const fields = {
   feishuAppId: document.querySelector("#feishu-app-id"),
   feishuAppSecret: document.querySelector("#feishu-app-secret"),
   feishuRecipientId: document.querySelector("#feishu-recipient-id"),
-  rememberKeys: document.querySelector("#remember-keys"),
-  saveHistory: document.querySelector("#save-history")
+  rememberKeys: document.querySelector("#remember-keys")
 };
 
 const form = document.querySelector("#settings-form");
@@ -44,8 +43,7 @@ function formValue() {
         appId: fields.feishuAppId.value.trim(),
         recipientId: fields.feishuRecipientId.value.trim()
       },
-      rememberApiKeys: fields.rememberKeys.checked,
-      saveHistory: fields.saveHistory.checked
+      rememberApiKeys: fields.rememberKeys.checked
     },
     secrets: {
       textApiKey: fields.textKey.value.trim(),
@@ -147,7 +145,6 @@ async function restoreSettings() {
   const modeInput = document.querySelector(`input[name="feishu-mode"][value="${mode}"]`);
   if (modeInput) modeInput.checked = true;
   fields.rememberKeys.checked = response.config.rememberApiKeys !== false;
-  fields.saveHistory.checked = response.config.saveHistory !== false;
   fields.textKey.value = response.secrets.textApiKey || "";
   fields.visionKey.value = response.secrets.visionApiKey || "";
   fields.feishuWebhookUrl.value = response.secrets.feishuWebhookUrl || "";

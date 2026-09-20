@@ -24,7 +24,7 @@ const ids = [
   "#vision-base-url", "#vision-model", "#vision-key",
   "#feishu-webhook-url", "#feishu-webhook-secret",
   "#feishu-app-id", "#feishu-app-secret", "#feishu-recipient-id",
-  "#remember-keys", "#save-history", "#settings-form", "#save-button", "#save-status",
+  "#remember-keys", "#settings-form", "#save-button", "#save-status",
   "#clear-keys-button", "#storage-mode-hint", "#feishu-webhook-fields",
   "#feishu-app-fields", "#feishu-test-button", "#feishu-test-status",
   "#text-test-status", "#vision-test-status"
@@ -114,7 +114,6 @@ vm.runInContext(
   assert.equal(elements["#feishu-webhook-url"].value, configResponse.secrets.feishuWebhookUrl);
   assert.equal(elements["#feishu-webhook-fields"].hidden, false);
   assert.equal(elements["#feishu-app-fields"].hidden, true);
-  assert.equal(elements["#save-history"].checked, true);
 
   await elements["#feishu-test-button"].listeners.click();
   assert.deepEqual(
@@ -128,17 +127,11 @@ vm.runInContext(
   const saveMessage = messages.find((message) => message.type === "XHS_AI_SAVE_CONFIG");
   assert.ok(saveMessage);
   assert.equal("enabled" in saveMessage.config.feishu, false);
-  assert.equal(saveMessage.config.saveHistory, true);
+  assert.equal("saveHistory" in saveMessage.config, false);
   assert.equal(
     JSON.stringify(permissions[1].origins),
     JSON.stringify(["https://text.example.com/*", "https://vision.example.com/*", "https://open.feishu.cn/*"])
   );
-
-  // 关闭“保存概括历史”后随表单一并保存
-  elements["#save-history"].checked = false;
-  await elements["#settings-form"].listeners.submit({ preventDefault() {} });
-  const secondSave = messages.filter((message) => message.type === "XHS_AI_SAVE_CONFIG").pop();
-  assert.equal(secondSave.config.saveHistory, false);
 
   process.stdout.write("options settings and Feishu test routing tests passed\n");
 })().catch((error) => {

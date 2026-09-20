@@ -690,11 +690,6 @@ const payload = {
   assert.equal(filled[0].id, "hist-fill-5");
   assert.equal(filled[99].id, "hist-fill-104");
 
-  storageState.local.xhsAiConfig = { ...context.XhsAi.DEFAULT_CONFIG, saveHistory: false };
-  const noHistorySummary = await context.summarizePayload(textOnlyPayload, false);
-  assert.equal(noHistorySummary.ok, true);
-  assert.equal((await context.listHistory()).items.length, 100);
-
   await context.clearHistory();
   assert.equal(storageState.local.xhsAiHistoryV1.length, 0);
 

@@ -463,7 +463,7 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
   // 历史写入失败不应影响已完成的概括与推送
-  await recordHistory(payload, storedResult, config).catch(() => {});
+  await recordHistory(payload, storedResult).catch(() => {});
   return { ok: true, result: storedResult };
 }
 
@@ -642,8 +642,7 @@ function newHistoryId() {
   return `hist-${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(16).slice(2)}`;
 }
 
-async function recordHistory(payload, publicResult, config) {
-  if (!config?.saveHistory) return null;
+async function recordHistory(payload, publicResult) {
   const entry = {
     id: newHistoryId(),
     kind: payload?.source?.origin === "user_screenshot" ? "screenshot" : "single",
@@ -658,8 +657,7 @@ async function recordHistory(payload, publicResult, config) {
   return entry;
 }
 
-async function recordMergedHistory(payloads, publicResult, config) {
-  if (!config?.saveHistory) return null;
+async function recordMergedHistory(payloads, publicResult) {
   const entry = {
     id: newHistoryId(),
     kind: "merge",
@@ -767,7 +765,7 @@ async function summarizeMergeBasket(message) {
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
   // 历史写入失败不应影响已完成的概括与推送
-  await recordMergedHistory(payloads, mergeResult, config).catch(() => {});
+  await recordMergedHistory(payloads, mergeResult).catch(() => {});
   return { ok: true, result: mergeResult };
 }
 
