@@ -16,7 +16,8 @@ function createElement() {
     addEventListener(type, listener) { this.listeners[type] = listener; },
     select() {},
     after() {},
-    appendChild() {}
+    appendChild() {},
+    insertBefore() {}
   };
 }
 
@@ -45,6 +46,12 @@ const selectors = [
   "#merge-summarize-button",
   "#merge-summarize-label",
   "#merge-clear-button",
+  "#history-button",
+  "#view-history",
+  "#history-panel",
+  "#history-list",
+  "#history-clear-button",
+  "#open-source-button",
   "#tab-single",
   "#tab-merge",
   "#view-single",

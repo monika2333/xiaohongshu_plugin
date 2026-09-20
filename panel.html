@@ -14,6 +14,7 @@
           <p class="eyebrow">AI NOTE BRIEFING</p>
           <h1>薯页摘录</h1>
         </div>
+        <button id="history-button" class="settings-button" type="button" title="概括历史">历史</button>
         <button id="settings-button" class="settings-button" type="button" title="模型设置">设置</button>
       </header>
 
@@ -89,6 +90,17 @@
         </section>
       </section>
 
+      <section id="view-history" hidden>
+        <section id="history-panel" class="merge-panel history-panel" aria-labelledby="history-title">
+          <div class="merge-heading">
+            <h2 id="history-title">概括历史</h2>
+            <button id="history-clear-button" class="merge-clear" type="button" hidden>清空历史</button>
+          </div>
+          <p class="merge-hint">概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制；可在设置中关闭保存。</p>
+          <ul id="history-list" class="merge-list history-list" hidden></ul>
+        </section>
+      </section>
+
       <section id="result-card" class="result-card" hidden aria-labelledby="result-title">
         <div class="result-heading">
           <div>
@@ -100,6 +112,7 @@
         <textarea id="result-text" readonly aria-label="生成的概括"></textarea>
         <div class="result-actions">
           <button id="copy-button" class="copy-button" type="button">复制概括</button>
+          <button id="open-source-button" class="secondary-button" type="button" hidden>打开原帖 ↗</button>
           <button id="regenerate-button" class="secondary-button" type="button">重新生成</button>
         </div>
         <details class="evidence-panel">

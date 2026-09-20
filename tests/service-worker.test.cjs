@@ -657,6 +657,47 @@ const payload = {
   assert.match(renderedShotSingle, /截至目前，该帖文获55次点赞、998条评论。/);
   assert.match(renderedShotSingle, /（原帖已删除，内容据用户上传截图整理）$/);
 
+  // —— 概括历史：成功即追加，失败/关闭开关不记录 ——
+  const historyEntries = storageState.local.xhsAiHistoryV1;
+  assert.equal(historyEntries.length, 4);
+  assert.equal(historyEntries[0].kind, "single");
+  assert.equal(historyEntries[0].platform, "xiaohongshu");
+  assert.equal(historyEntries[0].title, "测试/帖文");
+  assert.equal(historyEntries[0].author, "测试用户");
+  assert.match(historyEntries[0].url, /xiaohongshu\.com\/explore/);
+  assert.match(historyEntries[0].result.text, /用户反映测试事件/);
+  assert.equal(historyEntries[1].kind, "merge");
+  assert.equal(historyEntries[1].title, "合并 2 条帖文");
+  assert.equal(historyEntries[1].url, null);
+  assert.equal(historyEntries[2].kind, "merge");
+  assert.equal(historyEntries[3].kind, "screenshot");
+  assert.equal(historyEntries[3].url, "https://xhslink.cn/o/recognize-test");
+
+  const historyListed = await context.listHistory();
+  assert.equal(historyListed.ok, true);
+  assert.equal(historyListed.items.length, 4);
+  assert.equal(historyListed.items[0].kind, "screenshot");
+
+  await context.removeHistoryEntry({ id: historyEntries[3].id });
+  assert.equal((await context.listHistory()).items.length, 3);
+
+  // 固定条数上限：超出后淘汰最旧
+  for (let index = 0; index < 105; index += 1) {
+    await context.appendHistoryEntry({ id: `hist-fill-${index}`, createdAt: index });
+  }
+  const filled = storageState.local.xhsAiHistoryV1;
+  assert.equal(filled.length, 100);
+  assert.equal(filled[0].id, "hist-fill-5");
+  assert.equal(filled[99].id, "hist-fill-104");
+
+  storageState.local.xhsAiConfig = { ...context.XhsAi.DEFAULT_CONFIG, saveHistory: false };
+  const noHistorySummary = await context.summarizePayload(textOnlyPayload, false);
+  assert.equal(noHistorySummary.ok, true);
+  assert.equal((await context.listHistory()).items.length, 100);
+
+  await context.clearHistory();
+  assert.equal(storageState.local.xhsAiHistoryV1.length, 0);
+
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {
   console.error(error);

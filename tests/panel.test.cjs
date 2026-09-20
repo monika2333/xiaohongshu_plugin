@@ -16,7 +16,8 @@ function createElement() {
     addEventListener(type, listener) { this.listeners[type] = listener; },
     select() {},
     after() {},
-    appendChild() {}
+    appendChild() {},
+    insertBefore() {}
   };
 }
 
@@ -45,6 +46,12 @@ const selectors = [
   "#merge-summarize-button",
   "#merge-summarize-label",
   "#merge-clear-button",
+  "#history-button",
+  "#view-history",
+  "#history-panel",
+  "#history-list",
+  "#history-clear-button",
+  "#open-source-button",
   "#tab-single",
   "#tab-merge",
   "#view-single",
@@ -503,6 +510,124 @@ async function settle() {
   await settle();
   assert.equal(nonImageDropEvent.defaultPrevented, true);
   assert.equal(elements["#screenshot-staging"].hidden, true);
+
+  // —— 页眉「历史」按钮与历史屏 ——
+  const historyEntryA = {
+    id: "hist-1",
+    kind: "single",
+    platform: "xiaohongshu",
+    title: "历史帖文甲",
+    author: "甲",
+    url: pageUrl,
+    createdAt: Date.now(),
+    result: {
+      text: "★ 历史帖文甲\n历史概括正文。（小红书 https://example.com）",
+      createdAt: Date.now(),
+      evidence: { topLevelComments: 5, visibleReplies: 0, imagesFound: 0, imagesAnalyzed: 0, textModel: "deepseek-v4-flash" },
+      notification: null
+    }
+  };
+  const historyEntryB = {
+    id: "hist-2",
+    kind: "merge",
+    platform: null,
+    title: "合并 2 条帖文",
+    author: null,
+    url: null,
+    createdAt: Date.now() - 86400000,
+    result: {
+      text: "★ 合并历史\n合并概括正文。",
+      createdAt: Date.now() - 86400000,
+      evidence: {},
+      notification: null
+    }
+  };
+  runtimeCalls.length = 0;
+  context.chrome.runtime.sendMessage = async (message) => {
+    runtimeCalls.push(message.type);
+    if (message.type === "XHS_AI_HISTORY_LIST") return { ok: true, items: [historyEntryA, historyEntryB] };
+    if (message.type === "XHS_AI_HISTORY_REMOVE") return { ok: true };
+    if (message.type === "XHS_AI_HISTORY_CLEAR") return { ok: true };
+    return { ok: true };
+  };
+
+  await elements["#history-button"].listeners.click();
+  assert.equal(elements["#history-button"].dataset.active, "true");
+  assert.equal(elements["#view-history"].hidden, false);
+  assert.equal(elements["#view-single"].hidden, true);
+  assert.equal(elements["#view-merge"].hidden, true);
+  await settle();
+  assert.ok(runtimeCalls.includes("XHS_AI_HISTORY_LIST"));
+  assert.equal(elements["#history-list"].hidden, false);
+  assert.match(elements["#history-list"].innerHTML, /历史帖文甲/);
+  assert.match(elements["#history-list"].innerHTML, /merge-badge-merge/);
+  assert.equal(elements["#history-clear-button"].hidden, false);
+  assert.equal(elements["#status-title"].textContent, "概括历史");
+
+  const historyTarget = (id, remove = false) => ({
+    closest(selector) {
+      if (selector === ".history-item") return { dataset: { id } };
+      if (selector === ".merge-remove") return remove ? {} : null;
+      return null;
+    }
+  });
+
+  // 点击条目：结果卡进入只读态，可复制、可打开原帖，不能重新生成
+  await elements["#history-list"].listeners.click({ target: historyTarget("hist-1") });
+  assert.equal(elements["#result-card"].hidden, false);
+  assert.match(elements["#result-text"].value, /历史概括正文/);
+  assert.match(elements["#evidence-summary"].textContent, /5 条一级评论/);
+  assert.equal(elements["#regenerate-button"].hidden, true);
+  assert.equal(elements["#open-source-button"].hidden, false);
+
+  const createdTabs = [];
+  context.chrome.tabs.create = async (options) => { createdTabs.push(options); return {}; };
+  await elements["#open-source-button"].listeners.click();
+  // options 对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
+  assert.equal(createdTabs.length, 1);
+  assert.equal(createdTabs[0].url, pageUrl);
+  assert.equal(createdTabs[0].active, true);
+
+  await elements["#history-list"].listeners.click({ target: historyTarget("hist-2") });
+  assert.equal(elements["#open-source-button"].hidden, true);
+
+  // 切回单条页签：历史结果不串页签，结果卡回到页签自己的实时结果
+  await elements["#tab-single"].listeners.click();
+  assert.equal(elements["#view-history"].hidden, true);
+  assert.equal(elements["#history-button"].dataset.active, "false");
+  assert.match(elements["#result-text"].value, /截图帖文事件/);
+  assert.equal(elements["#regenerate-button"].hidden, false);
+  assert.equal(elements["#open-source-button"].hidden, true);
+
+  // 再进历史屏：上次选中的条目被重放
+  await elements["#history-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#result-card"].hidden, false);
+  assert.match(elements["#result-text"].value, /合并概括正文/);
+  assert.equal(elements["#regenerate-button"].hidden, true);
+
+  // 历史屏内再点「历史」按钮：回到进入前的单条页签
+  await elements["#history-button"].listeners.click();
+  assert.equal(elements["#view-single"].hidden, false);
+  assert.equal(elements["#view-history"].hidden, true);
+
+  // 回到历史屏删除正在查看的条目，结果卡收起
+  await elements["#history-button"].listeners.click();
+  await settle();
+  await elements["#history-list"].listeners.click({ target: historyTarget("hist-1") });
+  await elements["#history-list"].listeners.click({ target: historyTarget("hist-1", true) });
+  assert.ok(runtimeCalls.includes("XHS_AI_HISTORY_REMOVE"));
+  assert.equal(elements["#result-card"].hidden, true);
+
+  // 清空历史：两步确认
+  await elements["#history-clear-button"].listeners.click();
+  assert.equal(elements["#history-clear-button"].textContent, "再点一次确认清空");
+  assert.equal(elements["#history-clear-button"].dataset.confirming, "true");
+  await elements["#history-clear-button"].listeners.click();
+  assert.ok(runtimeCalls.includes("XHS_AI_HISTORY_CLEAR"));
+  assert.equal(elements["#history-list"].hidden, true);
+  assert.equal(elements["#history-clear-button"].hidden, true);
+  assert.equal(elements["#result-card"].hidden, true);
 
   process.stdout.write("panel workflow restoration tests passed\n");
 })().catch((error) => {

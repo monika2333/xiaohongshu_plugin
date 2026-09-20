@@ -6,10 +6,12 @@ const PERSISTENT_SECRETS_KEY = "xhsAiPersistentSecrets";
 const CACHE_KEY = "xhsAiCacheV1";
 const WORKFLOW_STATES_KEY = "xhsAiWorkflowStatesV1";
 const MERGE_BASKET_KEY = "xhsAiMergeBasketV1";
+const HISTORY_KEY = "xhsAiHistoryV1";
 const MAX_CACHE_ENTRIES = 16;
 const MAX_WORKFLOW_STATES = 12;
 const MAX_MERGE_ITEMS = 5;
 const MAX_SCREENSHOT_IMAGES = 8;
+const MAX_HISTORY_ENTRIES = 100;
 const FEISHU_API_ORIGIN = "https://open.feishu.cn";
 const FEISHU_REQUEST_TIMEOUT_MS = 15000;
 const EXTENSION_PAGE_MESSAGES = new Set([
@@ -26,7 +28,10 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_MERGE_CLEAR",
   "XHS_AI_SCREENSHOT_ADD",
   "XHS_AI_SCREENSHOT_RECOGNIZE",
-  "XHS_AI_MERGE_SUMMARIZE"
+  "XHS_AI_MERGE_SUMMARIZE",
+  "XHS_AI_HISTORY_LIST",
+  "XHS_AI_HISTORY_REMOVE",
+  "XHS_AI_HISTORY_CLEAR"
 ]);
 const CONTENT_SCRIPT_MESSAGES = new Set([
   "XHS_EXPORT_PROGRESS",
@@ -457,6 +462,8 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
   };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
+  // 历史写入失败不应影响已完成的概括与推送
+  await recordHistory(payload, storedResult, config).catch(() => {});
   return { ok: true, result: storedResult };
 }
 
@@ -617,6 +624,75 @@ async function listMergeBasket() {
   return { ok: true, basket: (await getMergeBasket()).map(basketItemSummary) };
 }
 
+// —— 概括历史：只存概括全文与精简元信息，不存评论、图片识别等完整证据 ——
+async function getHistoryEntries() {
+  const stored = await chrome.storage.local.get(HISTORY_KEY);
+  return stored[HISTORY_KEY] || [];
+}
+
+async function appendHistoryEntry(entry) {
+  const entries = await getHistoryEntries();
+  // 固定条数上限：超出后淘汰最旧的记录
+  const bounded = [...entries, entry].slice(-MAX_HISTORY_ENTRIES);
+  await chrome.storage.local.set({ [HISTORY_KEY]: bounded });
+  return bounded;
+}
+
+function newHistoryId() {
+  return `hist-${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(16).slice(2)}`;
+}
+
+async function recordHistory(payload, publicResult, config) {
+  if (!config?.saveHistory) return null;
+  const entry = {
+    id: newHistoryId(),
+    kind: payload?.source?.origin === "user_screenshot" ? "screenshot" : "single",
+    platform: payload?.source?.platform === "weibo" ? "weibo" : "xiaohongshu",
+    title: cleanText(payload?.note?.title) || "（无标题帖文）",
+    author: cleanText(payload?.note?.author) || null,
+    url: cleanText(payload?.source?.url) || null,
+    result: publicResult,
+    createdAt: publicResult.createdAt || Date.now()
+  };
+  await appendHistoryEntry(entry);
+  return entry;
+}
+
+async function recordMergedHistory(payloads, publicResult, config) {
+  if (!config?.saveHistory) return null;
+  const entry = {
+    id: newHistoryId(),
+    kind: "merge",
+    platform: null,
+    title: `合并 ${payloads.length} 条帖文`,
+    author: null,
+    url: null,
+    result: publicResult,
+    createdAt: publicResult.createdAt || Date.now()
+  };
+  await appendHistoryEntry(entry);
+  return entry;
+}
+
+async function listHistory() {
+  // 新记录排在前，面板按此顺序直接渲染
+  const entries = await getHistoryEntries();
+  return { ok: true, items: entries.slice().reverse() };
+}
+
+async function removeHistoryEntry(message) {
+  const id = cleanText(message?.id);
+  if (!id) throw new Error("缺少要删除的历史条目。");
+  const entries = (await getHistoryEntries()).filter((entry) => entry.id !== id);
+  await chrome.storage.local.set({ [HISTORY_KEY]: entries });
+  return { ok: true };
+}
+
+async function clearHistory() {
+  await chrome.storage.local.set({ [HISTORY_KEY]: [] });
+  return { ok: true };
+}
+
 function validateScreenshotSourceUrl(value) {
   const sourceUrl = cleanText(value);
   if (!sourceUrl) return "";
@@ -681,18 +757,18 @@ async function summarizeMergeBasket(message) {
     onProgress({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
   }
   const notification = await pushFeishuNotification(publicResult.text, config, secrets);
+  const mergeResult = {
+    ...publicResult,
+    notification,
+    merged: true,
+    postCount: payloads.length,
+    createdAt: Date.now()
+  };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
-  return {
-    ok: true,
-    result: {
-      ...publicResult,
-      notification,
-      merged: true,
-      postCount: payloads.length,
-      createdAt: Date.now()
-    }
-  };
+  // 历史写入失败不应影响已完成的概括与推送
+  await recordMergedHistory(payloads, mergeResult, config).catch(() => {});
+  return { ok: true, result: mergeResult };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -762,6 +838,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_MERGE_SUMMARIZE":
       task = summarizeMergeBasket(message);
+      break;
+    case "XHS_AI_HISTORY_LIST":
+      task = listHistory();
+      break;
+    case "XHS_AI_HISTORY_REMOVE":
+      task = removeHistoryEntry(message);
+      break;
+    case "XHS_AI_HISTORY_CLEAR":
+      task = clearHistory();
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPanel(message);

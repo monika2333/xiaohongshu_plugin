@@ -27,10 +27,16 @@ const elements = {
   mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
   mergeClearButton: document.querySelector("#merge-clear-button"),
-  tabSingle: document.querySelector("#tab-single"),
-  tabMerge: document.querySelector("#tab-merge"),
+  historyButton: document.querySelector("#history-button"),
   viewSingle: document.querySelector("#view-single"),
   viewMerge: document.querySelector("#view-merge"),
+  viewHistory: document.querySelector("#view-history"),
+  historyPanel: document.querySelector("#history-panel"),
+  historyList: document.querySelector("#history-list"),
+  historyClearButton: document.querySelector("#history-clear-button"),
+  openSourceButton: document.querySelector("#open-source-button"),
+  tabSingle: document.querySelector("#tab-single"),
+  tabMerge: document.querySelector("#tab-merge"),
   shotSingleDropzone: document.querySelector("#shot-single-dropzone"),
   shotSingleStaging: document.querySelector("#shot-single-staging"),
   shotSingleRun: document.querySelector("#shot-single-run"),
@@ -42,41 +48,57 @@ let isWorking = false;
 let currentPageContext = null;
 let basketItems = [];
 let currentView = "single";
+let historyItems = [];
+let tabBeforeHistory = "single";
+let historyClearResetTimer = null;
 
 // 状态与概括结果归属产生它们的页签：合并结果只出现在合并页签，单条结果只出现在单条页签。
+// 历史屏由页眉「历史」按钮进入，独立保存当前查看的条目，不占用两个概括页签的结果。
 const DEFAULT_STATUS = {
   single: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
-  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
+  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 },
+  history: { state: "idle", title: "概括历史", detail: "概括保存在本机浏览器，点击列表条目即可回看。", percent: 0 }
 };
 const viewState = {
   single: { status: null, result: null, capture: null },
-  merge: { status: null, result: null }
+  merge: { status: null, result: null },
+  history: { status: null, entry: null }
 };
 
 function switchView(view) {
-  currentView = view === "merge" ? "merge" : "single";
+  currentView = view === "merge" ? "merge" : view === "history" ? "history" : "single";
+  if (currentView === "single" || currentView === "merge") tabBeforeHistory = currentView;
   elements.tabSingle.dataset.active = currentView === "single" ? "true" : "false";
   elements.tabMerge.dataset.active = currentView === "merge" ? "true" : "false";
+  elements.historyButton.dataset.active = currentView === "history" ? "true" : "false";
   elements.viewSingle.hidden = currentView !== "single";
   elements.viewMerge.hidden = currentView !== "merge";
-  // 状态卡两个视图共用：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后
+  elements.viewHistory.hidden = currentView !== "history";
+  // 状态卡各视图共用：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后，历史视图挂在历史面板之前
   if (currentView === "merge") {
     elements.viewMerge.appendChild(elements.statusCard);
+  } else if (currentView === "history") {
+    elements.viewHistory.insertBefore(elements.statusCard, elements.historyPanel);
   } else {
     elements.extractButton.after(elements.statusCard);
   }
   applyViewOutput(currentView);
-  try {
-    void chrome.storage?.local?.set?.({ xhsPanelView: currentView })?.catch?.(() => {});
-  } catch {
-    // storage 不可用时仅影响视图记忆
+  if (currentView === "history") refreshHistory();
+  // 历史是临时视图，不写入视图记忆
+  if (currentView !== "history") {
+    try {
+      void chrome.storage?.local?.set?.({ xhsPanelView: currentView })?.catch?.(() => {});
+    } catch {
+      // storage 不可用时仅影响视图记忆
+    }
   }
 }
 
 async function restoreStoredView() {
   try {
     const stored = await chrome.storage?.local?.get?.("xhsPanelView");
-    if (stored?.xhsPanelView) switchView(stored.xhsPanelView);
+    // 旧版本可能存过 history，视图记忆只认两个概括页签
+    if (stored?.xhsPanelView === "single" || stored?.xhsPanelView === "merge") switchView(stored.xhsPanelView);
   } catch {
     // 保持默认视图
   }
@@ -103,6 +125,19 @@ function setStatus(status, mode = currentView) {
 function applyViewOutput(mode) {
   const slot = viewState[mode];
   renderStatus(slot.status || DEFAULT_STATUS[mode]);
+  if (mode === "history") {
+    const entry = slot.entry;
+    if (entry) {
+      renderResult(entry.result);
+      elements.resultTime.textContent = formatHistoryTime(entry.createdAt);
+      elements.regenerateButton.hidden = true;
+      elements.openSourceButton.hidden = !entry.url;
+    } else {
+      elements.resultCard.hidden = true;
+      elements.resultText.value = "";
+    }
+    return;
+  }
   if (slot.result) {
     renderResult(slot.result);
   } else {
@@ -159,6 +194,19 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp));
 }
 
+// 历史列表条目的时间：同年省略年份，跨年带上年份
+function formatHistoryTime(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  return new Intl.DateTimeFormat("zh-CN", {
+    ...(date.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
 function renderResult(result) {
   elements.resultText.value = result.text;
   elements.resultTime.textContent = formatTime(result.createdAt);
@@ -177,6 +225,9 @@ function renderResult(result) {
     `文字模型 ${evidence.textModel || "—"}`,
     notificationLabel
   ].filter(Boolean).join(" · ");
+  // 页签结果是实时结果：可重新生成、无“打开原帖”；历史屏展示条目时会改写这两个按钮
+  elements.regenerateButton.hidden = false;
+  elements.openSourceButton.hidden = true;
   elements.resultCard.hidden = false;
 }
 
@@ -353,6 +404,98 @@ async function refreshBasket() {
   renderBasket();
 }
 
+function historyBadge(item) {
+  if (item.kind === "merge") return { label: "合并", className: "merge-badge-merge" };
+  if (item.kind === "screenshot") return { label: "截图", className: "merge-badge-shot" };
+  if (item.platform === "weibo") return { label: "微博", className: "merge-badge-weibo" };
+  return { label: "网页", className: "merge-badge-page" };
+}
+
+function renderHistory() {
+  elements.historyList.innerHTML = historyItems.map((item) => {
+    const badge = historyBadge(item);
+    const label = item.kind === "merge"
+      ? item.title
+      : [item.author || "未知账号", item.title].filter(Boolean).join("：");
+    const meta = formatHistoryTime(item.createdAt);
+    return `<li class="merge-item history-item" data-id="${escapeHtml(item.id)}" data-selected="${viewState.history.entry?.id === item.id ? "true" : "false"}">` +
+      `<span class="merge-badge ${badge.className}">${badge.label}</span>` +
+      `<span class="merge-item-label history-item-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
+      `<span class="merge-item-meta">${escapeHtml(meta)}</span>` +
+      `<button class="merge-remove" type="button" title="删除">✕</button>` +
+      "</li>";
+  }).join("");
+  elements.historyList.hidden = historyItems.length === 0;
+  elements.historyClearButton.hidden = historyItems.length === 0;
+}
+
+async function refreshHistory() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_LIST" });
+    historyItems = response?.ok ? response.items || [] : [];
+  } catch {
+    historyItems = [];
+  }
+  renderHistory();
+}
+
+// 历史只读：结果卡进入“查看”态，可复制、可打开原帖，不能重新生成。
+function showHistoryEntry(item) {
+  viewState.history.entry = item;
+  renderResult(item.result);
+  elements.resultTime.textContent = formatHistoryTime(item.createdAt);
+  elements.regenerateButton.hidden = true;
+  elements.openSourceButton.hidden = !item.url;
+  renderHistory();
+}
+
+function clearViewedHistoryEntry() {
+  viewState.history.entry = null;
+  elements.resultCard.hidden = true;
+  elements.resultText.value = "";
+}
+
+async function removeHistoryItem(id) {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_REMOVE", id });
+    if (!response?.ok) throw new Error(response?.error || "删除失败。");
+    historyItems = historyItems.filter((item) => item.id !== id);
+    if (viewState.history.entry?.id === id) clearViewedHistoryEntry();
+    renderHistory();
+  } catch (error) {
+    setStatus({ state: "error", title: "删除失败", detail: error?.message || "发生未知错误。", percent: 0 }, "history");
+  }
+}
+
+function resetHistoryClearButton() {
+  clearTimeout(historyClearResetTimer);
+  historyClearResetTimer = null;
+  elements.historyClearButton.dataset.confirming = "false";
+  elements.historyClearButton.textContent = "清空历史";
+}
+
+async function clearHistoryRecords() {
+  if (!historyItems.length) return;
+  // 清空不可恢复，按钮两步确认，3 秒未确认自动还原
+  if (elements.historyClearButton.dataset.confirming !== "true") {
+    elements.historyClearButton.dataset.confirming = "true";
+    elements.historyClearButton.textContent = "再点一次确认清空";
+    clearTimeout(historyClearResetTimer);
+    historyClearResetTimer = setTimeout(resetHistoryClearButton, 3000);
+    return;
+  }
+  resetHistoryClearButton();
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_CLEAR" });
+    if (!response?.ok) throw new Error(response?.error || "清空失败。");
+    historyItems = [];
+    clearViewedHistoryEntry();
+    renderHistory();
+  } catch (error) {
+    setStatus({ state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 }, "history");
+  }
+}
+
 async function addCurrentPostToBasket() {
   if (isWorking) return;
   setWorking(true);
@@ -492,6 +635,8 @@ const stagedScreenshots = { single: [], merge: [] };
 async function stageScreenshotFiles(files) {
   if (!files?.length) return;
   const staged = stagedScreenshots[currentView];
+  // 历史屏不接收截图
+  if (!staged) return;
   const failures = [];
   for (const file of files) {
     const label = file.name || "剪贴板图片";
@@ -608,6 +753,10 @@ elements.extractButton.addEventListener("click", runFullWorkflow);
 elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
 elements.tabSingle.addEventListener("click", () => switchView("single"));
 elements.tabMerge.addEventListener("click", () => switchView("merge"));
+// 「历史」按钮是开关：进入历史屏，再点一次回到进入前的概括页签
+elements.historyButton.addEventListener("click", () => {
+  switchView(currentView === "history" ? tabBeforeHistory : "history");
+});
 elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
 for (const [view, zone, input, runButton, stagingList] of [
   ["single", elements.shotSingleDropzone, elements.shotSingleInput, elements.shotSingleRun, elements.shotSingleStaging],
@@ -672,6 +821,21 @@ elements.mergeList.addEventListener("click", (event) => {
   if (!row || !event.target.closest?.(".merge-remove")) return;
   removeBasketItem(row.dataset?.id);
 });
+elements.historyClearButton.addEventListener("click", clearHistoryRecords);
+elements.historyList.addEventListener("click", (event) => {
+  const row = event.target?.closest?.(".history-item");
+  if (!row) return;
+  const item = historyItems.find((entry) => entry.id === row.dataset?.id);
+  if (!item) return;
+  if (event.target.closest?.(".merge-remove")) {
+    return removeHistoryItem(item.id);
+  }
+  showHistoryEntry(item);
+});
+elements.openSourceButton.addEventListener("click", () => {
+  const item = viewState.history.entry;
+  if (item?.url) chrome.tabs.create({ url: item.url, active: true });
+});
 
 elements.copyButton.addEventListener("click", async () => {
   try {
@@ -735,3 +899,4 @@ restoreCurrentWorkflow();
 switchView("single");
 restoreStoredView();
 refreshBasket();
+refreshHistory();

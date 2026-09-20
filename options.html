@@ -27,6 +27,14 @@
             </label>
             <button id="clear-keys-button" class="clear-keys-button" type="button">清除全部敏感凭据</button>
           </div>
+          <div class="credential-row">
+            <label class="remember-option">
+              <input id="save-history" class="remember-input" type="checkbox" checked>
+              <span class="remember-toggle" aria-hidden="true"></span>
+              <strong>概括完成后保存到本机历史记录</strong>
+            </label>
+          </div>
+          <small class="credential-hint">历史仅存本机浏览器，最多保留 100 条，可在侧边栏「历史记录」中查看、删除或一键清空。</small>
           <small class="credential-hint"><span id="storage-mode-hint">浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。</span>无论哪种模式，凭据都不会同步、写入下载文件或注入网页。</small>
         </div>
       </aside>
