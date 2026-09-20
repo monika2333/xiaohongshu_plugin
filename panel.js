@@ -31,7 +31,7 @@ const elements = {
   viewSingle: document.querySelector("#view-single"),
   viewMerge: document.querySelector("#view-merge"),
   viewHistory: document.querySelector("#view-history"),
-  historyPanel: document.querySelector("#history-panel"),
+  historyHint: document.querySelector("#history-hint"),
   historyList: document.querySelector("#history-list"),
   historyClearButton: document.querySelector("#history-clear-button"),
   openSourceButton: document.querySelector("#open-source-button"),
@@ -51,18 +51,19 @@ let currentView = "single";
 let historyItems = [];
 let tabBeforeHistory = "single";
 let historyClearResetTimer = null;
+let historyHintResetTimer = null;
+const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。";
 
 // 状态与概括结果归属产生它们的页签：合并结果只出现在合并页签，单条结果只出现在单条页签。
-// 历史屏由页眉「历史」按钮进入，独立保存当前查看的条目，不占用两个概括页签的结果。
+// 历史屏由页眉「历史」按钮进入，没有进度可言，不显示状态卡；独立保存当前查看的条目。
 const DEFAULT_STATUS = {
   single: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
-  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 },
-  history: { state: "idle", title: "概括历史", detail: "概括保存在本机浏览器，点击列表条目即可回看。", percent: 0 }
+  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
 };
 const viewState = {
   single: { status: null, result: null, capture: null },
   merge: { status: null, result: null },
-  history: { status: null, entry: null }
+  history: { entry: null }
 };
 
 function switchView(view) {
@@ -74,12 +75,11 @@ function switchView(view) {
   elements.viewSingle.hidden = currentView !== "single";
   elements.viewMerge.hidden = currentView !== "merge";
   elements.viewHistory.hidden = currentView !== "history";
-  // 状态卡各视图共用：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后，历史视图挂在历史面板之前
+  // 状态卡只服务两个概括页签：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后
+  elements.statusCard.hidden = currentView === "history";
   if (currentView === "merge") {
     elements.viewMerge.appendChild(elements.statusCard);
-  } else if (currentView === "history") {
-    elements.viewHistory.insertBefore(elements.statusCard, elements.historyPanel);
-  } else {
+  } else if (currentView === "single") {
     elements.extractButton.after(elements.statusCard);
   }
   applyViewOutput(currentView);
@@ -121,10 +121,9 @@ function setStatus(status, mode = currentView) {
   if (mode === currentView) renderStatus(slot.status);
 }
 
-// 切换页签时重放该页签自己的状态与结果；没有结果就隐藏结果卡。
+// 切换页签时重放该页签自己的状态与结果；没有结果就隐藏结果卡。历史屏只重放选中条目。
 function applyViewOutput(mode) {
   const slot = viewState[mode];
-  renderStatus(slot.status || DEFAULT_STATUS[mode]);
   if (mode === "history") {
     const entry = slot.entry;
     if (entry) {
@@ -138,6 +137,7 @@ function applyViewOutput(mode) {
     }
     return;
   }
+  renderStatus(slot.status || DEFAULT_STATUS[mode]);
   if (slot.result) {
     renderResult(slot.result);
   } else {
@@ -455,6 +455,17 @@ function clearViewedHistoryEntry() {
   elements.resultText.value = "";
 }
 
+function flashHistoryError(detail) {
+  if (!elements.historyHint) return;
+  clearTimeout(historyHintResetTimer);
+  elements.historyHint.textContent = detail;
+  elements.historyHint.dataset.error = "true";
+  historyHintResetTimer = setTimeout(() => {
+    elements.historyHint.dataset.error = "false";
+    elements.historyHint.textContent = HISTORY_HINT_TEXT;
+  }, 3000);
+}
+
 async function removeHistoryItem(id) {
   try {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_REMOVE", id });
@@ -463,7 +474,7 @@ async function removeHistoryItem(id) {
     if (viewState.history.entry?.id === id) clearViewedHistoryEntry();
     renderHistory();
   } catch (error) {
-    setStatus({ state: "error", title: "删除失败", detail: error?.message || "发生未知错误。", percent: 0 }, "history");
+    flashHistoryError(error?.message || "删除失败。");
   }
 }
 
@@ -492,7 +503,7 @@ async function clearHistoryRecords() {
     clearViewedHistoryEntry();
     renderHistory();
   } catch (error) {
-    setStatus({ state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 }, "history");
+    flashHistoryError(error?.message || "清空失败。");
   }
 }
 

@@ -48,7 +48,7 @@ const selectors = [
   "#merge-clear-button",
   "#history-button",
   "#view-history",
-  "#history-panel",
+  "#history-hint",
   "#history-list",
   "#history-clear-button",
   "#open-source-button",
@@ -556,13 +556,14 @@ async function settle() {
   assert.equal(elements["#view-history"].hidden, false);
   assert.equal(elements["#view-single"].hidden, true);
   assert.equal(elements["#view-merge"].hidden, true);
+  // 历史屏没有进度可言，状态卡隐藏
+  assert.equal(elements["#status-card"].hidden, true);
   await settle();
   assert.ok(runtimeCalls.includes("XHS_AI_HISTORY_LIST"));
   assert.equal(elements["#history-list"].hidden, false);
   assert.match(elements["#history-list"].innerHTML, /历史帖文甲/);
   assert.match(elements["#history-list"].innerHTML, /merge-badge-merge/);
   assert.equal(elements["#history-clear-button"].hidden, false);
-  assert.equal(elements["#status-title"].textContent, "概括历史");
 
   const historyTarget = (id, remove = false) => ({
     closest(selector) {
@@ -591,10 +592,11 @@ async function settle() {
   await elements["#history-list"].listeners.click({ target: historyTarget("hist-2") });
   assert.equal(elements["#open-source-button"].hidden, true);
 
-  // 切回单条页签：历史结果不串页签，结果卡回到页签自己的实时结果
+  // 切回单条页签：历史结果不串页签，结果卡回到页签自己的实时结果，状态卡恢复显示
   await elements["#tab-single"].listeners.click();
   assert.equal(elements["#view-history"].hidden, true);
   assert.equal(elements["#history-button"].dataset.active, "false");
+  assert.equal(elements["#status-card"].hidden, false);
   assert.match(elements["#result-text"].value, /截图帖文事件/);
   assert.equal(elements["#regenerate-button"].hidden, false);
   assert.equal(elements["#open-source-button"].hidden, true);

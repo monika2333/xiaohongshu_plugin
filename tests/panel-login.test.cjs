@@ -48,7 +48,7 @@ const selectors = [
   "#merge-clear-button",
   "#history-button",
   "#view-history",
-  "#history-panel",
+  "#history-hint",
   "#history-list",
   "#history-clear-button",
   "#open-source-button",

@@ -158,6 +158,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .merge-clear:hover { color: var(--red-dark); border-color: var(--red-dark); }
 .merge-clear[data-confirming="true"] { color: var(--paper); background: var(--red-dark); border-color: var(--red-dark); }
 .merge-hint { margin: 0 0 10px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.merge-hint[data-error="true"] { color: var(--red-dark); font-weight: 700; }
 .screenshot-panel { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--ink); }
 .screenshot-panel .merge-actions { grid-template-columns: 1fr; }
 .merge-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
