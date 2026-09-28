@@ -50,6 +50,7 @@ const selectors = [
   "#merge-summarize-label",
   "#merge-clear-button",
   "#history-button",
+  "#history-back-button",
   "#view-history",
   "#history-hint",
   "#history-list",
@@ -707,6 +708,13 @@ async function switchChromeTab(tabId) {
   await elements["#history-button"].listeners.click();
   assert.equal(elements["#view-single"].hidden, false);
   assert.equal(elements["#view-history"].hidden, true);
+
+  // 标题旁的返回按钮：同样回到进入前的单条页签
+  await elements["#history-button"].listeners.click();
+  await elements["#history-back-button"].listeners.click();
+  assert.equal(elements["#view-single"].hidden, false);
+  assert.equal(elements["#view-history"].hidden, true);
+  assert.equal(elements["#history-button"].dataset.active, "false");
 
   // 回到历史屏删除正在查看的条目，结果卡收起
   await elements["#history-button"].listeners.click();

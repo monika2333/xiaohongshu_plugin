@@ -36,6 +36,7 @@ const elements = {
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
   mergeClearButton: document.querySelector("#merge-clear-button"),
   historyButton: document.querySelector("#history-button"),
+  historyBackButton: document.querySelector("#history-back-button"),
   viewSingle: document.querySelector("#view-single"),
   viewMerge: document.querySelector("#view-merge"),
   viewHistory: document.querySelector("#view-history"),
@@ -1355,6 +1356,7 @@ elements.tabMerge.addEventListener("click", () => switchView("merge"));
 elements.historyButton.addEventListener("click", () => {
   switchView(currentView === "history" ? tabBeforeHistory : "history");
 });
+elements.historyBackButton.addEventListener("click", () => switchView(tabBeforeHistory));
 elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
 for (const [view, zone, input, runButton, stagingList] of [
   ["single", elements.shotSingleDropzone, elements.shotSingleInput, elements.shotSingleRun, elements.shotSingleStaging],

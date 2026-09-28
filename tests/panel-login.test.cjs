@@ -50,6 +50,7 @@ const selectors = [
   "#merge-summarize-label",
   "#merge-clear-button",
   "#history-button",
+  "#history-back-button",
   "#view-history",
   "#history-hint",
   "#history-list",

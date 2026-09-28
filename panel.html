@@ -112,7 +112,10 @@
       <section id="view-history" hidden>
         <section id="history-panel" class="merge-panel history-panel" aria-labelledby="history-title">
           <div class="merge-heading">
-            <h2 id="history-title">概括历史</h2>
+            <div class="history-title-row">
+              <button id="history-back-button" class="history-back" type="button" title="返回概括页签" aria-label="返回概括页签">←</button>
+              <h2 id="history-title">概括历史</h2>
+            </div>
             <button id="history-clear-button" class="merge-clear" type="button" hidden>清空历史</button>
           </div>
           <p id="history-hint" class="merge-hint" data-error="false">概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。</p>
