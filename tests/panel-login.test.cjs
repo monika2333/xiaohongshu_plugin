@@ -26,6 +26,8 @@ const selectors = [
   "#extract-button",
   ".button-label",
   "#settings-button",
+  "#task-strip",
+  "#task-list",
   "#status-card",
   "#status-title",
   "#status-detail",

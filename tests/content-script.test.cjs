@@ -201,6 +201,28 @@ async function captureAndSummarizeWithOverlappingVision() {
   await visionStarted;
   assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_PREPARE_VISION"));
   assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
+  // 采集进度携带帖文标题，供侧边栏任务列表区分并行任务
+  const progressMessage = runtimeMessages.find((message) => message.type === "XHS_EXPORT_PROGRESS");
+  assert.ok(progressMessage);
+  assert.equal(progressMessage.noteTitle, "清华听涛园食堂异物");
+
+  // 同一页面的并发请求立刻被拒绝（概括与合并采集共用同一个页面锁），
+  // 不再并到进行中的任务上导致拿到别的帖文结果。
+  let busySummaryResponse = null;
+  messageListener({ type: "XHS_CAPTURE_AND_SUMMARIZE", options: { limit: 1 } }, {}, (response) => {
+    busySummaryResponse = response;
+  });
+  assert.ok(busySummaryResponse);
+  assert.equal(busySummaryResponse.ok, false);
+  assert.match(busySummaryResponse.error, /已有任务/);
+  let busyMergeResponse = null;
+  messageListener({ type: "XHS_CAPTURE_FOR_MERGE", options: { limit: 1 } }, {}, (response) => {
+    busyMergeResponse = response;
+  });
+  assert.ok(busyMergeResponse);
+  assert.equal(busyMergeResponse.ok, false);
+  assert.match(busyMergeResponse.error, /已有任务/);
+
   resolveVision();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);

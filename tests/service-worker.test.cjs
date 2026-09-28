@@ -414,6 +414,7 @@ const payload = {
     pageSessionId: "page-session-1",
     pageUrl: textOnlyPayload.source.url,
     noteId: textOnlyPayload.source.noteId,
+    noteTitle: "测试/帖文",
     title: "正在读取评论",
     detail: "已加载 20 条一级评论",
     count: 20
@@ -422,9 +423,39 @@ const payload = {
   assert.equal(runningWorkflow.status, "working");
   assert.equal(runningWorkflow.progress.percent, 12);
   assert.equal(runningWorkflow.progress.count, 20);
+  assert.equal(runningWorkflow.noteTitle, "测试/帖文");
   assert.equal(
     await context.getWorkflowState(42, "page-session-after-refresh", textOnlyPayload.source.url),
     null
+  );
+
+  // —— 任务列表数据：LIST_WORKFLOWS 返回全部页签状态；标题显式优先、页签标题兜底、后续进度沿用 ——
+  const listedDuringRun = await context.listWorkflowStates();
+  assert.equal(listedDuringRun.ok, true);
+  assert.ok(listedDuringRun.workflows.some((item) => item.tabId === 42 && item.status === "working"));
+
+  await context.recordCaptureProgress({
+    pageSessionId: "page-session-42",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: "fallback-note",
+    title: "正在读取帖文",
+    detail: "获取元信息、互动数和媒体资源",
+    count: 0
+  }, { tab: { id: 44, title: "我的帖文 - 小红书" }, url: textOnlyPayload.source.url });
+  const fallbackWorkflow = await context.getWorkflowState(44, "page-session-42", textOnlyPayload.source.url);
+  assert.equal(fallbackWorkflow.noteTitle, "我的帖文 - 小红书");
+  // 同一页面的后续进度不再带标题时，沿用已有标题而不是被页签标题覆盖
+  await context.recordCaptureProgress({
+    pageSessionId: "page-session-42",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: "fallback-note",
+    title: "正在读取评论",
+    detail: "已加载 5 条一级评论",
+    count: 5
+  }, { tab: { id: 44 }, url: textOnlyPayload.source.url });
+  assert.equal(
+    (await context.getWorkflowState(44, "page-session-42", textOnlyPayload.source.url)).noteTitle,
+    "我的帖文 - 小红书"
   );
 
   storageState.local.xhsAiConfig = context.XhsAi.DEFAULT_CONFIG;
@@ -442,6 +473,7 @@ const payload = {
   assert.equal(completedWorkflow.status, "done");
   assert.equal(completedWorkflow.result.text, pageSummary.result.text);
   assert.equal(completedWorkflow.capture.source.pageSessionId, "page-session-1");
+  assert.equal(completedWorkflow.noteTitle, "测试/帖文");
   assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_WORKFLOW_STATE"));
 
   // —— 截图识别与多帖合并 ——

@@ -28,7 +28,11 @@
     return id;
   }
 
-  function createCaptureWorkflow({ pageSessionId, getNoteId, runCapture }) {
+  function createCaptureWorkflow({ pageSessionId, getNoteId, getNoteTitle, runCapture }) {
+    function currentNoteTitle() {
+      return typeof getNoteTitle === "function" ? cleanText(getNoteTitle()) : "";
+    }
+
     async function sendProgress(title, detail, count) {
       const status = {
         state: "working",
@@ -40,6 +44,9 @@
         noteId: getNoteId(),
         updatedAt: Date.now()
       };
+      // 帖文标题供侧边栏任务列表区分多个并行任务
+      const noteTitle = currentNoteTitle();
+      if (noteTitle) status.noteTitle = noteTitle;
       await chrome.runtime.sendMessage({ type: "XHS_EXPORT_PROGRESS", ...status }).catch(() => {});
     }
 
@@ -89,13 +96,16 @@
       const payload = captured.payload;
       const mediaUnit = payload.media.video ? "帧视频画面" : "张图片";
       const detail = `已采集 ${payload.commentExport.extractedTopLevelCount} 条一级评论和 ${payload.media.images.length} ${mediaUnit}。`;
-      await chrome.runtime.sendMessage({
+      const doneMessage = {
         type: "XHS_AI_MERGE_CAPTURE_DONE",
         pageSessionId,
         pageUrl: location.href,
         noteId: payload.source?.noteId || null,
         detail
-      }).catch(() => {});
+      };
+      const noteTitle = currentNoteTitle();
+      if (noteTitle) doneMessage.noteTitle = noteTitle;
+      await chrome.runtime.sendMessage(doneMessage).catch(() => {});
       return {
         ok: true,
         payload,
@@ -106,25 +116,31 @@
 
     async function notifyWorkflowFailure(error) {
       const detail = error?.message || "未知错误";
-      await chrome.runtime.sendMessage({
+      const failureMessage = {
         type: "XHS_AI_WORKFLOW_FAILED",
         pageSessionId,
         pageUrl: location.href,
         noteId: getNoteId(),
         error: detail
-      }).catch(() => {});
+      };
+      const noteTitle = currentNoteTitle();
+      if (noteTitle) failureMessage.noteTitle = noteTitle;
+      await chrome.runtime.sendMessage(failureMessage).catch(() => {});
       return detail;
     }
 
-    let activeAiWorkflow = null;
+    // 同一页面同一时间只允许一个采集/概括任务：面板会按页签禁用按钮，
+    // 这里兜底拒绝并发请求，避免两次采集在同一页面互相踩踏。
+    let activeOperation = null;
+    const PAGE_BUSY_MESSAGE = "当前页面已有任务在进行，请等它完成后再试。";
 
-    function startAiWorkflow(message) {
-      if (activeAiWorkflow) return activeAiWorkflow;
-      const operation = runCaptureAndSummarize(message.options, message.payload, message.force);
+    function beginOperation(start) {
+      if (activeOperation) return null;
+      const operation = start();
       const tracked = operation.finally(() => {
-        if (activeAiWorkflow === tracked) activeAiWorkflow = null;
+        if (activeOperation === tracked) activeOperation = null;
       });
-      activeAiWorkflow = tracked;
+      activeOperation = tracked;
       return tracked;
     }
 
@@ -145,8 +161,12 @@
         }
 
         const operation = message.type === "XHS_CAPTURE_FOR_MERGE"
-          ? runCaptureForMerge(message.options)
-          : startAiWorkflow(message);
+          ? beginOperation(() => runCaptureForMerge(message.options))
+          : beginOperation(() => runCaptureAndSummarize(message.options, message.payload, message.force));
+        if (!operation) {
+          sendResponse({ ok: false, error: PAGE_BUSY_MESSAGE });
+          return true;
+        }
         operation
           .then(sendResponse)
           .catch(async (error) => {

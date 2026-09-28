@@ -8,6 +8,7 @@
   const { sendProgress, startMessageListener } = globalThis.XhsCaptureCommon.createCaptureWorkflow({
     pageSessionId: PAGE_SESSION_ID,
     getNoteId,
+    getNoteTitle,
     runCapture
   });
 
@@ -26,6 +27,12 @@
 
   function getNoteId() {
     return location.pathname.match(/^\/\d+\/([0-9A-Za-z]+)/)?.[1] || null;
+  }
+
+  // 微博帖文没有标题，任务列表用“@作者”区分；博文接口返回后更新。
+  let knownTitle = "";
+  function getNoteTitle() {
+    return knownTitle;
   }
 
   async function fetchWeiboJson(path, errorLabel) {
@@ -304,6 +311,8 @@
       `/ajax/statuses/show?id=${encodeURIComponent(noteId)}`,
       "微博博文接口"
     );
+    const author = cleanText(post?.user?.screen_name);
+    if (author) knownTitle = `@${author}`;
     const retweeted = post?.retweeted_status || null;
     let content = stripSharedFragments(post?.text_raw) || null;
     if (post?.isLongText) {

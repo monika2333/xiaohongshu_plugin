@@ -115,6 +115,15 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 }
 .view-tab[data-active="true"] { color: var(--paper); background: var(--ink); }
 
+/* 进行中任务条：常驻于两个概括页签与历史屏上方，列出所有并行任务 */
+.task-strip { margin-top: 14px; padding: 10px 11px 6px; background: rgba(255, 252, 245, .68); border: 1px solid var(--ink); box-shadow: 3px 3px 0 var(--paper-deep); }
+.task-strip h2 { margin: 0; font-size: 13px; }
+.task-list { margin-top: 4px; }
+.task-item { cursor: pointer; }
+.task-item:hover { background: rgba(255, 252, 245, .8); }
+.task-spinner { width: 11px; height: 11px; border: 2px solid var(--paper-deep); border-top-color: var(--red); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .status-card {
   margin: 18px 0 13px;
   padding: 12px 13px 11px;

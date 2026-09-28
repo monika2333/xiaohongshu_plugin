@@ -8,6 +8,7 @@
   const { sendProgress, startMessageListener } = globalThis.XhsCaptureCommon.createCaptureWorkflow({
     pageSessionId: PAGE_SESSION_ID,
     getNoteId,
+    getNoteTitle,
     runCapture
   });
 
@@ -45,6 +46,13 @@
 
   function getNoteId() {
     return location.pathname.match(/\/explore\/([0-9a-f]{24})/i)?.[1] || null;
+  }
+
+  // 采集开始时标题节点已可用；读不到时退回页签标题（小红书帖文页形如“标题 - 小红书”）。
+  function getNoteTitle() {
+    const node = document.querySelector("#detail-title");
+    return cleanText(node?.innerText || node?.textContent) ||
+      String(document.title || "").replace(/\s*-\s*小红书\s*$/, "");
   }
 
   // ---- 视频帖：读取页面主世界的 __INITIAL_STATE__，拿到视频流与自动字幕地址 ----

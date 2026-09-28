@@ -22,6 +22,7 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_TEST_FEISHU",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
+  "XHS_AI_LIST_WORKFLOWS",
   "XHS_AI_MERGE_ADD",
   "XHS_AI_MERGE_LIST",
   "XHS_AI_MERGE_REMOVE",
@@ -103,6 +104,16 @@ function updateWorkflowState(tabId, pageSessionId, patch) {
       startedAt: samePage ? previous.startedAt || Date.now() : patch.startedAt || Date.now(),
       updatedAt: Date.now()
     };
+    // 任务列表显示用的帖文标题：显式提供者优先，其次沿用本页已有标题，
+    // 都没有时退回页签标题（仅供展示，不参与任何匹配）。
+    // 注意 patch 里可能带 noteTitle: null，不能用展开后的 next 判断“沿用”。
+    const inheritedTitle = samePage ? previous?.noteTitle : undefined;
+    const explicitTitle = cleanText(patch.noteTitle);
+    const fallbackTitle = cleanText(patch.noteTitleFallback);
+    const resolvedTitle = explicitTitle || cleanText(inheritedTitle) || fallbackTitle;
+    if (resolvedTitle) next.noteTitle = resolvedTitle;
+    else delete next.noteTitle;
+    delete next.noteTitleFallback;
     const boundedStates = Object.fromEntries(
       [...Object.entries({ ...states, [key]: next })]
         .sort(([, left], [, right]) => Number(left?.updatedAt || 0) - Number(right?.updatedAt || 0))
@@ -124,6 +135,24 @@ async function getWorkflowState(tabId, pageSessionId, pageUrl) {
   return workflow;
 }
 
+// 侧边栏打开时拉取全部页签的工作流状态，恢复任务列表与各页签的结果
+async function listWorkflowStates() {
+  const stored = await chrome.storage.session.get(WORKFLOW_STATES_KEY);
+  return { ok: true, workflows: Object.values(stored[WORKFLOW_STATES_KEY] || {}) };
+}
+
+// 页签关闭后状态立即作废：任务列表不能留一个永远转圈的死条目
+chrome.tabs?.onRemoved?.addListener?.((tabId) => {
+  const operation = workflowStateWrite.then(async () => {
+    const stored = await chrome.storage.session.get(WORKFLOW_STATES_KEY);
+    const states = stored[WORKFLOW_STATES_KEY] || {};
+    if (!(workflowKey(tabId) in states)) return;
+    delete states[workflowKey(tabId)];
+    await chrome.storage.session.set({ [WORKFLOW_STATES_KEY]: states });
+  });
+  workflowStateWrite = operation.catch(() => {});
+});
+
 async function recordCaptureProgress(message, sender) {
   const tabId = sender?.tab?.id;
   if (!Number.isInteger(tabId)) throw new Error("无法识别正在采集的标签页。");
@@ -131,6 +160,8 @@ async function recordCaptureProgress(message, sender) {
   return updateWorkflowState(tabId, message.pageSessionId, {
     pageUrl: message.pageUrl || sender.url,
     noteId: message.noteId || null,
+    noteTitle: message.noteTitle || null,
+    noteTitleFallback: sender?.tab?.title || null,
     status: "working",
     result: null,
     error: null,
@@ -151,6 +182,8 @@ async function recordWorkflowFailure(message, sender) {
   return updateWorkflowState(tabId, message.pageSessionId, {
     pageUrl: message.pageUrl || sender.url,
     noteId: message.noteId || null,
+    noteTitle: message.noteTitle || null,
+    noteTitleFallback: sender?.tab?.title || null,
     status: "error",
     error: detail,
     progress: { state: "error", title: "未能完成", detail, percent: 0 }
@@ -164,6 +197,8 @@ async function recordMergeCaptureDone(message, sender) {
   return updateWorkflowState(tabId, message.pageSessionId, {
     pageUrl: message.pageUrl || sender.url,
     noteId: message.noteId || null,
+    noteTitle: message.noteTitle || null,
+    noteTitleFallback: sender?.tab?.title || null,
     status: "done",
     result: null,
     capture: null,
@@ -479,6 +514,8 @@ async function summarizePagePayload(message, sender) {
   await updateWorkflowState(tabId, pageSessionId, {
     pageUrl,
     noteId: payload?.source?.noteId || null,
+    noteTitle: payload?.note?.title || null,
+    noteTitleFallback: sender?.tab?.title || null,
     status: "working",
     capture: payload,
     result: null,
@@ -848,6 +885,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPanel(message);
+      break;
+    case "XHS_AI_LIST_WORKFLOWS":
+      task = listWorkflowStates();
       break;
     default:
       return undefined;
