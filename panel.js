@@ -693,12 +693,21 @@ function historyBadge(item) {
   return { label: "网页", className: "merge-badge-page" };
 }
 
+// 历史列表用概括自身的标题行（★ 开头的第一行，去掉星号）做条目标题，比“作者：帖文标题”更可读
+function summaryHeadline(text) {
+  const firstLine = String(text || "").split("\n", 1)[0] || "";
+  const headline = firstLine.replace(/^\s*★\s*/, "").trim();
+  return headline || null;
+}
+
 function renderHistory() {
   elements.historyList.innerHTML = historyItems.map((item) => {
     const badge = historyBadge(item);
-    const label = item.kind === "merge"
+    // 提不出标题行时（异常数据）退回“作者：帖文标题”
+    const headline = summaryHeadline(item.result?.text);
+    const label = headline || (item.kind === "merge"
       ? item.title
-      : [item.author || "未知账号", item.title].filter(Boolean).join("：");
+      : [item.author || "未知账号", item.title].filter(Boolean).join("："));
     const meta = formatHistoryTime(item.createdAt);
     return `<li class="merge-item history-item" data-id="${escapeHtml(item.id)}" data-selected="${historyEntry?.id === item.id ? "true" : "false"}">` +
       `<span class="merge-badge ${badge.className}">${badge.label}</span>` +

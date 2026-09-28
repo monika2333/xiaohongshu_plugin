@@ -654,7 +654,11 @@ async function switchChromeTab(tabId) {
   assert.equal(elements[".view-tabs"].hidden, true);
   await settle();
   assert.equal(elements["#history-list"].hidden, false);
+  // 条目标题用概括自身的标题行（去掉星号），不再显示“作者：帖文标题”
   assert.match(elements["#history-list"].innerHTML, /历史帖文甲/);
+  assert.doesNotMatch(elements["#history-list"].innerHTML, /甲：历史帖文甲/);
+  assert.match(elements["#history-list"].innerHTML, /合并历史/);
+  assert.doesNotMatch(elements["#history-list"].innerHTML, /合并 2 条帖文/);
   assert.equal(elements["#history-clear-button"].hidden, false);
 
   const historyTarget = (id, remove = false) => ({
