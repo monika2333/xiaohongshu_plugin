@@ -63,7 +63,9 @@ const selectors = [
   "#shot-single-staging",
   "#shot-single-run",
   "#shot-single-input",
-  "#shot-single-url"
+  "#shot-single-url",
+  "#link-input",
+  "#link-run"
 ];
 
 // 按平台 URL 构造侧边栏环境；cookieImpl 返回 null 表示未登录。

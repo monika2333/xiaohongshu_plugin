@@ -163,6 +163,30 @@ const payload = {
   assert.match(rendered, /12次点赞、100条评论/);
   assert.match(rendered, /部分网民质疑相关管理方式；部分网民猜测事件与职称评定有关。/);
   assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
+  // 链接概括流：来源链接优先用用户提供的链接（短链）
+  const givenRendered = context.XhsAi.renderSummary(structured, {
+    ...payload,
+    source: { ...payload.source, givenUrl: "https://xhslink.cn/o/given-test" }
+  });
+  assert.match(givenRendered, /（小红书 https:\/\/xhslink\.cn\/o\/given-test）$/);
+  // 模型证据里落地页长链被回显时，正文剔除两种链接
+  const echoRendered = context.XhsAi.renderSummary({
+    ...structured,
+    eventSummary: "小红书用户发帖反映 https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed 某事件"
+  }, {
+    ...payload,
+    source: { ...payload.source, givenUrl: "https://xhslink.cn/o/given-test" }
+  });
+  assert.match(echoRendered, /\n8月8日，小红书用户发帖反映 {1,2}某事件。/);
+  assert.doesNotMatch(echoRendered, /xsec_token/);
+
+  // 分享短链的落地路径 /discovery/item/ 与 /explore/ 同为小红书帖文页
+  assert.equal(
+    context.postPagePlatform("https://www.xiaohongshu.com/discovery/item/6ab3c400000000000200d10e?xsec_token=tok&xsec_source=app_share"),
+    "xiaohongshu"
+  );
+  assert.equal(context.postPagePlatform("https://www.xiaohongshu.com/explore/6ab3c400000000000200d10e"), "xiaohongshu");
+  assert.equal(context.postPagePlatform("https://xhslink.cn/o/8Edwk521FBf"), null);
 
   const relativePayload = {
     ...payload,
@@ -371,7 +395,7 @@ const payload = {
       })
     };
   };
-  const textOnlyPayload = { ...payload, media: { images: [] } };
+  const textOnlyPayload = { ...payload, media: { images: [] }, source: { ...payload.source, givenUrl: "https://xhslink.cn/o/live-short" } };
   const cache = {};
   const firstSummary = await context.XhsAi.summarize(
     textOnlyPayload,
@@ -516,7 +540,7 @@ const payload = {
   assert.match(mergedRender, /^★ 网传某校学生发表不当言论引争议\n8月8日，/);
   assert.match(mergedRender, /上述帖文共获67次点赞、1098条评论。/);
   assert.match(mergedRender, /部分网民好奇事件全貌；部分网民分享校园墙截图。（小红书/);
-  assert.match(mergedRender, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed；另1条原帖已删除）$/);
+  assert.match(mergedRender, /（小红书 https:\/\/xhslink\.cn\/o\/live-short；另1条原帖已删除）$/);
 
   const shotOnlyRender = context.XhsAi.renderMergedSummary({
     headline: "据截图反映某事件",
@@ -627,7 +651,7 @@ const payload = {
   assert.match(mergedResponse.result.text, /上述帖文共获1212次点赞、333条评论。/);
   assert.match(
     mergedResponse.result.text,
-    /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed；https:\/\/xhslink\.cn\/o\/2CIVt7d2Y6p）$/
+    /（小红书 https:\/\/xhslink\.cn\/o\/live-short；https:\/\/xhslink\.cn\/o\/2CIVt7d2Y6p）$/
   );
   assert.equal(mergedResponse.result.evidence.postCount, 2);
   assert.equal(mergedResponse.result.evidence.topLevelComments, 2);
@@ -696,7 +720,8 @@ const payload = {
   assert.equal(historyEntries[0].platform, "xiaohongshu");
   assert.equal(historyEntries[0].title, "测试/帖文");
   assert.equal(historyEntries[0].author, "测试用户");
-  assert.match(historyEntries[0].url, /xiaohongshu\.com\/explore/);
+  // 帖文 payload 带 givenUrl（链接概括流）时，历史条目 url 优先记录给定链接
+  assert.equal(historyEntries[0].url, "https://xhslink.cn/o/live-short");
   assert.match(historyEntries[0].result.text, /用户反映测试事件/);
   assert.equal(historyEntries[1].kind, "merge");
   assert.equal(historyEntries[1].title, "合并 2 条帖文");
@@ -712,6 +737,13 @@ const payload = {
 
   await context.removeHistoryEntry({ id: historyEntries[3].id });
   assert.equal((await context.listHistory()).items.length, 3);
+
+  // 链接概括流：历史条目 url 优先记录用户提供的链接
+  const givenHistoryEntry = await context.recordHistory(
+    { ...payload, source: { ...payload.source, givenUrl: "https://xhslink.cn/o/given-test" } },
+    { text: "★ 短链帖文概括", createdAt: 123 }
+  );
+  assert.equal(givenHistoryEntry.url, "https://xhslink.cn/o/given-test");
 
   // 固定条数上限：超出后淘汰最旧
   for (let index = 0; index < 105; index += 1) {

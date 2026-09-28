@@ -101,6 +101,52 @@ async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
   });
 }
 
+async function pageContextFromPage(rootSelector, detailRoot = createDetailRoot()) {
+  let messageListener;
+  const document = {
+    title: "清华听涛园食堂异物 - 小红书",
+    querySelector(selector) {
+      return selector === rootSelector ? detailRoot : null;
+    }
+  };
+  const chrome = {
+    runtime: {
+      onMessage: {
+        addListener(listener) {
+          messageListener = listener;
+        }
+      },
+      sendMessage: async () => ({ ok: true })
+    },
+    storage: { local: { set: async () => {} } }
+  };
+  const context = {
+    chrome,
+    crypto: { randomUUID: () => "page-session" },
+    document,
+    Event,
+    globalThis: null,
+    location: {
+      href: `https://www.xiaohongshu.com/explore/${NOTE_ID}`,
+      pathname: `/explore/${NOTE_ID}`
+    },
+    setTimeout,
+    clearTimeout,
+    URL
+  };
+  context.globalThis = context;
+  vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
+    fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
+    context,
+    { filename: "content-script.js" }
+  );
+  let response;
+  const keepChannelOpen = messageListener({ type: "XHS_PAGE_CONTEXT" }, {}, (res) => { response = res; });
+  assert.equal(keepChannelOpen, false);
+  return response;
+}
+
 async function captureAndSummarizeWithOverlappingVision() {
   let commentLoaded = false;
   const image = {
@@ -353,6 +399,19 @@ async function captureForMergeWithOverlappingVision() {
   const modalPage = await captureFromPage(".note-detail-mask", createDetailRoot(false));
   assert.equal(modalPage.ok, true);
   assert.equal(modalPage.payload.note.content, "帖文正文");
+
+  // XHS_PAGE_CONTEXT 带 detailReady：链接概括流据此判断详情 DOM 是否已渲染
+  const readyContext = await pageContextFromPage("#noteContainer");
+  assert.equal(readyContext.ok, true);
+  assert.equal(readyContext.detailReady, true);
+
+  const notReadyRoot = createDetailRoot();
+  const baseQuery = notReadyRoot.querySelector.bind(notReadyRoot);
+  notReadyRoot.querySelector = (selector) => (
+    selector === "#detail-title, #detail-desc, .comments-container" ? null : baseQuery(selector)
+  );
+  const notReadyContext = await pageContextFromPage("#noteContainer", notReadyRoot);
+  assert.equal(notReadyContext.detailReady, false);
 
   await captureAndSummarizeWithOverlappingVision();
   await captureForMergeWithOverlappingVision();

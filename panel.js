@@ -1,6 +1,11 @@
 const LIMIT = 50;
 const LOGIN_REQUIRED_MESSAGE = "检测到当前小红书页面尚未登录。请先登录并刷新帖文详情页，再点击“提取并概括”。";
 const WEIBO_LOGIN_REQUIRED_MESSAGE = "检测到当前微博页面尚未登录。请先登录 weibo.com 并刷新帖文页面，再点击“提取并概括”。";
+// 链接概括：等待短链跳转与帖文渲染的总时长和轮询间隔
+const LINK_OPEN_TIMEOUT_MS = 25000;
+const LINK_POLL_INTERVAL_MS = 600;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const elements = {
   viewTabs: document.querySelector(".view-tabs"),
@@ -44,7 +49,9 @@ const elements = {
   shotSingleStaging: document.querySelector("#shot-single-staging"),
   shotSingleRun: document.querySelector("#shot-single-run"),
   shotSingleInput: document.querySelector("#shot-single-input"),
-  shotSingleUrl: document.querySelector("#shot-single-url")
+  shotSingleUrl: document.querySelector("#shot-single-url"),
+  linkInput: document.querySelector("#link-input"),
+  linkRun: document.querySelector("#link-run")
 };
 
 let basketItems = [];
@@ -261,6 +268,7 @@ function refreshButtons() {
   elements.extractButton.disabled = tabBusy;
   elements.buttonLabel.textContent = tabBusy ? "正在处理…" : "提取并概括";
   elements.mergeAddButton.disabled = tabBusy;
+  elements.linkRun.disabled = tasks.has("link");
   elements.shotSingleRun.disabled = tasks.has("shot:single");
   elements.screenshotRun.disabled = tasks.has("shot:merge");
   elements.mergeSummarizeButton.disabled = tasks.has("merge");
@@ -345,12 +353,42 @@ function detectPostPlatform(url) {
       return /^\/\d+\/[0-9A-Za-z]+\/?$/.test(parsed.pathname) ? "weibo" : null;
     }
     if (parsed.hostname.endsWith("xiaohongshu.com")) {
-      return /\/explore\/[0-9a-f]{24}/i.test(parsed.pathname) ? "xiaohongshu" : null;
+      // /discovery/item/ 是分享短链（xhslink.cn）的落地路径，与 /explore/ 同为帖文页
+      return /\/(?:explore|discovery\/item)\/[0-9a-f]{24}/i.test(parsed.pathname) ? "xiaohongshu" : null;
     }
     return null;
   } catch {
     return null;
   }
+}
+
+// 从分享文案或裸链接里提取第一条小红书帖文链接；短链（xhslink.cn）整条接受，
+// 长链要求是帖文地址，避免用户主页等链接进来白等超时。
+function extractPostUrl(rawText) {
+  const text = String(rawText || "");
+  if (!text) return null;
+  const candidates = [];
+  for (const match of text.matchAll(/https?:\/\/\S+/gi)) {
+    // 分享文案的链接常与中文黏在一起：URL 不含裸非 ASCII 字符，先截到首个非
+    // ASCII，再去掉黏尾的 ASCII 标点（全角标点已在截断时处理）
+    const ascii = (match[0].match(/[^\s\u0080-\uFFFF]+/) || [""])[0];
+    let candidate = ascii.replace(/[)"'>\]}.,;:!]+$/, "");
+    if (candidate) candidates.push(candidate);
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "https:") continue;
+      const host = parsed.hostname.toLowerCase();
+      if (host === "xhslink.cn" || host.endsWith(".xhslink.cn")) return parsed.href;
+      if (host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")) {
+        if (detectPostPlatform(parsed.href) === "xiaohongshu") return parsed.href;
+      }
+    } catch {
+      // 无法解析的候选直接跳过
+    }
+  }
+  return null;
 }
 
 async function getActiveTab() {
@@ -396,46 +434,40 @@ function completionDetail(result, fallback) {
   return fallback;
 }
 
-async function prepareCurrentPage() {
-  const tab = await getActiveTab();
-  const platform = detectPostPlatform(tab?.url || "");
-  if (!tab?.id || !platform) {
-    const error = new Error("请先打开小红书或微博帖文详情页，再点击提取并概括。");
-    error.tabId = tab?.id ?? null;
-    throw error;
+async function injectCaptureScripts(tab, platform) {
+  if (platform === "xiaohongshu") {
+    // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
+    // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "content-script.js"] });
+  } else {
+    // 微博采集走页面同源的 /ajax/ 接口，内容脚本直接携带会话 Cookie，无需主世界桥接。
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "weibo-content-script.js"] });
   }
-  let context;
-  try {
-    if (platform === "xiaohongshu") {
-      if (!(await hasLoginCookie(tab.url, "web_session"))) {
-        throw new Error(LOGIN_REQUIRED_MESSAGE);
-      }
-      // 主世界桥接脚本读取小红书页面的 __INITIAL_STATE__（视频流与字幕地址），
-      // 失败时内容脚本会退回解析 SSR 内联脚本，因此这里允许失败。
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["main-world.js"], world: "MAIN" }).catch(() => {});
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "content-script.js"] });
-    } else {
-      if (!(await hasLoginCookie("https://weibo.com", "SUB"))) {
-        throw new Error(WEIBO_LOGIN_REQUIRED_MESSAGE);
-      }
-      // 微博采集走页面同源的 /ajax/ 接口，内容脚本直接携带会话 Cookie，无需主世界桥接。
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["capture-common.js", "weibo-content-script.js"] });
+}
+
+// 注入采集脚本并确认页面会话，返回该页签的采集任务信息
+async function prepareTabPage(tab, platform) {
+  if (platform === "xiaohongshu") {
+    if (!(await hasLoginCookie(tab.url, "web_session"))) {
+      throw new Error(LOGIN_REQUIRED_MESSAGE);
     }
-    context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
-    if (!context?.ok || !context.pageSessionId) {
-      throw new Error(context?.error || "无法确认当前页面状态，请刷新后重试。");
-    }
-  } catch (error) {
-    // 失败状态要落到发起操作的页签上，调用方据此显示错误
-    error.tabId = error.tabId ?? tab.id;
-    throw error;
-  } finally {
-    if (tab.id != null) {
-      activeTabId = tab.id;
-      refreshButtons();
+  } else {
+    if (!(await hasLoginCookie("https://weibo.com", "SUB"))) {
+      throw new Error(WEIBO_LOGIN_REQUIRED_MESSAGE);
     }
   }
-  // 同一页面会话保留旧状态与结果（重新生成不掉结果）；换了页面会话则从头开始
+  await injectCaptureScripts(tab, platform);
+  const context = await chrome.tabs.sendMessage(tab.id, { type: "XHS_PAGE_CONTEXT" });
+  if (!context?.ok || !context.pageSessionId) {
+    throw new Error(context?.error || "无法确认当前页面状态，请刷新后重试。");
+  }
+  return adoptTabPage(tab, platform, context);
+}
+
+// 把页面会话挂到页签槽位上。同一页面会话保留旧状态与结果（重新生成不掉结果）；
+// 换了页面会话则从头开始。
+function adoptTabPage(tab, platform, context) {
   const slot = pageSlots.get(tab.id);
   const sameContext = Boolean(
     slot?.context &&
@@ -448,18 +480,162 @@ async function prepareCurrentPage() {
     result: sameContext ? slot.result ?? null : null,
     capture: sameContext ? slot.capture ?? null : null
   });
-  return { tabId: tab.id, platform, pageSessionId: context.pageSessionId, pageUrl: context.pageUrl, noteId: context.noteId ?? null };
+  return {
+    tabId: tab.id,
+    platform,
+    pageSessionId: context.pageSessionId,
+    pageUrl: context.pageUrl,
+    noteId: context.noteId ?? null,
+    detailReady: context.detailReady !== false
+  };
 }
 
-async function sendCaptureAndSummarize(page, payload, force) {
+async function prepareCurrentPage() {
+  const tab = await getActiveTab();
+  const platform = detectPostPlatform(tab?.url || "");
+  if (!tab?.id || !platform) {
+    const error = new Error("请先打开小红书或微博帖文详情页，再点击提取并概括。");
+    error.tabId = tab?.id ?? null;
+    throw error;
+  }
+  try {
+    return await prepareTabPage(tab, platform);
+  } catch (error) {
+    // 失败状态要落到发起操作的页签上，调用方据此显示错误
+    error.tabId = error.tabId ?? tab.id;
+    throw error;
+  } finally {
+    if (tab.id != null) {
+      activeTabId = tab.id;
+      refreshButtons();
+    }
+  }
+}
+
+async function sendCaptureAndSummarize(page, payload, force, givenUrl = null) {
   const response = await chrome.tabs.sendMessage(page.tabId, {
     type: "XHS_CAPTURE_AND_SUMMARIZE",
     options: { limit: LIMIT },
     payload,
-    force
+    force,
+    givenUrl
   });
   if (!response?.ok) throw new Error(response?.error || "概括未完成。");
   return response;
+}
+
+async function assertXhsLogin() {
+  if (!(await hasLoginCookie("https://www.xiaohongshu.com/", "web_session"))) {
+    throw new Error(LOGIN_REQUIRED_MESSAGE);
+  }
+}
+
+async function tabExists(tabId) {
+  try {
+    await chrome.tabs.get(tabId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 等待链接页签落地到帖文页并完成渲染，返回采集任务信息。
+// 短链会 302 到 /discovery/item/<id>（xsec_token 在 query 里），桌面端采集走的
+// 已知路径是 /explore/<id>，遇到 discovery 落地页时把页签原样改写到 explore
+// （query 原样保留，token 不丢），之后轮询详情 DOM 就绪。
+async function waitLinkTabPage(tabId) {
+  const deadline = Date.now() + LINK_OPEN_TIMEOUT_MS;
+  let rewritten = false;
+  let injected = false;
+  while (Date.now() < deadline) {
+    let tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      throw new Error("链接页签已被关闭，概括中止。");
+    }
+    const url = String(tab?.url || "");
+    if (!rewritten && /^https?:\/\/[^/]*xiaohongshu\.com\/discovery\/item\//i.test(url)) {
+      rewritten = true;
+      injected = false;
+      await chrome.tabs.update(tabId, { url: url.replace(/\/discovery\/item\//i, "/explore/") }).catch(() => {});
+    } else if (detectPostPlatform(url)) {
+      const platform = detectPostPlatform(url);
+      if (!injected) {
+        await injectCaptureScripts(tab, platform);
+        injected = true;
+      }
+      let context = null;
+      try {
+        context = await chrome.tabs.sendMessage(tabId, { type: "XHS_PAGE_CONTEXT" });
+      } catch {
+        context = null;
+      }
+      if (context?.ok && context.pageSessionId && context.detailReady !== false) {
+        return adoptTabPage(tab, platform, context);
+      }
+    }
+    await sleep(LINK_POLL_INTERVAL_MS);
+  }
+  throw new Error("链接页已打开，但迟迟没有出现帖文内容（帖子可能已删除、仅自己可见，或链接不是帖文地址）。");
+}
+
+// 链接概括：贴入分享文案或短链 → 开新页签 → 复用页签级采集概括管线。
+// 结果与状态挂在打开的页签槽位上（单条视图跟随页签），页签保留不关闭。
+async function runLinkWorkflow() {
+  if (tasks.has("link")) return;
+  const givenUrl = extractPostUrl(elements.linkInput.value);
+  if (!givenUrl) {
+    writePageStatus(activeTabId, {
+      state: "error",
+      title: "未能概括链接",
+      detail: "输入里没有找到小红书帖文链接（支持 xhslink.cn 短链或 xiaohongshu.com 帖文地址）。",
+      percent: 0
+    });
+    return;
+  }
+  singleFocus = "tab";
+  setTask("link", { kind: "page", title: "正在打开链接", detail: "正在打开帖文链接…", percent: 3 });
+  let tab = null;
+  try {
+    await assertXhsLogin();
+    tab = await chrome.tabs.create({ url: givenUrl, active: true });
+    const page = await waitLinkTabPage(tab.id);
+    // 交接：打开阶段的任务条目换成页签级任务，采集阶段由工作流广播接管
+    removeTask("link");
+    setTask(pageTaskKey(page.tabId), {
+      kind: "page",
+      tabId: page.tabId,
+      platform: page.platform,
+      title: captureLabel(pageSlots.get(page.tabId)?.capture) || "正在连接页面",
+      detail: "检查帖文详情页…",
+      percent: 3
+    });
+    writePageStatus(page.tabId, { state: "working", title: "正在连接页面", detail: "检查帖文详情页…", percent: 3 });
+    const response = await sendCaptureAndSummarize(page, null, false, givenUrl);
+    writePageResult(page.tabId, response.result, response.capture || null);
+    writePageStatus(page.tabId, {
+      state: "done",
+      title: "概括完成",
+      detail: completionDetail(response.result, "已按固定格式生成，可直接复制。"),
+      percent: 100
+    });
+    elements.linkInput.value = "";
+  } catch (error) {
+    const status = {
+      state: "error",
+      title: tab ? "链接概括未能完成" : "未能概括链接",
+      detail: error?.message || "发生未知错误。",
+      percent: 0
+    };
+    // 页签在等待期间被关掉时不再写状态（onRemoved 已清槽位）
+    if (!tab || (await tabExists(tab.id))) {
+      writePageStatus(tab?.id ?? activeTabId, status);
+    }
+  } finally {
+    removeTask("link");
+    if (tab?.id != null) removeTask(pageTaskKey(tab.id));
+  }
 }
 
 // 后台推送的工作流状态：写入对应页签的槽位并维护任务列表；
@@ -1165,6 +1341,13 @@ elements.taskList.addEventListener("click", (event) => {
 });
 
 elements.extractButton.addEventListener("click", runFullWorkflow);
+elements.linkRun.addEventListener("click", runLinkWorkflow);
+elements.linkInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runLinkWorkflow();
+  }
+});
 elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
 elements.tabSingle.addEventListener("click", () => switchView("single"));
 elements.tabMerge.addEventListener("click", () => switchView("merge"));

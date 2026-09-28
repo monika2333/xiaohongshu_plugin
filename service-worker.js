@@ -70,7 +70,8 @@ function postPagePlatform(value) {
     if (url.hostname === "weibo.com" || url.hostname.endsWith(".weibo.com")) {
       return /^\/\d+\/[0-9A-Za-z]+\/?$/.test(url.pathname) ? "weibo" : null;
     }
-    if (url.hostname.endsWith("xiaohongshu.com") && /\/explore\/[0-9a-f]{24}/i.test(url.pathname)) {
+    if (url.hostname.endsWith("xiaohongshu.com") && /\/(explore|discovery\/item)\/[0-9a-f]{24}/i.test(url.pathname)) {
+      // /discovery/item/ 是分享短链（xhslink.cn）的落地路径，与 /explore/ 同为帖文页
       return "xiaohongshu";
     }
     return null;
@@ -686,7 +687,8 @@ async function recordHistory(payload, publicResult) {
     platform: payload?.source?.platform === "weibo" ? "weibo" : "xiaohongshu",
     title: cleanText(payload?.note?.title) || "（无标题帖文）",
     author: cleanText(payload?.note?.author) || null,
-    url: cleanText(payload?.source?.url) || null,
+    // 链接概括流沿用用户提供的链接（短链）；其余场景仍是页面地址
+    url: cleanText(payload?.source?.givenUrl) || cleanText(payload?.source?.url) || null,
     result: publicResult,
     createdAt: publicResult.createdAt || Date.now()
   };

@@ -28,7 +28,7 @@
     return id;
   }
 
-  function createCaptureWorkflow({ pageSessionId, getNoteId, getNoteTitle, runCapture }) {
+  function createCaptureWorkflow({ pageSessionId, getNoteId, getNoteTitle, getDetailReady, runCapture }) {
     function currentNoteTitle() {
       return typeof getNoteTitle === "function" ? cleanText(getNoteTitle()) : "";
     }
@@ -59,7 +59,7 @@
       }).catch(() => null);
     }
 
-    async function runCaptureAndSummarize(rawOptions, suppliedPayload, force) {
+    async function runCaptureAndSummarize(rawOptions, suppliedPayload, force, givenUrl) {
       let payload = suppliedPayload || null;
       let visionPreparationPromise = null;
       if (payload) {
@@ -69,6 +69,9 @@
           visionPreparationPromise = startVisionPreparation(visionSeed);
         })).payload;
       }
+      // 链接概括流：概括输出与历史沿用用户提供的链接（如 xhslink.cn 短链），
+      // 页面自身的 location.href 保留在 source.url，供后台校验与页签匹配使用。
+      if (givenUrl && payload?.source) payload.source.givenUrl = String(givenUrl);
 
       const visionPreparationResponse = visionPreparationPromise
         ? await visionPreparationPromise
@@ -151,7 +154,9 @@
             ok: true,
             pageSessionId,
             pageUrl: location.href,
-            noteId: getNoteId()
+            noteId: getNoteId(),
+            // 帖文详情 DOM 是否已渲染：链接概括流据此判断页签可以开始采集
+            detailReady: typeof getDetailReady === "function" ? Boolean(getDetailReady()) : true
           });
           return false;
         }
@@ -162,7 +167,7 @@
 
         const operation = message.type === "XHS_CAPTURE_FOR_MERGE"
           ? beginOperation(() => runCaptureForMerge(message.options))
-          : beginOperation(() => runCaptureAndSummarize(message.options, message.payload, message.force));
+          : beginOperation(() => runCaptureAndSummarize(message.options, message.payload, message.force, message.givenUrl));
         if (!operation) {
           sendResponse({ ok: false, error: PAGE_BUSY_MESSAGE });
           return true;

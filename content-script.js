@@ -9,6 +9,7 @@
     pageSessionId: PAGE_SESSION_ID,
     getNoteId,
     getNoteTitle,
+    getDetailReady: () => Boolean(getDetailRoot()),
     runCapture
   });
 
@@ -45,7 +46,8 @@
   }
 
   function getNoteId() {
-    return location.pathname.match(/\/explore\/([0-9a-f]{24})/i)?.[1] || null;
+    // /explore/ 是桌面端帖文页；/discovery/item/ 是分享短链的落地路径
+    return location.pathname.match(/\/(?:explore|discovery\/item)\/([0-9a-f]{24})/i)?.[1] || null;
   }
 
   // 采集开始时标题节点已可用；读不到时退回页签标题（小红书帖文页形如“标题 - 小红书”）。

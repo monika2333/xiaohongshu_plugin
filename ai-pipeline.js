@@ -167,6 +167,17 @@
     return platform;
   }
 
+  // 来源链接：链接概括流里用户提供的链接（如 xhslink.cn 短链）优先于落地页长链
+  function sourceLink(source) {
+    return cleanText(source?.givenUrl) || cleanText(source?.url);
+  }
+
+  function stripUrls(text, urls) {
+    let result = cleanText(text);
+    for (const url of urls) result = result.split(url).join("");
+    return result;
+  }
+
   function normalizeConfig(raw = {}) {
     return {
       text: {
@@ -614,14 +625,14 @@
     else if (likes) engagement = `截至目前，该帖文获${likes}次点赞。`;
     else if (comments) engagement = `截至目前，该帖文有${comments}条评论。`;
 
-    const sourceUrl = cleanText(payload?.source?.url);
+    const sourceUrl = sourceLink(payload?.source);
+    const evidenceUrls = [...new Set([sourceUrl, cleanText(payload?.source?.url)].filter(Boolean))];
     const publishedDate = resolvePublishedDate(payload);
-    let eventBody = cleanText(structured.eventSummary);
-    if (sourceUrl) eventBody = eventBody.split(sourceUrl).join("");
+    let eventBody = stripUrls(structured.eventSummary, evidenceUrls);
     eventBody = withoutLeadingPublishDate(eventBody);
     const eventSummary = publishedDate?.display ? `${publishedDate.display}，${eventBody}` : eventBody;
     const opinionPoints = (structured.opinionPoints || [])
-      .map((item) => withoutTrailingPunctuation(sourceUrl ? cleanText(item).split(sourceUrl).join("") : cleanText(item)))
+      .map((item) => withoutTrailingPunctuation(stripUrls(item, evidenceUrls)))
       .filter(Boolean);
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
     const sourceSuffix = sourceUrl
@@ -807,6 +818,8 @@
 
   function renderMergedSummary(structured, payloads) {
     const sources = [];
+    // 模型拿到的证据仍是落地页长链，正文里两种链接都要剔掉
+    const stripList = new Set();
     let missingLinkCount = 0;
     let likesTotal = 0;
     let likesKnown = 0;
@@ -815,9 +828,12 @@
     let earliest = null;
 
     for (const payload of payloads) {
-      const url = cleanText(payload?.source?.url);
+      const url = sourceLink(payload?.source);
       if (url) sources.push({ platform: platformLabel(payload?.source), url });
       else missingLinkCount += 1;
+      for (const candidate of [url, cleanText(payload?.source?.url)]) {
+        if (candidate) stripList.add(candidate);
+      }
       const likes = payload.interactions?.likes?.value;
       if (Number.isFinite(likes) && likes > 0) {
         likesTotal += likes;
@@ -842,8 +858,7 @@
     else if (likesKnown) engagement = `截至目前，上述帖文共获${likesTotal}次点赞。`;
     else if (commentsKnown) engagement = `截至目前，上述帖文共有${commentsTotal}条评论。`;
 
-    let eventBody = cleanText(structured.eventSummary);
-    for (const { url } of sources) eventBody = eventBody.split(url).join("");
+    let eventBody = stripUrls(structured.eventSummary, stripList);
     eventBody = withoutLeadingPublishDate(eventBody);
     const eventSummary = earliest?.display ? `${earliest.display}，${eventBody}` : eventBody;
     const opinionPoints = (structured.opinionPoints || [])

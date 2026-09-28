@@ -63,7 +63,9 @@ const selectors = [
   "#shot-single-staging",
   "#shot-single-run",
   "#shot-single-input",
-  "#shot-single-url"
+  "#shot-single-url",
+  "#link-input",
+  "#link-run"
 ];
 const elements = Object.fromEntries(selectors.map((selector) => [selector, createElement()]));
 const pageUrlById = {
@@ -721,6 +723,91 @@ async function switchChromeTab(tabId) {
   assert.equal(elements["#history-list"].hidden, true);
   assert.equal(elements["#history-clear-button"].hidden, true);
   assert.equal(elements["#result-card"].hidden, true);
+
+  // —— 链接概括：短链提取、discovery 落地改写 explore、givenUrl 透传 ——
+  // 前面历史测试停在历史屏、焦点留在截图任务上：先回单条页签并切页签刷新焦点
+  await elements["#tab-single"].listeners.click();
+  await switchChromeTab(8);
+  assert.match(elements["#status-title"].textContent, /概括完成|准备就绪/);
+  assert.equal(
+    context.extractPostUrl("已经精疲力尽了 https://xhslink.cn/o/8Edwk521FBf \n先复制这段，去【小红书】看看有多精彩~"),
+    "https://xhslink.cn/o/8Edwk521FBf"
+  );
+  assert.equal(
+    context.extractPostUrl("https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=abc，看看！"),
+    "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=abc"
+  );
+  assert.equal(
+    context.extractPostUrl("https://www.xiaohongshu.com/discovery/item/6ab3c400000000000200d10e?xsec_source=app_share"),
+    "https://www.xiaohongshu.com/discovery/item/6ab3c400000000000200d10e?xsec_source=app_share"
+  );
+  assert.equal(context.extractPostUrl("主页在这 https://www.xiaohongshu.com/user/profile/abc"), null);
+  assert.equal(context.extractPostUrl("http://xhslink.cn/o/not-https"), null);
+  assert.equal(context.extractPostUrl("这段文案里没有链接"), null);
+
+  // 无链接输入：不开页签，错误落在当前页签槽位
+  const createCountBefore = tabsUpdates.filter((update) => update.tabId === "create").length;
+  elements["#link-input"].value = "这段文案里没有链接";
+  await elements["#link-run"].listeners.click();
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "未能概括链接");
+  assert.equal(tabsUpdates.filter((update) => update.tabId === "create").length, createCountBefore);
+
+  // 完整流程：短链开页签 → discovery 落地改写 explore → 采集概括沿用短链
+  sessionById[99] = "page-session-99";
+  pageUrlById[99] = "https://www.xiaohongshu.com/explore/6ab3c400000000000200d10e?xsec_token=tok&xsec_source=app_share";
+  const shortLink = "https://xhslink.cn/o/8Edwk521FBf";
+  elements["#link-input"].value = `已经精疲力尽了 ${shortLink} \n先复制这段，去【小红书】看看有多精彩~`;
+  tabsUpdates.length = 0;
+  const tabUrlQueue = [
+    shortLink,
+    "https://www.xiaohongshu.com/discovery/item/6ab3c400000000000200d10e?xsec_token=tok&xsec_source=app_share"
+  ];
+  context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: tabUrlQueue.length ? tabUrlQueue.shift() : pageUrlById[99]
+  });
+  context.chrome.tabs.create = async (options) => {
+    tabsUpdates.push({ tabId: "create", options });
+    // 真实浏览器里 tabs.create(active) 会触发 onActivated
+    void tabsActivatedListener({ tabId: 99 });
+    return { id: 99, windowId: 3 };
+  };
+  let linkCaptureMessage = null;
+  context.chrome.tabs.sendMessage = async (tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return { ...pageContextFor(tabId), detailReady: true };
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      linkCaptureMessage = message;
+      return {
+        ok: true,
+        result: {
+          text: "★ 短链帖文概括\n正文。（小红书 https://xhslink.cn/o/8Edwk521FBf）",
+          createdAt: Date.now(),
+          evidence: { topLevelComments: 8, visibleReplies: 0, imagesFound: 1, imagesAnalyzed: 1, textModel: "deepseek-v4-flash" },
+          notification: null
+        },
+        capture: { source: { pageSessionId: sessionById[99], url: pageUrlById[99] }, note: { title: "短链帖文", author: "丙" } }
+      };
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  };
+  const fastSetTimeout = context.setTimeout;
+  context.setTimeout = (fn) => fastSetTimeout(fn, 0);
+  const linkClick = elements["#link-run"].listeners.click();
+  await settle(12);
+  await linkClick;
+  context.setTimeout = fastSetTimeout;
+
+  assert.ok(tabsUpdates.some((update) => update.tabId === "create" && update.options.url === shortLink), "开页签应沿用给定短链");
+  const rewrite = tabsUpdates.find((update) => update.tabId === 99);
+  assert.ok(rewrite, "discovery 落地页应改写为 explore");
+  assert.match(rewrite.options.url, /www\.xiaohongshu\.com\/explore\/6ab3c400000000000200d10e\?xsec_token=tok/);
+  assert.ok(linkCaptureMessage);
+  assert.equal(linkCaptureMessage.givenUrl, shortLink);
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+  assert.match(elements["#result-text"].value, /短链帖文概括/);
+  assert.equal(elements["#link-input"].value, "");
+  assert.equal(taskCount(), 0);
 
   process.stdout.write("panel parallel workflow tests passed\n");
 })().catch((error) => {
