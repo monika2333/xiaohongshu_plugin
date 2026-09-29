@@ -750,7 +750,15 @@ async function switchChromeTab(tabId) {
     "https://www.xiaohongshu.com/discovery/item/6ab3c400000000000200d10e?xsec_source=app_share"
   );
   assert.equal(context.extractPostUrl("主页在这 https://www.xiaohongshu.com/user/profile/abc"), null);
-  assert.equal(context.extractPostUrl("http://xhslink.cn/o/not-https"), null);
+  // 用户手输 http 短链/长链：统一升级 https 后接受
+  assert.equal(
+    context.extractPostUrl("http://xhslink.cn/o/1qbjU0B1ODG"),
+    "https://xhslink.cn/o/1qbjU0B1ODG"
+  );
+  assert.equal(
+    context.extractPostUrl("http://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=abc"),
+    "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=abc"
+  );
   assert.equal(context.extractPostUrl("这段文案里没有链接"), null);
 
   // 无链接输入：不开页签，错误落在当前页签槽位

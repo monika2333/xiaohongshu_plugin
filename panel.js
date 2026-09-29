@@ -376,9 +376,10 @@ function extractPostUrl(rawText) {
     let candidate = ascii.replace(/[)"'>\]}.,;:!]+$/, "");
     if (candidate) candidates.push(candidate);
   }
-  for (const candidate of candidates) {
+  for (const rawCandidate of candidates) {
     try {
-      const parsed = new URL(candidate);
+      // 用户手输的短链常是 http://：小红书两域均支持 https，统一升级后再校验
+      const parsed = new URL(rawCandidate.replace(/^http:\/\//i, "https://"));
       if (parsed.protocol !== "https:") continue;
       const host = parsed.hostname.toLowerCase();
       if (host === "xhslink.cn" || host.endsWith(".xhslink.cn")) return parsed.href;
