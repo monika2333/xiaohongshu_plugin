@@ -14,8 +14,8 @@
     },
     vision: {
       provider: "openai_compatible",
-      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      model: "qwen3-vl-plus"
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-flash"
     },
     feishu: {
       mode: "webhook",

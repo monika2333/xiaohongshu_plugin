@@ -36,10 +36,10 @@
 7. 保存设置。
 8. 登录小红书或微博，打开一个帖文详情页，点击“提取并概括”。
 
-推荐预设（所有字段都可以修改）：
+推荐预设（所有字段都可以修改，文字与图片模型可同用 DeepSeek，只需一份 Key）：
 
-- DeepSeek：`https://api.deepseek.com`，模型 `deepseek-flash`
-- Qwen：`https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3-vl-plus`
+- DeepSeek：`https://api.deepseek.com`，模型 `deepseek-flash`（支持图片输入，文字/图片模型均可用）
+- Qwen：`https://dashscope.aliyuncs.com/compatible-mode/v1`，模型 `qwen3-vl-plus`（备选图片模型）
 
 也可以改用其他提供 OpenAI-compatible Chat Completions 接口的模型。保存或测试时，浏览器会针对所填写的 HTTPS API 域名单独请求访问权限。
 

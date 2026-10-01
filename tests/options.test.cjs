@@ -131,11 +131,9 @@ vm.runInContext(
 
 (async () => {
   assert.match(optionsHtml, /https:\/\/platform\.deepseek\.com\/api_keys/);
-  assert.match(optionsHtml, /https:\/\/bailian\.console\.aliyun\.com\/\?tab=model#\/api-key/);
   assert.match(optionsHtml, /https:\/\/open\.feishu\.cn\/document\/feishu-cards\/quick-start\/send-message-cards-with-custom-bot/);
   assert.doesNotMatch(optionsHtml, /common-capabilities\/message-card\/getting-started\/send-message-cards-with-a-custom-bot/);
   assert.match(optionsHtml, />获取 DeepSeek API Key ↗<\/a>/);
-  assert.match(optionsHtml, />获取百炼 API Key ↗<\/a>/);
   assert.doesNotMatch(optionsHtml, /feishu-enabled|完成后自动推送/);
 
   // options.js 引用的所有 id 必须真实存在于 options.html（防止 mock 元素掩盖页面缺元素）

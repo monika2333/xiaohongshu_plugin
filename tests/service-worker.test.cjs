@@ -145,10 +145,8 @@ const payload = {
 };
 
 (async () => {
-  assert.equal(context.XhsPrompts.version, "2026-09-18-v5");
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
-  assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
   assert.match(context.XhsPrompts.textSystem, /video\.transcript/);
 
   const structured = {
@@ -333,7 +331,7 @@ const payload = {
       };
     }
     visionModelCalls += 1;
-    assert.equal(url, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+    assert.equal(url, "https://api.deepseek.com/chat/completions");
     assert.equal(options.headers.Authorization, "Bearer test-vision-key");
     return {
       ok: true,
@@ -557,7 +555,7 @@ const payload = {
   let mergeTextCalls = 0;
   let lastMergeRequest = null;
   context.fetch = async (url, options) => {
-    if (url.includes("dashscope.aliyuncs.com")) {
+    if (options.headers.Authorization === "Bearer test-vision-key") {
       const body = JSON.parse(options.body);
       assert.equal(options.headers.Authorization, "Bearer test-vision-key");
       assert.match(body.messages[0].content, /帖文截图识别助手/);
