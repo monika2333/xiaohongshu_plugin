@@ -150,7 +150,6 @@ const payload = {
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
   assert.match(context.XhsPrompts.textSystem, /中央民族大学新老校区搬迁工作/);
   assert.match(context.XhsPrompts.textSystem, /video\.transcript/);
-  assert.equal(context.XhsAi.DEFAULT_CONFIG.promptVersion, context.XhsPrompts.version);
 
   const structured = {
     headline: "高校教师称被移出工作群",

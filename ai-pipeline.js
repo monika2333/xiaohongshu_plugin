@@ -23,8 +23,7 @@
       appId: "",
       recipientId: ""
     },
-    rememberApiKeys: true,
-    promptVersion: PROMPT_VERSION
+    rememberApiKeys: true
   });
 
   function cleanText(value, limit = Infinity) {
@@ -225,8 +224,7 @@
         recipientId: cleanText(raw.feishu?.recipientId, 160)
       },
       rememberApiKeys: raw.rememberApiKeys !== false,
-      promptOverrides: normalizePromptOverrides(raw.promptOverrides),
-      promptVersion: PROMPT_VERSION
+      promptOverrides: normalizePromptOverrides(raw.promptOverrides)
     };
   }
 
