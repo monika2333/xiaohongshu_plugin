@@ -435,6 +435,7 @@
       title: cleanText(source?.title, 500),
       contentText: cleanText(source?.content_text ?? source?.contentText, 10000),
       hashtags: stringArray(source?.hashtags),
+      imageText: cleanText(source?.image_text ?? source?.imageText, 4000),
       likesRaw: cleanText(source?.likes_raw ?? source?.likesRaw, 40),
       collectsRaw: cleanText(source?.collects_raw ?? source?.collectsRaw, 40),
       commentsRaw: cleanText(source?.comments_raw ?? source?.commentsRaw, 40),
@@ -487,6 +488,7 @@
         authorProfileUrl: null,
         content: extraction.contentText || null,
         hashtags: extraction.hashtags,
+        imageText: extraction.imageText || null,
         publishedDisplay: publishedDisplay || null,
         location: null,
         publishedAtInferred: null,
@@ -579,6 +581,8 @@
         publishedDateIso: publishedDate?.iso || null,
         content: cleanText(payload.note?.content, 10000),
         hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100)),
+        // 截图来源帖文的配图文字；普通帖文配图走 imageEvidence，字段按需出现以保持既有证据哈希稳定。
+        ...(payload.note?.imageText ? { imageText: cleanText(payload.note.imageText, 4000) } : {}),
         uncertainties: stringArray(payload?.uncertainties || [])
       },
       video: video ? {
