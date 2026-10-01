@@ -1,5 +1,4 @@
 (() => {
-  const PROMPT_VERSION = XhsPrompts.version;
   const DISPLAY_TIME_ZONE = "Asia/Shanghai";
   const MAX_IMAGE_COUNT = 18;
   const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -203,7 +202,7 @@
 
   // 缓存键中的提示词标识：生效文本一变（含内置默认升级）哈希即变，旧缓存自动失效。
   function promptCacheTag(config, key) {
-    return `${PROMPT_VERSION}:${hashText(resolvePrompts(config)[key])}`;
+    return hashText(resolvePrompts(config)[key]);
   }
 
   function normalizeConfig(raw = {}) {
