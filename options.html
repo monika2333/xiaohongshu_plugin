@@ -13,9 +13,17 @@
         <div class="title-copy">
           <p class="eyebrow">PERSONAL BYOK WORKBENCH</p>
           <h1>插件设置</h1>
-          <p>配置文字与图片模型，并按需把完成的概括自动推送到飞书。</p>
+          <p>配置文字与图片模型，自定义概括提示词，并按需把完成的概括自动推送到飞书。</p>
         </div>
       </header>
+
+      <nav class="options-tabs" role="tablist" aria-label="设置分区">
+        <button type="button" class="options-tab" id="tab-models" role="tab" aria-selected="true" aria-controls="panel-models">模型与推送</button>
+        <button type="button" class="options-tab" id="tab-prompts" role="tab" aria-selected="false" aria-controls="panel-prompts">概括提示词<span id="prompts-tab-badge" class="tab-badge" hidden></span></button>
+      </nav>
+
+      <form id="settings-form">
+        <div id="panel-models" role="tabpanel" aria-labelledby="tab-models">
 
       <aside class="privacy-note" aria-labelledby="credential-title">
         <div class="credential-body">
@@ -31,7 +39,6 @@
         </div>
       </aside>
 
-      <form id="settings-form">
         <section class="provider-card" aria-labelledby="text-title">
           <div class="card-number">A</div>
           <div class="card-heading">
@@ -155,8 +162,68 @@
           <p id="save-status" aria-live="polite">填写后保存，再回到帖文页面使用插件。</p>
           <button id="save-button" class="save-button" type="submit">保存全部设置 <span>↘</span></button>
         </div>
+        </div>
+
+        <div id="panel-prompts" role="tabpanel" aria-labelledby="tab-prompts" hidden>
+
+        <section class="provider-card prompt-card" aria-label="概括提示词">
+          <p class="prompt-intro">内置提示词决定简报的文风与取舍，已完整展示在下方，可直接在其基础上修改；与内置保持一致的项会自动跟随插件后续版本的默认更新。保存后立即生效。</p>
+          <div class="prompt-editors">
+            <div class="prompt-editor" data-prompt-key="textSystem">
+              <div class="prompt-editor-head">
+                <strong>单帖概括</strong>
+                <span class="prompt-scope">文字模型</span>
+                <span class="prompt-badge" data-prompt-badge="textSystem" hidden>已自定义</span>
+                <button type="button" class="prompt-reset" data-prompt-reset="textSystem">恢复默认</button>
+              </div>
+              <p class="prompt-hint">小红书图文帖、视频帖与微博帖的单帖概括共用。</p>
+              <textarea class="prompt-textarea" data-prompt-input="textSystem" rows="14" spellcheck="false"></textarea>
+            </div>
+
+            <div class="prompt-editor" data-prompt-key="mergeSystem">
+              <div class="prompt-editor-head">
+                <strong>多帖合并概括</strong>
+                <span class="prompt-scope">文字模型</span>
+                <span class="prompt-badge" data-prompt-badge="mergeSystem" hidden>已自定义</span>
+                <button type="button" class="prompt-reset" data-prompt-reset="mergeSystem">恢复默认</button>
+              </div>
+              <p class="prompt-hint">把同一事件的多条帖文合并成一条统一叙事时使用。</p>
+              <textarea class="prompt-textarea" data-prompt-input="mergeSystem" rows="14" spellcheck="false"></textarea>
+            </div>
+
+            <div class="prompt-editor" data-prompt-key="visionSystem">
+              <div class="prompt-editor-head">
+                <strong>图片识别</strong>
+                <span class="prompt-scope">图片模型</span>
+                <span class="prompt-badge" data-prompt-badge="visionSystem" hidden>已自定义</span>
+                <button type="button" class="prompt-reset" data-prompt-reset="visionSystem">恢复默认</button>
+              </div>
+              <p class="prompt-hint">逐图 OCR 与证据取舍，输出字段由程序解析。</p>
+              <textarea class="prompt-textarea" data-prompt-input="visionSystem" rows="10" spellcheck="false"></textarea>
+            </div>
+
+            <div class="prompt-editor" data-prompt-key="screenshotSystem">
+              <div class="prompt-editor-head">
+                <strong>帖文截图识别</strong>
+                <span class="prompt-scope">图片模型</span>
+                <span class="prompt-badge" data-prompt-badge="screenshotSystem" hidden>已自定义</span>
+                <button type="button" class="prompt-reset" data-prompt-reset="screenshotSystem">恢复默认</button>
+              </div>
+              <p class="prompt-hint">已删帖或无法访问的帖文截图抄录。</p>
+              <textarea class="prompt-textarea" data-prompt-input="screenshotSystem" rows="10" spellcheck="false"></textarea>
+            </div>
+          </div>
+          <p class="field-help wide-field">「返回一个 JSON 对象…字段：headline…」这类输出格式指令与程序解析绑定，建议原样保留，主要调整文风、详略与取舍标准，否则概括可能解析失败。修改保存后，对应场景的概括缓存会自动失效，重新概括即可看到新效果。</p>
+        </section>
+
+        <div class="save-row">
+          <p id="prompt-save-status" aria-live="polite">修改提示词后保存，本页保持打开，可反复调整。</p>
+          <button id="prompt-save-button" class="save-button" type="submit" data-stay-open="true">保存全部设置 <span>↘</span></button>
+        </div>
+        </div>
       </form>
     </main>
+    <script src="prompts.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

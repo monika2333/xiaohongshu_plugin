@@ -463,3 +463,167 @@ input:focus {
 @media (prefers-reduced-motion: reduce) {
   * { transition-duration: .01ms !important; }
 }
+
+/* —— 概括提示词页签 —— */
+/* 独立页签内不再有卡片编号与标题，说明文字顶替卡片头，整体单列布局 */
+.prompt-card {
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.prompt-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.prompt-editors {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.prompt-editor {
+  min-width: 0;
+  padding: 14px 16px;
+  background: rgba(255, 250, 240, .54);
+  border: 1px solid var(--line);
+}
+
+.prompt-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prompt-editor-head strong {
+  color: var(--ink);
+  font-family: "STSong", "Songti SC", serif;
+  font-size: 15px;
+}
+
+.prompt-scope {
+  padding: 2px 7px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .05em;
+}
+
+.prompt-badge {
+  padding: 2px 7px;
+  color: var(--paper-soft);
+  background: var(--green);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .05em;
+}
+
+.prompt-reset {
+  margin-left: auto;
+  padding: 5px 11px;
+  color: var(--red-dark);
+  background: transparent;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.prompt-reset:hover:not(:disabled) {
+  color: var(--paper-soft);
+  background: var(--red-dark);
+  border-color: var(--red-dark);
+}
+
+.prompt-reset:disabled {
+  color: var(--muted);
+  opacity: .55;
+  cursor: default;
+}
+
+.prompt-reset:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+
+.prompt-hint {
+  margin: 6px 0 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 0;
+  padding: 11px 13px;
+  color: var(--ink);
+  background: var(--paper-soft);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  outline: none;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 13px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.prompt-textarea:focus {
+  border-color: var(--red);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+/* 卡片底部的输出格式警告沿用主页签的 field-help，但在这个页签里同步放大 */
+.prompt-card .field-help {
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+
+/* —— 设置页页签 —— */
+.options-tabs {
+  display: flex;
+  gap: 28px;
+  margin-top: 22px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.options-tab {
+  position: relative;
+  padding: 12px 2px 13px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  font-family: "STSong", "Songti SC", serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  cursor: pointer;
+}
+
+.options-tab:hover { color: var(--red-dark); }
+.options-tab:focus-visible { outline: 2px solid var(--red); outline-offset: -3px; }
+
+.options-tab[aria-selected="true"] { color: var(--ink); }
+
+.options-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  background: var(--red);
+}
+
+.tab-badge {
+  margin-left: 7px;
+  padding: 1px 6px;
+  color: var(--paper-soft);
+  background: var(--green);
+  border-radius: 99px;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: 3px;
+}

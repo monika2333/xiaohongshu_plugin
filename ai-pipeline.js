@@ -178,6 +178,35 @@
     return result;
   }
 
+  // 用户可覆盖的 system 提示词。留空或非法的条目一律回落到 prompts.js 的内置默认。
+  const PROMPT_OVERRIDE_KEYS = ["textSystem", "mergeSystem", "visionSystem", "screenshotSystem"];
+  const PROMPT_OVERRIDE_MAX = 8000;
+
+  function normalizePromptOverrides(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const overrides = {};
+    for (const key of PROMPT_OVERRIDE_KEYS) {
+      const value = typeof source[key] === "string" ? source[key].replace(/\u0000/g, "").trim() : "";
+      if (value) overrides[key] = value.slice(0, PROMPT_OVERRIDE_MAX);
+    }
+    return overrides;
+  }
+
+  function resolvePrompts(config) {
+    const overrides = config?.promptOverrides || {};
+    return {
+      textSystem: overrides.textSystem || XhsPrompts.textSystem,
+      mergeSystem: overrides.mergeSystem || XhsPrompts.mergeSystem,
+      visionSystem: overrides.visionSystem || XhsPrompts.visionSystem,
+      screenshotSystem: overrides.screenshotSystem || XhsPrompts.screenshotSystem
+    };
+  }
+
+  // 缓存键中的提示词标识：生效文本一变（含内置默认升级）哈希即变，旧缓存自动失效。
+  function promptCacheTag(config, key) {
+    return `${PROMPT_VERSION}:${hashText(resolvePrompts(config)[key])}`;
+  }
+
   function normalizeConfig(raw = {}) {
     return {
       text: {
@@ -196,6 +225,7 @@
         recipientId: cleanText(raw.feishu?.recipientId, 160)
       },
       rememberApiKeys: raw.rememberApiKeys !== false,
+      promptOverrides: normalizePromptOverrides(raw.promptOverrides),
       promptVersion: PROMPT_VERSION
     };
   }
@@ -359,6 +389,7 @@
   }
 
   async function analyzeVisionBatch(images, startIndex, config, apiKey) {
+    const prompts = resolvePrompts(config);
     const content = [];
     for (let offset = 0; offset < images.length; offset += 1) {
       const dataUrl = await imageToDataUrl(images[offset]);
@@ -380,7 +411,7 @@
       apiKey,
       model: config.vision.model,
       messages: [
-        { role: "system", content: XhsPrompts.visionSystem },
+        { role: "system", content: prompts.visionSystem },
         { role: "user", content }
       ],
       temperature: 0
@@ -498,6 +529,7 @@
 
   async function analyzeScreenshots(dataUrls, config, apiKey) {
     if (!Array.isArray(dataUrls) || !dataUrls.length) throw new Error("没有可识别的截图。");
+    const prompts = resolvePrompts(config);
     const content = [];
     dataUrls.forEach((dataUrl, index) => {
       content.push({ type: "text", text: XhsPrompts.imageLabel(index + 1) });
@@ -509,7 +541,7 @@
       apiKey,
       model: config.vision.model,
       messages: [
-        { role: "system", content: XhsPrompts.screenshotSystem },
+        { role: "system", content: prompts.screenshotSystem },
         { role: "user", content }
       ],
       temperature: 0
@@ -566,12 +598,13 @@
 
   async function createTextSummary(payload, vision, config, apiKey) {
     const evidence = buildEvidence(payload, vision, config);
+    const prompts = resolvePrompts(config);
     const raw = await callChat({
       baseUrl: config.text.baseUrl,
       apiKey,
       model: config.text.model,
       messages: [
-        { role: "system", content: XhsPrompts.textSystem },
+        { role: "system", content: prompts.textSystem },
         {
           role: "user",
           content: XhsPrompts.textEvidence(evidence)
@@ -646,7 +679,7 @@
     const urls = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT).map((item) => (
       item?.dataUrl ? `frame:${hashText(item.dataUrl)}` : stableImageUrl(item.url)
     ));
-    return `vision:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(urls))}`;
+    return `vision:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.vision.baseUrl)}:${config.vision.model}:${promptCacheTag(config, "visionSystem")}:${hashText(JSON.stringify(urls))}`;
   }
 
   async function resolveVision(payload, config, visionApiKey, cache, emitProgress) {
@@ -714,7 +747,7 @@
 
   function textCacheKey(payload, config, vision) {
     const evidence = buildEvidence(payload, vision, config);
-    return `text:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+    return `text:${platformLabel(payload?.source)}:${payload.source?.noteId}:${hashText(config.text.baseUrl)}:${config.text.model}:${promptCacheTag(config, "textSystem")}:${hashText(JSON.stringify(evidence))}`;
   }
 
   async function summarize(
@@ -792,12 +825,13 @@
 
   async function createMergedSummary(payloads, visions, config, apiKey) {
     const evidence = buildMergedEvidence(payloads, visions, config);
+    const prompts = resolvePrompts(config);
     const raw = await callChat({
       baseUrl: config.text.baseUrl,
       apiKey,
       model: config.text.model,
       messages: [
-        { role: "system", content: XhsPrompts.mergeSystem },
+        { role: "system", content: prompts.mergeSystem },
         { role: "user", content: XhsPrompts.mergeEvidence(evidence) }
       ],
       temperature: 0.2
@@ -891,7 +925,7 @@
     const ids = payloads
       .map((payload) => `${platformLabel(payload?.source)}:${payload.source?.noteId || payload.source?.screenshotId || "unknown"}`)
       .join(",");
-    return `merge:${ids}:${hashText(config.text.baseUrl)}:${config.text.model}:${PROMPT_VERSION}:${hashText(JSON.stringify(evidence))}`;
+    return `merge:${ids}:${hashText(config.text.baseUrl)}:${config.text.model}:${promptCacheTag(config, "mergeSystem")}:${hashText(JSON.stringify(evidence))}`;
   }
 
   async function summarizeMerged(
@@ -1000,6 +1034,9 @@
   globalThis.XhsAi = {
     DEFAULT_CONFIG,
     normalizeConfig,
+    normalizePromptOverrides,
+    resolvePrompts,
+    promptCacheTag,
     validateConfig,
     parseJsonResponse,
     platformLabel,
@@ -1015,6 +1052,9 @@
     normalizeScreenshotExtraction,
     buildScreenshotPayload,
     analyzeScreenshots,
+    visionCacheKey,
+    textCacheKey,
+    mergedTextCacheKey,
     sortPayloadsChronologically,
     buildEvidence,
     buildMergedEvidence,

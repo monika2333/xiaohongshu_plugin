@@ -16,12 +16,87 @@ const fields = {
 const form = document.querySelector("#settings-form");
 const saveButton = document.querySelector("#save-button");
 const saveStatus = document.querySelector("#save-status");
+const promptSaveStatus = document.querySelector("#prompt-save-status");
+const promptSaveButton = document.querySelector("#prompt-save-button");
+const tabModelsButton = document.querySelector("#tab-models");
+const tabPromptsButton = document.querySelector("#tab-prompts");
+const promptsTabBadge = document.querySelector("#prompts-tab-badge");
+const panelModels = document.querySelector("#panel-models");
+const panelPrompts = document.querySelector("#panel-prompts");
 const clearKeysButton = document.querySelector("#clear-keys-button");
-const storageModeHint = document.querySelector("#storage-mode-hint");
 const feishuWebhookFields = document.querySelector("#feishu-webhook-fields");
 const feishuAppFields = document.querySelector("#feishu-app-fields");
 const feishuTestButton = document.querySelector("#feishu-test-button");
 const feishuTestStatus = document.querySelector("#feishu-test-status");
+
+const PROMPT_EDITORS = ["textSystem", "mergeSystem", "visionSystem", "screenshotSystem"].map((key) => ({
+  key,
+  input: document.querySelector(`[data-prompt-input="${key}"]`),
+  badge: document.querySelector(`[data-prompt-badge="${key}"]`),
+  reset: document.querySelector(`[data-prompt-reset="${key}"]`)
+}));
+
+// 编辑框始终展示完整提示词（覆盖优先，否则内置默认）；与内置一致的项保存时不落库，仍跟随插件默认更新。
+function refreshPromptEditorState(editor) {
+  const customized = Boolean(editor.input.value.trim()) && editor.input.value.trim() !== XhsPrompts[editor.key];
+  editor.badge.hidden = !customized;
+  editor.reset.disabled = !customized;
+  editor.reset.title = customized ? "恢复为内置默认提示词" : "当前已是内置默认提示词，无需恢复";
+  refreshPromptsTabBadge();
+}
+
+function refreshPromptsTabBadge() {
+  const count = PROMPT_EDITORS.filter((editor) => !editor.badge.hidden).length;
+  promptsTabBadge.hidden = count === 0;
+  promptsTabBadge.textContent = count ? String(count) : "";
+}
+
+const OPTION_TABS = [
+  { name: "models", button: tabModelsButton, panel: panelModels },
+  { name: "prompts", button: tabPromptsButton, panel: panelPrompts }
+];
+
+function switchOptionTab(name) {
+  for (const tab of OPTION_TABS) {
+    const active = tab.name === name;
+    tab.button.setAttribute("aria-selected", String(active));
+    tab.panel.hidden = !active;
+  }
+}
+
+tabModelsButton.addEventListener("click", () => switchOptionTab("models"));
+tabPromptsButton.addEventListener("click", () => switchOptionTab("prompts"));
+
+function fillPromptEditors(overrides = {}) {
+  for (const editor of PROMPT_EDITORS) {
+    editor.input.value = overrides[editor.key] || XhsPrompts[editor.key];
+    refreshPromptEditorState(editor);
+  }
+}
+
+function promptOverridesValue() {
+  const overrides = {};
+  for (const editor of PROMPT_EDITORS) {
+    const value = editor.input.value.trim();
+    if (value && value !== XhsPrompts[editor.key]) overrides[editor.key] = value;
+  }
+  return overrides;
+}
+
+for (const editor of PROMPT_EDITORS) {
+  editor.input.value = XhsPrompts[editor.key] || "";
+  refreshPromptEditorState(editor);
+  editor.input.addEventListener("input", () => refreshPromptEditorState(editor));
+  editor.reset.addEventListener("click", () => {
+    if (editor.input.value.trim() !== XhsPrompts[editor.key] && !confirm("恢复默认会丢弃这条提示词的当前修改，确定吗？")) {
+      return;
+    }
+    cancelCloseCountdown();
+    editor.input.value = XhsPrompts[editor.key];
+    refreshPromptEditorState(editor);
+    setSaveStatus("已填回内置默认提示词，保存全部设置后生效。", "", promptSaveStatus);
+  });
+}
 
 function selectedFeishuMode() {
   return document.querySelector('input[name="feishu-mode"]:checked')?.value || "webhook";
@@ -43,7 +118,8 @@ function formValue() {
         appId: fields.feishuAppId.value.trim(),
         recipientId: fields.feishuRecipientId.value.trim()
       },
-      rememberApiKeys: fields.rememberKeys.checked
+      rememberApiKeys: fields.rememberKeys.checked,
+      promptOverrides: promptOverridesValue()
     },
     secrets: {
       textApiKey: fields.textKey.value.trim(),
@@ -78,9 +154,9 @@ async function ensureApiPermissions(baseUrls) {
   if (!granted) throw new Error("需要授权访问所填写的 API 域名，才能测试或调用模型。");
 }
 
-function setSaveStatus(text, state = "") {
-  saveStatus.textContent = text;
-  saveStatus.dataset.state = state;
+function setSaveStatus(text, state = "", target = saveStatus) {
+  target.textContent = text;
+  target.dataset.state = state;
 }
 
 let closeCountdownTimer = null;
@@ -120,12 +196,6 @@ function beginCloseCountdown(savedText) {
   }, 1000);
 }
 
-function updateStorageModeHint() {
-  storageModeHint.textContent = fields.rememberKeys.checked
-    ? "浏览器和电脑重启后仍可直接使用，仅本插件的可信页面可以读取。"
-    : "API Key、Webhook 和 App Secret 只保留到浏览器关闭、插件重新加载或更新。";
-}
-
 function updateFeishuUi() {
   const mode = selectedFeishuMode();
   feishuWebhookFields.hidden = mode !== "webhook";
@@ -150,7 +220,7 @@ async function restoreSettings() {
   fields.feishuWebhookUrl.value = response.secrets.feishuWebhookUrl || "";
   fields.feishuWebhookSecret.value = response.secrets.feishuWebhookSecret || "";
   fields.feishuAppSecret.value = response.secrets.feishuAppSecret || "";
-  updateStorageModeHint();
+  fillPromptEditors(response.config.promptOverrides);
   updateFeishuUi();
 }
 
@@ -158,7 +228,11 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   cancelCloseCountdown();
   saveButton.disabled = true;
-  setSaveStatus("正在保存设置…");
+  promptSaveButton.disabled = true;
+  // 提示词页签的保存按钮标记 stay-open：保存后不自动关页，方便反复调整提示词。
+  const stayOpen = event.submitter?.dataset.stayOpen === "true";
+  const statusTarget = stayOpen ? promptSaveStatus : saveStatus;
+  setSaveStatus("正在保存设置…", "", statusTarget);
   try {
     const values = formValue();
     const permissionUrls = [values.config.text.baseUrl, values.config.vision.baseUrl];
@@ -166,19 +240,23 @@ form.addEventListener("submit", async (event) => {
     await ensureApiPermissions(permissionUrls);
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SAVE_CONFIG", ...values });
     if (!response?.ok) throw new Error(response?.error || "保存失败。");
-    beginCloseCountdown(
-      values.config.rememberApiKeys
-        ? "设置已全部保存到本机浏览器，重启后无需重新填写。"
-        : "设置已全部保存到当前会话，关闭浏览器后会自动清除。"
-    );
+    if (stayOpen) {
+      setSaveStatus("已保存，本页保持打开，可继续调整提示词。", "ok", promptSaveStatus);
+    } else {
+      beginCloseCountdown(
+        values.config.rememberApiKeys
+          ? "设置已全部保存到本机浏览器，重启后无需重新填写。"
+          : "设置已全部保存到当前会话，关闭浏览器后会自动清除。"
+      );
+    }
   } catch (error) {
-    setSaveStatus(error?.message || "保存失败。", "error");
+    setSaveStatus(error?.message || "保存失败。", "error", statusTarget);
   } finally {
     saveButton.disabled = false;
+    promptSaveButton.disabled = false;
   }
 });
 
-fields.rememberKeys.addEventListener("change", updateStorageModeHint);
 document.querySelectorAll('input[name="feishu-mode"]').forEach((input) => {
   input.addEventListener("change", updateFeishuUi);
 });
