@@ -32,7 +32,11 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_MERGE_SUMMARIZE",
   "XHS_AI_HISTORY_LIST",
   "XHS_AI_HISTORY_REMOVE",
-  "XHS_AI_HISTORY_CLEAR"
+  "XHS_AI_HISTORY_CLEAR",
+  "XHS_AI_RESOLVE_LINK",
+  "XHS_AI_RELINK",
+  "XHS_AI_MERGE_SET_LINK",
+  "XHS_AI_MERGE_RERENDER"
 ]);
 const CONTENT_SCRIPT_MESSAGES = new Set([
   "XHS_EXPORT_PROGRESS",
@@ -78,6 +82,137 @@ function postPagePlatform(value) {
   } catch {
     return null;
   }
+}
+
+// —— 链接解析：先把链接归成「平台 + 帖子 ID」，再决定补到哪条素材上 ——
+const SHORT_LINK_TIMEOUT_MS = 8000;
+const XHS_NOTE_ID_PATTERN = /(?:explore|discovery\/item)\/([0-9a-f]{24})/i;
+
+function xhsNoteIdFromPathname(pathname) {
+  return String(pathname || "").match(XHS_NOTE_ID_PATTERN)?.[1] || null;
+}
+
+// 微博长链 /<uid>/<id>：路径第二段。mblogid 是字母数字混排；纯数字段是 mid，
+// 与页面拿到的 mblogid 对不上，返回 null，由面板按「解析不出 ID」处理。
+function weiboNoteIdFromPathname(pathname) {
+  const segment = String(pathname || "").match(/^\/\d+\/([0-9A-Za-z]+)\/?$/)?.[1] || null;
+  return segment && !/^\d+$/.test(segment) ? segment : null;
+}
+
+function xhsNoteIdFromUrlLike(value, baseUrl) {
+  const text = String(value || "").replace(/&amp;/g, "&").trim();
+  if (!text) return null;
+  const direct = text.match(XHS_NOTE_ID_PATTERN);
+  if (direct) return direct[1];
+  try {
+    return xhsNoteIdFromPathname(new URL(text, baseUrl).pathname);
+  } catch {
+    return null;
+  }
+}
+
+// 只读 og:url 与 canonical 两处，避免整页正文里的推荐帖 ID 造成误判。
+function xhsNoteIdFromHtmlMeta(html, baseUrl) {
+  const head = String(html || "").slice(0, 200000);
+  const patterns = [
+    /<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:url["']/i,
+    /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i,
+    /<link[^>]+href=["']([^"']+)["'][^>]+rel=["']canonical["']/i
+  ];
+  for (const pattern of patterns) {
+    const match = head.match(pattern);
+    const noteId = match ? xhsNoteIdFromUrlLike(match[1], baseUrl) : null;
+    if (noteId) return noteId;
+  }
+  return null;
+}
+
+// 短链实测（2026-10-28，本机匿名网络，未登录小红书）：
+//   https://xhslink.cn/o/AxnRePgIokn
+//   → 302 https://www.xiaohongshu.com/login?redirectPath=http%3A%2F%2Fwww.xiaohongshu.com
+//     %2Fdiscovery%2Fitem%2F6a9d0eb2000000002a024480%3F...type%3Dnormal%26xsec_token%3D...
+// 路径本身是 /login，帖文 ID 只在 redirectPath 查询参数里，响应 HTML 里没有 og:url 或
+// canonical。已登录浏览器里的跳转形态（以及触发风控时的落地页）需要真实登录态样例才能
+// 确认，当前按同一套规则兜底：路径 → 查询参数（必要时解两层编码）→ og:url/canonical。
+// 查询参数值可能再套一层编码（404 页把 redirectPath 嵌在 source 参数里），所以先解码
+// 一次再匹配；HTML 只读这两处元信息，不扫描正文，避免推荐帖 ID 误判。
+async function resolveShortShareLink(input) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SHORT_LINK_TIMEOUT_MS);
+  let response;
+  try {
+    // credentials: "omit"：不在后台请求里带上用户的小红书会话。
+    response = await fetch(input, {
+      redirect: "follow",
+      credentials: "omit",
+      cache: "no-store",
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("解析短链超时，请稍后重试，或手动选择这条链接对应的帖文。");
+    }
+    throw new Error("无法访问短链服务，请检查网络后重试。");
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const resolvedUrl = String(response?.url || input);
+  let finalUrl;
+  try {
+    finalUrl = new URL(resolvedUrl);
+  } catch {
+    finalUrl = new URL(input);
+  }
+  let noteId = xhsNoteIdFromPathname(finalUrl.pathname);
+
+  if (!noteId) {
+    // URLSearchParams 取值时已经做过一次解码；部分登录页会把地址再编码一层。
+    for (const value of finalUrl.searchParams.values()) {
+      let decoded = value;
+      try { decoded = decodeURIComponent(value); } catch { /* 保留原值 */ }
+      noteId = xhsNoteIdFromUrlLike(decoded, finalUrl) || xhsNoteIdFromUrlLike(value, finalUrl);
+      if (noteId) break;
+    }
+  }
+
+  if (!noteId && typeof response?.text === "function") {
+    try {
+      noteId = xhsNoteIdFromHtmlMeta(await response.text(), finalUrl.href);
+    } catch {
+      noteId = null;
+    }
+  }
+
+  return { ok: true, platform: "xiaohongshu", noteId: noteId || null, resolvedUrl: finalUrl.href };
+}
+
+async function resolveLink(rawUrl) {
+  const input = cleanText(rawUrl);
+  if (!input) throw new Error("请先粘贴帖文链接或分享文案。");
+  let parsed;
+  try {
+    parsed = new URL(input.replace(/^http:\/\//i, "https://"));
+  } catch {
+    throw new Error("链接不是有效网址。");
+  }
+  if (parsed.protocol !== "https:") throw new Error("链接必须使用 HTTPS。");
+  const host = parsed.hostname.toLowerCase();
+
+  if (host === "xhslink.cn" || host.endsWith(".xhslink.cn")) {
+    return resolveShortShareLink(parsed.href);
+  }
+  if (host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")) {
+    const noteId = xhsNoteIdFromPathname(parsed.pathname);
+    if (!noteId) throw new Error("这不是小红书帖文地址。");
+    return { ok: true, platform: "xiaohongshu", noteId, resolvedUrl: parsed.href };
+  }
+  if (host === "weibo.com" || host.endsWith(".weibo.com")) {
+    if (!/^\/\d+\/[0-9A-Za-z]+\/?$/.test(parsed.pathname)) throw new Error("这不是微博帖文地址。");
+    return { ok: true, platform: "weibo", noteId: weiboNoteIdFromPathname(parsed.pathname), resolvedUrl: parsed.href };
+  }
+  throw new Error("只支持小红书或微博帖文链接。");
 }
 
 function workflowKey(tabId) {
@@ -490,16 +625,18 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
     progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
   }
   const notification = await pushFeishuNotification(publicResult.text, config, secrets);
+  const historyId = newHistoryId();
   const storedResult = {
     ...publicResult,
     notification,
+    historyId,
     noteId: payload.source?.noteId || null,
     createdAt: Date.now()
   };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
   // 历史写入失败不应影响已完成的概括与推送
-  await recordHistory(payload, storedResult).catch(() => {});
+  await recordHistory(payload, storedResult, historyId).catch(() => {});
   return { ok: true, result: storedResult };
 }
 
@@ -596,6 +733,9 @@ async function getWorkflowForPanel(message) {
 
 function basketItemSummary(item) {
   const payload = item?.payload || {};
+  const givenUrl = cleanText(payload.source?.givenUrl);
+  const link = givenUrl || cleanText(payload.source?.url) || null;
+  const isScreenshot = payload.source?.origin === "user_screenshot";
   return {
     id: item.id,
     kind: item.kind,
@@ -607,6 +747,9 @@ function basketItemSummary(item) {
     imageCount: payload.media?.images?.length || 0,
     isVideo: Boolean(payload.media?.video),
     hasUrl: Boolean(cleanText(payload.source?.url)),
+    // 清单条目当前生效的链接（givenUrl 优先）与校验状态：截图不设校验状态
+    link,
+    linkVerified: givenUrl ? (isScreenshot ? null : payload.source?.givenUrlVerified === true) : null,
     addedAt: item.addedAt
   };
 }
@@ -680,9 +823,9 @@ function newHistoryId() {
   return `hist-${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(16).slice(2)}`;
 }
 
-async function recordHistory(payload, publicResult) {
+async function recordHistory(payload, publicResult, historyId = null) {
   const entry = {
-    id: newHistoryId(),
+    id: historyId || newHistoryId(),
     kind: payload?.source?.origin === "user_screenshot" ? "screenshot" : "single",
     platform: payload?.source?.platform === "weibo" ? "weibo" : "xiaohongshu",
     title: cleanText(payload?.note?.title) || "（无标题帖文）",
@@ -696,9 +839,9 @@ async function recordHistory(payload, publicResult) {
   return entry;
 }
 
-async function recordMergedHistory(payloads, publicResult) {
+async function recordMergedHistory(payloads, publicResult, historyId = null) {
   const entry = {
-    id: newHistoryId(),
+    id: historyId || newHistoryId(),
     kind: "merge",
     platform: null,
     title: `合并 ${payloads.length} 条帖文`,
@@ -709,6 +852,27 @@ async function recordMergedHistory(payloads, publicResult) {
   };
   await appendHistoryEntry(entry);
   return entry;
+}
+
+// 换链接不新增历史，只同步已有条目的链接与全文；historyId 缺失或已被淘汰时静默跳过。
+async function updateHistoryEntry(historyId, { url, text } = {}) {
+  const id = cleanText(historyId);
+  if (!id) return null;
+  const entries = await getHistoryEntries();
+  const index = entries.findIndex((entry) => entry.id === id);
+  if (index < 0) return null;
+  const entry = entries[index];
+  const next = {
+    ...entry,
+    ...(url !== undefined ? { url } : {}),
+    result: {
+      ...entry.result,
+      ...(text !== undefined ? { text } : {})
+    }
+  };
+  entries[index] = next;
+  await chrome.storage.local.set({ [HISTORY_KEY]: entries });
+  return next;
 }
 
 async function listHistory() {
@@ -794,18 +958,115 @@ async function summarizeMergeBasket(message) {
     onProgress({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
   }
   const notification = await pushFeishuNotification(publicResult.text, config, secrets);
+  const historyId = newHistoryId();
   const mergeResult = {
     ...publicResult,
     notification,
+    historyId,
     merged: true,
     postCount: payloads.length,
+    // 生成时的清单条目顺序，换链接后只有集合未变才允许原地重渲染
+    itemIds: items.map((item) => item.id),
     createdAt: Date.now()
   };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));
   await chrome.storage.session.set({ [CACHE_KEY]: boundedCache });
   // 历史写入失败不应影响已完成的概括与推送
-  await recordMergedHistory(payloads, mergeResult).catch(() => {});
+  await recordMergedHistory(payloads, mergeResult, historyId).catch(() => {});
   return { ok: true, result: mergeResult };
+}
+
+// —— 补链接：只改 source.givenUrl 并用已有 structured 重新渲染，不调用任何模型 ——
+
+function validateGivenLink(value) {
+  const text = cleanText(value);
+  if (!text) return "";
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error("链接不是有效网址。");
+  }
+  if (parsed.protocol !== "https:") throw new Error("链接必须使用 HTTPS。");
+  return parsed.href;
+}
+
+function payloadWithGivenUrl(payload, rawGivenUrl, verified) {
+  if (!payload?.source) throw new Error("缺少要更新链接的采集数据。");
+  const givenUrl = cleanText(rawGivenUrl);
+  const source = { ...payload.source };
+  if (!givenUrl) {
+    delete source.givenUrl;
+    delete source.givenUrlVerified;
+  } else if (source.origin === "user_screenshot") {
+    // 截图帖文只校验网址合法，不设 givenUrlVerified
+    source.givenUrl = validateScreenshotSourceUrl(givenUrl);
+    delete source.givenUrlVerified;
+  } else {
+    source.givenUrl = validateGivenLink(givenUrl);
+    source.givenUrlVerified = Boolean(verified);
+  }
+  return { ...payload, source };
+}
+
+async function relinkResult(message) {
+  const payload = message?.payload;
+  const result = message?.result;
+  if (!payload?.source || !result) throw new Error("缺少要更新链接的结果。");
+  if (!result.structured) throw new Error("这条结果缺少结构化概括，无法在不调用模型的情况下更新链接。");
+
+  const nextPayload = payloadWithGivenUrl(payload, message.givenUrl, message.verified);
+  const nextResult = { ...result, text: XhsAi.renderSummary(result.structured, nextPayload) };
+  const historyUrl = cleanText(nextPayload.source.givenUrl) || cleanText(nextPayload.source.url) || null;
+  await updateHistoryEntry(result.historyId, { url: historyUrl, text: nextResult.text });
+
+  const tabId = Number(message.tabId);
+  if (Number.isInteger(tabId) && cleanText(message.pageSessionId)) {
+    // 同步该页签的工作流快照，面板重开时不会又显示旧链接
+    await updateWorkflowState(tabId, cleanText(message.pageSessionId), {
+      pageUrl: cleanText(nextPayload.source.url) || message.pageUrl || "",
+      noteId: nextPayload.source.noteId || null,
+      status: "done",
+      capture: nextPayload,
+      result: nextResult,
+      error: null,
+      progress: {
+        state: "done",
+        title: "链接已更新",
+        detail: "链接已更新（未重新推送飞书）。",
+        percent: 100
+      }
+    }).catch(() => {});
+  }
+  return { ok: true, payload: nextPayload, result: nextResult };
+}
+
+async function setMergeItemLink(message) {
+  const id = cleanText(message?.id);
+  if (!id) throw new Error("缺少要更新链接的清单条目。");
+  const items = await getMergeBasket();
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error("该条目已不在清单中。");
+  const nextPayload = payloadWithGivenUrl(items[index].payload, message.givenUrl, message.verified);
+  items[index] = { ...items[index], payload: nextPayload };
+  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
+  return { ok: true, basket: items.map(basketItemSummary) };
+}
+
+async function rerenderMergeResult(message) {
+  const result = message?.result;
+  if (!result?.structured || !Array.isArray(result.itemIds)) return { ok: true, unchanged: true };
+  const items = await getMergeBasket();
+  const currentIds = items.map((item) => item.id).sort();
+  const recordedIds = result.itemIds.slice().sort();
+  const sameItems = currentIds.length === recordedIds.length &&
+    currentIds.every((id, index) => id === recordedIds[index]);
+  if (!sameItems) return { ok: true, unchanged: true };
+
+  const ordered = XhsAi.sortPayloadsChronologically(items.map((item) => item.payload));
+  const nextResult = { ...result, text: XhsAi.renderMergedSummary(result.structured, ordered) };
+  await updateHistoryEntry(result.historyId, { text: nextResult.text });
+  return { ok: true, result: nextResult };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -884,6 +1145,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_HISTORY_CLEAR":
       task = clearHistory();
+      break;
+    case "XHS_AI_RESOLVE_LINK":
+      task = resolveLink(message.url);
+      break;
+    case "XHS_AI_RELINK":
+      task = relinkResult(message);
+      break;
+    case "XHS_AI_MERGE_SET_LINK":
+      task = setMergeItemLink(message);
+      break;
+    case "XHS_AI_MERGE_RERENDER":
+      task = rerenderMergeResult(message);
       break;
     case "XHS_AI_GET_WORKFLOW":
       task = getWorkflowForPanel(message);

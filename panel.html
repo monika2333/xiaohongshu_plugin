@@ -18,11 +18,6 @@
         <button id="settings-button" class="settings-button" type="button" title="模型设置">设置</button>
       </header>
 
-      <nav class="view-tabs" aria-label="概括模式">
-        <button id="tab-single" class="view-tab" type="button" data-active="true">单条帖文概括</button>
-        <button id="tab-merge" class="view-tab" type="button" data-active="false">多条帖文概括</button>
-      </nav>
-
       <section id="task-strip" class="task-strip" hidden aria-label="进行中的概括任务">
         <div class="merge-heading">
           <h2>进行中的概括</h2>
@@ -30,90 +25,124 @@
         <ul id="task-list" class="merge-list task-list"></ul>
       </section>
 
-      <section id="view-single">
-        <section class="brief" aria-labelledby="brief-title">
+      <div id="workspace">
+        <section id="current-post-panel" class="brief current-post" aria-labelledby="current-post-title">
           <div class="brief-heading">
-            <h2 id="brief-title">当前帖文</h2>
+            <h2 id="current-post-title">当前帖文</h2>
+            <span id="current-post-badge" class="merge-badge" hidden></span>
           </div>
-          <p>提取正文与图片，归纳评论观点，生成可直接复制的舆情简报。</p>
+          <p id="current-post-label">打开小红书或微博帖文详情页后可在此提取。</p>
+          <div class="current-post-actions">
+            <button id="extract-button" class="extract-button" type="button">
+              <span class="button-label">提取并概括</span>
+              <span class="button-arrow" aria-hidden="true">↘</span>
+            </button>
+            <button id="merge-add-button" class="secondary-button add-basket-button" type="button">加入清单</button>
+          </div>
+          <section id="status-card" class="status-card" aria-live="polite">
+            <div class="status-topline">
+              <span class="status-dot"></span>
+              <strong id="status-title">准备就绪</strong>
+              <span id="status-count">0%</span>
+            </div>
+            <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+            <p id="status-detail">请先打开一个小红书帖文详情页。</p>
+          </section>
         </section>
 
-        <button id="extract-button" class="extract-button" type="button">
-          <span class="button-label">提取并概括</span>
-          <span class="button-arrow" aria-hidden="true">↘</span>
-        </button>
-
-        <section id="status-card" class="status-card" aria-live="polite">
-          <div class="status-topline">
-            <span class="status-dot"></span>
-            <strong id="status-title">准备就绪</strong>
-            <span id="status-count">0%</span>
-          </div>
-          <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-          <p id="status-detail">请先打开一个小红书帖文详情页。</p>
-        </section>
-
-        <section class="screenshot-panel link-panel" aria-labelledby="link-title">
+        <section id="add-material-panel" class="screenshot-panel material-panel" aria-labelledby="material-title">
           <div class="merge-heading">
-            <h2 id="link-title">链接概括</h2>
+            <h2 id="material-title">添加素材</h2>
           </div>
-          <p class="merge-hint">手里只有分享文案或短链接？贴进来，插件会自动打开帖子完成概括，结果沿用你提供的链接。</p>
+          <p class="merge-hint">粘贴帖文链接或分享文案；也可以点击、粘贴或拖入截图。链接会自动归到对应的帖文上。</p>
           <div class="link-actions">
-            <input id="link-input" class="screenshot-url link-input" type="text"
-              placeholder="贴入帖文链接或整段分享文案（小红书地址）">
-            <button id="link-run" class="secondary-button" type="button">打开并概括 ↗</button>
+            <input id="material-input" class="screenshot-url link-input" type="text"
+              placeholder="粘贴链接或分享文案（小红书 / 微博）">
+            <button id="material-link-button" class="secondary-button" type="button">识别链接 ↗</button>
           </div>
-        </section>
-
-        <section class="screenshot-panel" aria-labelledby="shot-title">
-          <div class="merge-heading">
-            <h2 id="shot-title">帖文截图概括</h2>
+          <p id="material-feedback" class="link-feedback" hidden></p>
+          <div id="link-choice" class="link-choice" hidden>
+            <p class="link-choice-title">无法自动判断这条链接属于哪条帖文</p>
+            <div id="link-choice-options" class="link-choice-options"></div>
           </div>
-          <p class="merge-hint">原帖已删除、只剩截图？把同一帖文的截图都加进来（可附原始链接），一起识别后直接生成一条概括。</p>
-          <div id="shot-single-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
+          <div id="material-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
             <strong>点击选择截图</strong>
             <span>或直接 Ctrl+V 粘贴、拖入图片，可连续添加多张</span>
           </div>
-          <ul id="shot-single-staging" class="staging-list" hidden></ul>
-          <button id="shot-single-run" class="secondary-button staging-run" type="button" hidden>识别并概括</button>
-          <input id="shot-single-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-          <input id="shot-single-url" class="screenshot-url" type="url"
-            placeholder="可选：截图对应帖文的原始链接（小红书或微博地址）">
+          <ul id="material-staging" class="staging-list" hidden></ul>
+          <div id="material-shot-actions" class="material-shot-actions" hidden>
+            <button id="shot-summarize-button" class="secondary-button staging-run" type="button">识别并概括</button>
+            <button id="shot-basket-button" class="secondary-button staging-run" type="button">识别并加入清单</button>
+          </div>
+          <input id="material-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         </section>
-      </section>
 
-      <section id="view-merge" hidden>
-        <section class="merge-panel" aria-labelledby="merge-title">
+        <section id="basket-panel" class="merge-panel basket-panel" aria-labelledby="basket-title" hidden>
           <div class="merge-heading">
-            <h2 id="merge-title">合并清单</h2>
-            <button id="merge-clear-button" class="merge-clear" type="button" hidden>清空清单</button>
+            <h2 id="basket-title">清单 · <span id="basket-count">0</span> 条</h2>
+            <button id="merge-clear-button" class="merge-clear" type="button">清空清单</button>
           </div>
-          <p class="merge-hint">把同一事件的多条帖文加入清单（原帖已删除的可用截图补充），一次性合并成一条简报。</p>
-          <div class="merge-actions">
-            <button id="merge-add-button" class="secondary-button" type="button">当前帖文加入清单</button>
+          <p class="merge-hint">同一事件的多条帖文（含截图）放在一起，可一次性合并概括；链接可随时补到任意一条上。</p>
+          <ul id="merge-list" class="merge-list"></ul>
+          <div id="basket-link-editor" class="basket-link-editor" hidden>
+            <p id="basket-link-editor-label" class="link-editor-label"></p>
+            <input id="basket-link-input" class="screenshot-url" type="url"
+              placeholder="粘贴这条帖文的链接（留空可删除）">
+            <div class="link-editor-actions">
+              <button id="basket-link-save" class="secondary-button" type="button">保存链接</button>
+              <button id="basket-link-cancel" class="merge-clear" type="button">取消</button>
+            </div>
+            <p id="basket-link-hint" class="link-hint" hidden></p>
           </div>
-          <div id="merge-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
-            <strong>点击选择截图</strong>
-            <span>或直接 Ctrl+V 粘贴、拖入图片，一起识别后作为一条帖文加入清单</span>
-          </div>
-          <ul id="screenshot-staging" class="staging-list" hidden></ul>
-          <button id="screenshot-run" class="secondary-button staging-run" type="button" hidden>识别并加入清单</button>
-          <input id="screenshot-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-          <input id="screenshot-url" class="screenshot-url" type="url"
-            placeholder="可选：截图对应帖文的原始链接（小红书或微博地址）">
-          <ul id="merge-list" class="merge-list" hidden></ul>
+          <p id="basket-single-hint" class="merge-hint basket-single-hint" hidden>再加入至少 1 条即可合并。</p>
           <button id="merge-summarize-button" class="extract-button merge-summarize" type="button" hidden>
             <span id="merge-summarize-label">合并概括</span>
             <span class="button-arrow" aria-hidden="true">↘</span>
           </button>
         </section>
-      </section>
+      </div>
+
+      <section id="result-card" class="result-card" hidden aria-labelledby="result-title">
+          <div class="result-heading">
+            <div>
+              <p class="eyebrow" id="result-source-label">当前页签</p>
+              <h2 id="result-title">概括结果</h2>
+            </div>
+            <span id="result-time"></span>
+          </div>
+          <textarea id="result-text" readonly aria-label="生成的概括"></textarea>
+          <div id="result-link-row" class="result-link-row">
+            <span class="result-link-label">原帖链接</span>
+            <span id="result-link-display" class="result-link-display"></span>
+            <span id="result-link-state" class="result-link-state" hidden>未能验证</span>
+            <button id="result-link-edit" class="link-edit-button" type="button" title="编辑链接" aria-label="编辑原帖链接">✎</button>
+            <div id="result-link-editor" class="result-link-editor" hidden>
+              <input id="result-link-input" class="screenshot-url" type="url"
+                placeholder="粘贴这条帖文的链接（留空可删除）">
+              <div class="link-editor-actions">
+                <button id="result-link-save" class="secondary-button" type="button">保存链接</button>
+                <button id="result-link-cancel" class="merge-clear" type="button">取消</button>
+              </div>
+            </div>
+            <p id="result-link-hint" class="link-hint" hidden></p>
+          </div>
+          <div class="result-actions">
+            <button id="copy-button" class="copy-button" type="button">复制概括</button>
+            <button id="open-source-button" class="secondary-button" type="button" hidden>打开原帖 ↗</button>
+            <button id="regenerate-button" class="secondary-button" type="button">重新生成</button>
+            <button id="result-add-basket-button" class="secondary-button" type="button">加入清单</button>
+          </div>
+          <details class="evidence-panel">
+            <summary>证据</summary>
+            <p id="evidence-summary">尚未提取。</p>
+          </details>
+        </section>
 
       <section id="view-history" hidden>
         <section id="history-panel" class="merge-panel history-panel" aria-labelledby="history-title">
           <div class="merge-heading">
             <div class="history-title-row">
-              <button id="history-back-button" class="history-back" type="button" title="返回概括页签" aria-label="返回概括页签">←</button>
+              <button id="history-back-button" class="history-back" type="button" title="返回统一工作区" aria-label="返回统一工作区">←</button>
               <h2 id="history-title">概括历史</h2>
             </div>
             <button id="history-clear-button" class="merge-clear" type="button" hidden>清空历史</button>
@@ -121,26 +150,6 @@
           <p id="history-hint" class="merge-hint" data-error="false">概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。</p>
           <ul id="history-list" class="merge-list history-list" hidden></ul>
         </section>
-      </section>
-
-      <section id="result-card" class="result-card" hidden aria-labelledby="result-title">
-        <div class="result-heading">
-          <div>
-            <p class="eyebrow">READY TO COPY</p>
-            <h2 id="result-title">概括结果</h2>
-          </div>
-          <span id="result-time"></span>
-        </div>
-        <textarea id="result-text" readonly aria-label="生成的概括"></textarea>
-        <div class="result-actions">
-          <button id="copy-button" class="copy-button" type="button">复制概括</button>
-          <button id="open-source-button" class="secondary-button" type="button" hidden>打开原帖 ↗</button>
-          <button id="regenerate-button" class="secondary-button" type="button">重新生成</button>
-        </div>
-        <details class="evidence-panel">
-          <summary>证据</summary>
-          <p id="evidence-summary">尚未提取。</p>
-        </details>
       </section>
 
       <footer>

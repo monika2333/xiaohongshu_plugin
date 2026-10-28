@@ -8,58 +8,85 @@ const LINK_POLL_INTERVAL_MS = 600;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const elements = {
-  viewTabs: document.querySelector(".view-tabs"),
   extractButton: document.querySelector("#extract-button"),
   buttonLabel: document.querySelector(".button-label"),
   settingsButton: document.querySelector("#settings-button"),
   taskStrip: document.querySelector("#task-strip"),
   taskList: document.querySelector("#task-list"),
+  workspace: document.querySelector("#workspace"),
+  currentPostBadge: document.querySelector("#current-post-badge"),
+  currentPostLabel: document.querySelector("#current-post-label"),
   statusCard: document.querySelector("#status-card"),
   statusTitle: document.querySelector("#status-title"),
   statusDetail: document.querySelector("#status-detail"),
   statusCount: document.querySelector("#status-count"),
   progressBar: document.querySelector("#progress-bar"),
-  resultCard: document.querySelector("#result-card"),
-  resultText: document.querySelector("#result-text"),
-  resultTime: document.querySelector("#result-time"),
-  evidenceSummary: document.querySelector("#evidence-summary"),
-  copyButton: document.querySelector("#copy-button"),
-  regenerateButton: document.querySelector("#regenerate-button"),
   mergeAddButton: document.querySelector("#merge-add-button"),
-  mergeDropzone: document.querySelector("#merge-dropzone"),
-  screenshotStaging: document.querySelector("#screenshot-staging"),
-  screenshotRun: document.querySelector("#screenshot-run"),
-  screenshotInput: document.querySelector("#screenshot-input"),
-  screenshotUrl: document.querySelector("#screenshot-url"),
-  mergeList: document.querySelector("#merge-list"),
+  materialInput: document.querySelector("#material-input"),
+  materialLinkButton: document.querySelector("#material-link-button"),
+  materialFeedback: document.querySelector("#material-feedback"),
+  linkChoice: document.querySelector("#link-choice"),
+  linkChoiceOptions: document.querySelector("#link-choice-options"),
+  materialDropzone: document.querySelector("#material-dropzone"),
+  materialStaging: document.querySelector("#material-staging"),
+  shotSummarizeButton: document.querySelector("#shot-summarize-button"),
+  shotBasketButton: document.querySelector("#shot-basket-button"),
+  materialShotActions: document.querySelector("#material-shot-actions"),
+  materialFileInput: document.querySelector("#material-file-input"),
+  basketPanel: document.querySelector("#basket-panel"),
+  basketCount: document.querySelector("#basket-count"),
+  basketList: document.querySelector("#merge-list"),
+  basketLinkEditor: document.querySelector("#basket-link-editor"),
+  basketLinkEditorLabel: document.querySelector("#basket-link-editor-label"),
+  basketLinkInput: document.querySelector("#basket-link-input"),
+  basketLinkSave: document.querySelector("#basket-link-save"),
+  basketLinkCancel: document.querySelector("#basket-link-cancel"),
+  basketLinkHint: document.querySelector("#basket-link-hint"),
+  basketSingleHint: document.querySelector("#basket-single-hint"),
   mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
   mergeClearButton: document.querySelector("#merge-clear-button"),
+  resultCard: document.querySelector("#result-card"),
+  resultSourceLabel: document.querySelector("#result-source-label"),
+  resultText: document.querySelector("#result-text"),
+  resultTime: document.querySelector("#result-time"),
+  resultLinkRow: document.querySelector("#result-link-row"),
+  resultLinkDisplay: document.querySelector("#result-link-display"),
+  resultLinkState: document.querySelector("#result-link-state"),
+  resultLinkEdit: document.querySelector("#result-link-edit"),
+  resultLinkEditor: document.querySelector("#result-link-editor"),
+  resultLinkInput: document.querySelector("#result-link-input"),
+  resultLinkSave: document.querySelector("#result-link-save"),
+  resultLinkCancel: document.querySelector("#result-link-cancel"),
+  resultLinkHint: document.querySelector("#result-link-hint"),
+  resultAddBasketButton: document.querySelector("#result-add-basket-button"),
+  copyButton: document.querySelector("#copy-button"),
+  regenerateButton: document.querySelector("#regenerate-button"),
   historyButton: document.querySelector("#history-button"),
   historyBackButton: document.querySelector("#history-back-button"),
-  viewSingle: document.querySelector("#view-single"),
-  viewMerge: document.querySelector("#view-merge"),
   viewHistory: document.querySelector("#view-history"),
   historyHint: document.querySelector("#history-hint"),
   historyList: document.querySelector("#history-list"),
   historyClearButton: document.querySelector("#history-clear-button"),
   openSourceButton: document.querySelector("#open-source-button"),
-  tabSingle: document.querySelector("#tab-single"),
-  tabMerge: document.querySelector("#tab-merge"),
-  shotSingleDropzone: document.querySelector("#shot-single-dropzone"),
-  shotSingleStaging: document.querySelector("#shot-single-staging"),
-  shotSingleRun: document.querySelector("#shot-single-run"),
-  shotSingleInput: document.querySelector("#shot-single-input"),
-  shotSingleUrl: document.querySelector("#shot-single-url"),
-  linkInput: document.querySelector("#link-input"),
-  linkRun: document.querySelector("#link-run")
+  evidenceSummary: document.querySelector("#evidence-summary")
 };
 
 let basketItems = [];
-let currentView = "single";
 let historyItems = [];
 let historyEntry = null;
-let tabBeforeHistory = "single";
+let historyVisible = false;
+let focusBeforeHistory = { kind: "tab" };
+// 唯一的结果焦点：最后发起操作的来源；切换浏览器页签时回到 tab。
+let focus = { kind: "tab" };
+let activeTabId = null;
+let activeTabUrl = "";
+let basketLinkEditingId = null;
+let pendingLinkChoice = null;
+let pendingResultLinkConfirm = null;
+let pendingBasketLinkConfirm = null;
+let resultLinkEditing = false;
+let linkResolveToken = 0;
 let historyClearResetTimer = null;
 let historyHintResetTimer = null;
 const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。";
@@ -68,63 +95,56 @@ const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超
 // 每个任务独立运行、只禁用自己的按钮，互不阻塞：
 //   page:<tabId>  页签级采集概括（提取并概括 / 重新生成 / 加入清单的采集阶段）
 //   merge         合并概括
-//   shot:single   单条页签的截图识别概括
-//   shot:merge    合并页签的截图识别加入清单
-// 页签级状态与结果按 Chrome 页签分槽保存；单条视图跟随当前活动页签显示。
+//   shot:single   截图识别概括
+//   shot:merge    截图识别加入清单
 const tasks = new Map();
 const pageSlots = new Map();
 const mergeSlot = { status: null, result: null };
-const shotSingleSlot = { status: null, result: null, capture: null };
-const shotMergeStatus = { status: null };
-let activeTabId = null;
-let singleFocus = "tab";
-let mergeFocus = "merge";
+const shotSlot = { status: null, result: null, capture: null };
+let stagedScreenshots = [];
 
-// 概括页签的状态与结果归属各自的来源：页签级归各 Chrome 页签，截图归截图任务。
-// 历史屏由页眉「历史」按钮进入，没有进度可言，不显示状态卡。
+// 结果与状态只属于当前焦点：tab 跟随活动页签，shot 归截图任务，merge 归合并任务。
 const DEFAULT_STATUS = {
-  single: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
+  tab: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
+  shot: { state: "idle", title: "准备就绪", detail: "选择或粘贴截图后，可识别并概括，或加入清单。", percent: 0 },
   merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
 };
 
-function switchView(view) {
-  currentView = view === "merge" ? "merge" : view === "history" ? "history" : "single";
-  if (currentView === "single" || currentView === "merge") tabBeforeHistory = currentView;
-  elements.tabSingle.dataset.active = currentView === "single" ? "true" : "false";
-  elements.tabMerge.dataset.active = currentView === "merge" ? "true" : "false";
-  elements.historyButton.dataset.active = currentView === "history" ? "true" : "false";
-  elements.viewSingle.hidden = currentView !== "single";
-  elements.viewMerge.hidden = currentView !== "merge";
-  elements.viewHistory.hidden = currentView !== "history";
-  // 概括页签栏只服务两个概括页签；历史屏内退出历史即回到概括页签，无需常驻入口
-  elements.viewTabs.hidden = currentView === "history";
-  // 状态卡只服务两个概括页签：单条视图紧贴“提取并概括”按钮，合并视图挂在合并面板之后
-  elements.statusCard.hidden = currentView === "history";
-  if (currentView === "merge") {
-    elements.viewMerge.appendChild(elements.statusCard);
-  } else if (currentView === "single") {
-    elements.extractButton.after(elements.statusCard);
-  }
-  renderCurrentView();
-  if (currentView === "history") refreshHistory();
-  // 历史是临时视图，不写入视图记忆
-  if (currentView !== "history") {
-    try {
-      void chrome.storage?.local?.set?.({ xhsPanelView: currentView })?.catch?.(() => {});
-    } catch {
-      // storage 不可用时仅影响视图记忆
-    }
-  }
+function applyViewVisibility() {
+  elements.workspace.hidden = historyVisible;
+  elements.viewHistory.hidden = !historyVisible;
+  elements.historyButton.dataset.active = historyVisible ? "true" : "false";
 }
 
-async function restoreStoredView() {
-  try {
-    const stored = await chrome.storage?.local?.get?.("xhsPanelView");
-    // 旧版本可能存过 history，视图记忆只认两个概括页签
-    if (stored?.xhsPanelView === "single" || stored?.xhsPanelView === "merge") switchView(stored.xhsPanelView);
-  } catch {
-    // 保持默认视图
+function setFocus(kind) {
+  focus = { kind };
+  if (historyVisible) {
+    historyVisible = false;
+    applyViewVisibility();
   }
+  renderFocus();
+}
+
+function currentSlot() {
+  return activeTabId != null ? pageSlots.get(activeTabId) : null;
+}
+
+function focusedPayload() {
+  if (focus.kind === "shot") return shotSlot.capture;
+  if (focus.kind === "tab") return currentSlot()?.capture || null;
+  return null;
+}
+
+function currentResult() {
+  if (focus.kind === "shot") return shotSlot.result;
+  if (focus.kind === "merge") return mergeSlot.result;
+  return currentSlot()?.result || null;
+}
+
+function currentStatus() {
+  if (focus.kind === "shot") return shotSlot.status || DEFAULT_STATUS.shot;
+  if (focus.kind === "merge") return mergeSlot.status || DEFAULT_STATUS.merge;
+  return currentSlot()?.status || DEFAULT_STATUS.tab;
 }
 
 function renderStatus(status) {
@@ -136,9 +156,38 @@ function renderStatus(status) {
   elements.progressBar.style.width = `${safePercent}%`;
 }
 
-function renderResult(result) {
-  elements.resultText.value = result.text;
-  elements.resultTime.textContent = formatTime(result.createdAt);
+function platformBadge(platform) {
+  if (platform === "weibo") return { label: "微博", className: "merge-badge-weibo" };
+  if (platform === "xiaohongshu") return { label: "小红书", className: "merge-badge-page" };
+  return null;
+}
+
+// 当前帖文：跟随浏览器活动页签；尚未采集时只显示平台徽标。
+function renderCurrentPost() {
+  const slot = currentSlot();
+  const platform = currentPostPlatform() || (slot?.context?.pageUrl ? detectPostPlatform(slot.context.pageUrl) : null);
+  const badge = platformBadge(platform);
+  elements.currentPostBadge.hidden = !badge;
+  if (badge) {
+    elements.currentPostBadge.textContent = badge.label;
+    elements.currentPostBadge.className = `merge-badge ${badge.className}`;
+  }
+  const capture = slot?.capture;
+  let label = "";
+  if (platform && capture) {
+    label = String(capture.note?.title || "").trim();
+    if (!label) {
+      const author = String(capture.note?.author || "").trim();
+      if (author) label = `@${author}`;
+    }
+  }
+  elements.currentPostLabel.textContent = platform
+    ? (label || "")
+    : "打开小红书或微博帖文详情页后可在此提取。";
+  elements.currentPostLabel.hidden = Boolean(platform && !label);
+}
+
+function renderEvidence(result) {
   const evidence = result.evidence || {};
   const notificationLabel = result.notification?.status === "sent"
     ? "飞书已推送"
@@ -154,72 +203,49 @@ function renderResult(result) {
     `文字模型 ${evidence.textModel || "—"}`,
     notificationLabel
   ].filter(Boolean).join(" · ");
-  // 页签结果是实时结果：可重新生成、无“打开原帖”；历史屏展示条目时会改写这两个按钮
+}
+
+function resultSourceLabel(result) {
+  if (focus.kind === "merge") {
+    const count = result.postCount || result.evidence?.postCount || basketItems.length;
+    return `合并 ${count} 条`;
+  }
+  return focus.kind === "shot" ? "截图" : "当前页签";
+}
+
+function renderResult(result) {
+  elements.resultText.value = result.text;
+  elements.resultTime.textContent = formatTime(result.createdAt);
+  elements.resultSourceLabel.textContent = resultSourceLabel(result);
+  renderEvidence(result);
   elements.regenerateButton.hidden = false;
   elements.openSourceButton.hidden = true;
+  renderResultLink();
+  refreshResultBasketButton();
   elements.resultCard.hidden = false;
 }
 
 function hideResultCard() {
   elements.resultCard.hidden = true;
   elements.resultText.value = "";
+  elements.resultLinkEditor.hidden = true;
+  elements.resultLinkHint.hidden = true;
+  resultLinkEditing = false;
 }
 
-// 当前视图只显示自己槽位的状态与结果；单条视图按 singleFocus 决定跟随页签还是截图任务。
-function renderCurrentView() {
-  if (currentView === "history") {
-    applyHistoryOutput();
-    return;
-  }
-  if (currentView === "merge") {
-    renderMergeView();
-  } else {
-    renderSingleView();
-  }
+function renderFocus() {
+  if (historyVisible) return;
+  applyViewVisibility();
+  renderCurrentPost();
+  renderStatus(currentStatus());
+  renderBasket();
+  const result = currentResult();
+  if (result) renderResult(result);
+  else hideResultCard();
+  refreshButtons();
 }
 
-function renderSingleView() {
-  if (singleFocus === "shot") {
-    renderStatus(shotSingleSlot.status || DEFAULT_STATUS.single);
-    if (shotSingleSlot.result) {
-      renderResult(shotSingleSlot.result);
-    } else {
-      hideResultCard();
-    }
-    return;
-  }
-  const slot = activeTabId != null ? pageSlots.get(activeTabId) : null;
-  renderStatus(slot?.status || DEFAULT_STATUS.single);
-  if (slot?.result) {
-    renderResult(slot.result);
-  } else {
-    hideResultCard();
-  }
-}
-
-function renderMergeView() {
-  const status = mergeFocus === "shot" ? shotMergeStatus.status : mergeSlot.status;
-  renderStatus(status || DEFAULT_STATUS.merge);
-  if (mergeSlot.result) {
-    renderResult(mergeSlot.result);
-  } else {
-    hideResultCard();
-  }
-}
-
-// 切换页签时重放该页签自己的状态与结果；历史屏只重放选中条目。
-function applyHistoryOutput() {
-  if (historyEntry) {
-    renderResult(historyEntry.result);
-    elements.resultTime.textContent = formatHistoryTime(historyEntry.createdAt);
-    elements.regenerateButton.hidden = true;
-    elements.openSourceButton.hidden = !historyEntry.url;
-  } else {
-    hideResultCard();
-  }
-}
-
-// —— 任务列表：所有并行任务常驻可见，点击跳到对应页签或视图 ——
+// —— 任务列表：所有并行任务常驻可见，点击跳到对应页签或结果来源 ——
 
 function pageTaskKey(tabId) {
   return `page:${tabId}`;
@@ -262,31 +288,46 @@ function renderTasks() {
   }).join("");
 }
 
-// —— 按钮只跟随自己的任务：页签按钮看该页签，合并/截图按钮看各自任务 ——
+// —— 按钮只跟随自己的任务与当前焦点 ——
 
 function refreshButtons() {
   const tabBusy = activeTabId != null && tasks.has(pageTaskKey(activeTabId));
-  elements.extractButton.disabled = tabBusy;
+  const postPage = Boolean(currentPostPlatform());
+  elements.extractButton.disabled = tabBusy || !postPage;
   elements.buttonLabel.textContent = tabBusy ? "正在处理…" : "提取并概括";
-  elements.mergeAddButton.disabled = tabBusy;
-  elements.linkRun.disabled = tasks.has("link");
-  elements.shotSingleRun.disabled = tasks.has("shot:single");
-  elements.screenshotRun.disabled = tasks.has("shot:merge");
-  elements.mergeSummarizeButton.disabled = tasks.has("merge");
-  if (currentView === "merge") {
-    elements.regenerateButton.disabled = tasks.has("merge");
-  } else if (currentView === "single") {
-    elements.regenerateButton.disabled = tabBusy || (singleFocus === "shot" && tasks.has("shot:single"));
+  elements.mergeAddButton.disabled = tabBusy || !postPage;
+  elements.materialLinkButton.disabled = tasks.has("link");
+  elements.shotSummarizeButton.disabled = tasks.has("shot:single");
+  elements.shotBasketButton.disabled = tasks.has("shot:merge");
+  elements.mergeSummarizeButton.disabled = tasks.has("merge") || basketItems.length < 2;
+  const focusedTaskBusy = focus.kind === "merge"
+    ? tasks.has("merge")
+    : focus.kind === "shot"
+      ? tasks.has("shot:single")
+      : tabBusy;
+  elements.regenerateButton.disabled = focusedTaskBusy;
+  if (!elements.resultAddBasketButton.hidden) {
+    const payload = focusedPayload();
+    const inBasket = basketHasPayload(payload);
+    const needsCapture = !payload;
+    elements.resultAddBasketButton.disabled = inBasket || (needsCapture && tabBusy);
   }
 }
 
-// —— 页签槽位：单条视图的进度与结果按 Chrome 页签保存 ——
+// —— 页签槽位：状态与结果按 Chrome 页签保存 ——
 
 function touchPageSlot(tabId) {
   if (tabId == null) return null;
   let slot = pageSlots.get(tabId);
   if (!slot) {
-    slot = { context: null, status: null, result: null, capture: null };
+    slot = {
+      context: null,
+      status: null,
+      result: null,
+      capture: null,
+      pendingGivenUrl: null,
+      pendingGivenUrlVerified: false
+    };
     pageSlots.set(tabId, slot);
   }
   return slot;
@@ -296,7 +337,7 @@ function writePageStatus(tabId, status) {
   const slot = touchPageSlot(tabId);
   if (!slot) return;
   slot.status = status;
-  if (currentView === "single" && singleFocus === "tab" && activeTabId === tabId) renderStatus(status);
+  if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderStatus(status);
 }
 
 function writePageResult(tabId, result, capture) {
@@ -304,7 +345,8 @@ function writePageResult(tabId, result, capture) {
   if (!slot) return;
   slot.result = result;
   if (capture) slot.capture = capture;
-  if (currentView === "single" && singleFocus === "tab" && activeTabId === tabId) renderSingleView();
+  if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
+  else renderCurrentPost();
 }
 
 // 页签切换时轻量校验旧槽位：内容脚本不在了（页面整体刷新）或页面会话变了，
@@ -313,7 +355,8 @@ async function validateTabSlot(tabId) {
   const slot = pageSlots.get(tabId);
   if (!slot) return;
   if (!slot.context) {
-    pageSlots.delete(tabId);
+    // 还没提取过、只暂存了链接的槽位不因缺少页面上下文被清掉
+    if (!slot.pendingGivenUrl) pageSlots.delete(tabId);
     return;
   }
   try {
@@ -328,17 +371,37 @@ async function validateTabSlot(tabId) {
   }
 }
 
+async function refreshActiveTabInfo(tabId) {
+  if (tabId == null) {
+    activeTabUrl = "";
+    return;
+  }
+  try {
+    if (typeof chrome.tabs.get === "function") {
+      const tab = await chrome.tabs.get(tabId);
+      activeTabUrl = String(tab?.url || "");
+      return;
+    }
+  } catch {
+    // 页签可能已经关闭，退回槽位里记录的页面地址
+  }
+  activeTabUrl = String(pageSlots.get(tabId)?.context?.pageUrl || "");
+}
+
 async function setActiveTab(tabId) {
   if (tabId == null) return;
   const changed = tabId !== activeTabId;
   activeTabId = tabId;
+  await refreshActiveTabInfo(tabId);
   if (changed) {
-    singleFocus = "tab";
+    focus = { kind: "tab" };
     await validateTabSlot(tabId);
-    if (currentView === "single") renderSingleView();
   }
-  refreshButtons();
+  if (!historyVisible) renderFocus();
+  else refreshButtons();
 }
+
+// —— 通用工具 ——
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => (
@@ -363,7 +426,24 @@ function detectPostPlatform(url) {
   }
 }
 
-// 从分享文案或裸链接里提取第一条小红书帖文链接；短链（xhslink.cn）整条接受，
+function currentPostPlatform() {
+  const fromUrl = detectPostPlatform(activeTabUrl);
+  if (fromUrl) return fromUrl;
+  const contextUrl = currentSlot()?.context?.pageUrl || "";
+  return detectPostPlatform(contextUrl);
+}
+
+function noteIdFromUrlForPlatform(platform, url) {
+  try {
+    const pathname = new URL(url).pathname;
+    if (platform === "weibo") return pathname.match(/^\/\d+\/([0-9A-Za-z]+)\/?$/)?.[1] || null;
+    return pathname.match(/\/(?:explore|discovery\/item)\/([0-9a-f]{24})/i)?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+// 从分享文案或裸链接里提取第一条小红书/微博帖文链接；短链（xhslink.cn）整条接受，
 // 长链要求是帖文地址，避免用户主页等链接进来白等超时。
 function extractPostUrl(rawText) {
   const text = String(rawText || "");
@@ -383,9 +463,10 @@ function extractPostUrl(rawText) {
       if (parsed.protocol !== "https:") continue;
       const host = parsed.hostname.toLowerCase();
       if (host === "xhslink.cn" || host.endsWith(".xhslink.cn")) return parsed.href;
-      if (host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")) {
-        if (detectPostPlatform(parsed.href) === "xiaohongshu") return parsed.href;
-      }
+      if ((host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")) &&
+        detectPostPlatform(parsed.href) === "xiaohongshu") return parsed.href;
+      if ((host === "weibo.com" || host.endsWith(".weibo.com")) &&
+        detectPostPlatform(parsed.href) === "weibo") return parsed.href;
     } catch {
       // 无法解析的候选直接跳过
     }
@@ -393,14 +474,46 @@ function extractPostUrl(rawText) {
   return null;
 }
 
-async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+function shortenLink(value) {
+  try {
+    const url = new URL(value);
+    const text = `${url.hostname.replace(/^www\./, "")}${url.pathname}`;
+    return text.length > 44 ? `${text.slice(0, 42)}…` : text;
+  } catch {
+    return String(value || "");
+  }
 }
 
-async function hasLoginCookie(url, name) {
-  const session = await chrome.cookies.get({ url, name });
-  return Boolean(session?.value);
+function effectiveLink(payload) {
+  return String(payload?.source?.givenUrl || payload?.source?.url || "");
+}
+
+function payloadItemId(payload) {
+  const source = payload?.source;
+  if (!source) return null;
+  if (source.origin === "user_screenshot") return source.screenshotId ? `shot:${source.screenshotId}` : null;
+  if (!source.noteId) return null;
+  return `${source.platform === "weibo" ? "wbnote" : "note"}:${source.noteId}`;
+}
+
+function basketHasPayload(payload) {
+  const id = payloadItemId(payload);
+  return Boolean(id) && basketItems.some((item) => item.id === id);
+}
+
+function captureLabel(capture) {
+  const title = String(capture?.note?.title || "").trim();
+  if (title) return title;
+  const author = String(capture?.note?.author || "").trim();
+  return author ? `@${author}` : "";
+}
+
+function completionDetail(result, fallback) {
+  if (result?.notification?.status === "sent") return "概括已生成，并已推送到飞书。";
+  if (result?.notification?.status === "failed") {
+    return `概括已生成；飞书推送失败：${result.notification.error || "请检查设置。"}`;
+  }
+  return fallback;
 }
 
 function formatTime(timestamp) {
@@ -421,20 +534,17 @@ function formatHistoryTime(timestamp) {
   }).format(date);
 }
 
-function captureLabel(capture) {
-  const title = String(capture?.note?.title || "").trim();
-  if (title) return title;
-  const author = String(capture?.note?.author || "").trim();
-  return author ? `@${author}` : "";
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
 }
 
-function completionDetail(result, fallback) {
-  if (result?.notification?.status === "sent") return "概括已生成，并已推送到飞书。";
-  if (result?.notification?.status === "failed") {
-    return `概括已生成；飞书推送失败：${result.notification.error || "请检查设置。"}`;
-  }
-  return fallback;
+async function hasLoginCookie(url, name) {
+  const session = await chrome.cookies.get({ url, name });
+  return Boolean(session?.value);
 }
+
+// —— 页面采集 ——
 
 async function injectCaptureScripts(tab, platform) {
   if (platform === "xiaohongshu") {
@@ -467,7 +577,7 @@ async function prepareTabPage(tab, platform) {
   return adoptTabPage(tab, platform, context);
 }
 
-// 把页面会话挂到页签槽位上。同一页面会话保留旧状态与结果（重新生成不掉结果）；
+// 把页面会话挂到页签槽位上。同一页面会话保留旧状态、结果与暂存链接；
 // 换了页面会话则从头开始。
 function adoptTabPage(tab, platform, context) {
   const slot = pageSlots.get(tab.id);
@@ -477,10 +587,18 @@ function adoptTabPage(tab, platform, context) {
     slot.context.pageUrl === context.pageUrl
   );
   pageSlots.set(tab.id, {
-    context: { tabId: tab.id, pageSessionId: context.pageSessionId, pageUrl: context.pageUrl },
+    context: {
+      tabId: tab.id,
+      pageSessionId: context.pageSessionId,
+      pageUrl: context.pageUrl,
+      noteId: context.noteId ?? null
+    },
     status: sameContext ? slot.status ?? null : null,
     result: sameContext ? slot.result ?? null : null,
-    capture: sameContext ? slot.capture ?? null : null
+    capture: sameContext ? slot.capture ?? null : null,
+    // 先拿到链接、之后才提取时，链接要跟着这个页签继续用；页面已经换掉则丢弃旧链接
+    pendingGivenUrl: sameContext || !slot?.context ? slot?.pendingGivenUrl ?? null : null,
+    pendingGivenUrlVerified: Boolean((sameContext || !slot?.context) && slot?.pendingGivenUrlVerified)
   });
   return {
     tabId: tab.id,
@@ -509,6 +627,7 @@ async function prepareCurrentPage() {
   } finally {
     if (tab.id != null) {
       activeTabId = tab.id;
+      activeTabUrl = String(tab.url || activeTabUrl);
       refreshButtons();
     }
   }
@@ -530,6 +649,17 @@ async function assertXhsLogin() {
   if (!(await hasLoginCookie("https://www.xiaohongshu.com/", "web_session"))) {
     throw new Error(LOGIN_REQUIRED_MESSAGE);
   }
+}
+
+// 链接概括可能打开微博帖文：按目标平台检查对应登录状态。
+async function assertLinkLogin(givenUrl) {
+  if (detectPostPlatform(givenUrl) === "weibo") {
+    if (!(await hasLoginCookie("https://weibo.com", "SUB"))) {
+      throw new Error(WEIBO_LOGIN_REQUIRED_MESSAGE);
+    }
+    return;
+  }
+  await assertXhsLogin();
 }
 
 async function tabExists(tabId) {
@@ -583,24 +713,24 @@ async function waitLinkTabPage(tabId) {
 }
 
 // 链接概括：贴入分享文案或短链 → 开新页签 → 复用页签级采集概括管线。
-// 结果与状态挂在打开的页签槽位上（单条视图跟随页签），页签保留不关闭。
-async function runLinkWorkflow() {
+// 结果与状态挂在打开的页签槽位上，页签保留不关闭。
+async function runLinkWorkflow(explicitUrl = null) {
   if (tasks.has("link")) return;
-  const givenUrl = extractPostUrl(elements.linkInput.value);
+  const givenUrl = explicitUrl || extractPostUrl(elements.materialInput.value);
   if (!givenUrl) {
-    writePageStatus(activeTabId, {
-      state: "error",
-      title: "未能概括链接",
-      detail: "输入里没有找到小红书帖文链接（支持 xhslink.cn 短链或 xiaohongshu.com 帖文地址）。",
-      percent: 0
-    });
+    showMaterialFeedback("输入里没有找到小红书或微博帖文链接。", "error");
     return;
   }
-  singleFocus = "tab";
+  focus = { kind: "tab" };
+  if (historyVisible) {
+    historyVisible = false;
+    applyViewVisibility();
+  }
+  hideLinkChoice();
   setTask("link", { kind: "page", title: "正在打开链接", detail: "正在打开帖文链接…", percent: 3 });
   let tab = null;
   try {
-    await assertXhsLogin();
+    await assertLinkLogin(givenUrl);
     tab = await chrome.tabs.create({ url: givenUrl, active: true });
     const page = await waitLinkTabPage(tab.id);
     // 交接：打开阶段的任务条目换成页签级任务，采集阶段由工作流广播接管
@@ -622,7 +752,8 @@ async function runLinkWorkflow() {
       detail: completionDetail(response.result, "已按固定格式生成，可直接复制。"),
       percent: 100
     });
-    elements.linkInput.value = "";
+    elements.materialInput.value = "";
+    clearMaterialFeedback();
   } catch (error) {
     const status = {
       state: "error",
@@ -633,7 +764,10 @@ async function runLinkWorkflow() {
     // 页签在等待期间被关掉时不再写状态（onRemoved 已清槽位）
     if (!tab || (await tabExists(tab.id))) {
       writePageStatus(tab?.id ?? activeTabId, status);
+    } else if (focus.kind === "tab") {
+      renderStatus(status);
     }
+    showMaterialFeedback(status.detail, "error");
   } finally {
     removeTask("link");
     if (tab?.id != null) removeTask(pageTaskKey(tab.id));
@@ -676,7 +810,19 @@ function applyWorkflowState(workflow) {
   // 面板没见过的页签也挂上槽位（例如面板关闭期间启动/完成的任务），
   // 过时的槽位会在页签切换时的轻量校验中被清除
   if (!slot && workflow.pageSessionId && workflow.pageUrl) {
-    slot = { context: { tabId, pageSessionId: workflow.pageSessionId, pageUrl: workflow.pageUrl }, status: null, result: null, capture: null };
+    slot = {
+      context: {
+        tabId,
+        pageSessionId: workflow.pageSessionId,
+        pageUrl: workflow.pageUrl,
+        noteId: workflow.noteId || null
+      },
+      status: null,
+      result: null,
+      capture: null,
+      pendingGivenUrl: null,
+      pendingGivenUrlVerified: false
+    };
     pageSlots.set(tabId, slot);
   }
   const sameContext = Boolean(
@@ -685,10 +831,11 @@ function applyWorkflowState(workflow) {
     slot.context.pageUrl === workflow.pageUrl
   );
   if (slot && sameContext) {
+    if (workflow.noteId && !slot.context.noteId) slot.context.noteId = workflow.noteId;
     if (workflow.capture) slot.capture = workflow.capture;
     if (workflow.status === "done" && workflow.result) slot.result = workflow.result;
     slot.status = statusFromWorkflow(workflow);
-    if (currentView === "single" && singleFocus === "tab" && activeTabId === tabId) renderSingleView();
+    if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
   }
   const progress = workflow.progress || {};
   if (workflow.status === "working") {
@@ -707,8 +854,12 @@ function applyWorkflowState(workflow) {
 }
 
 async function runFullWorkflow() {
-  singleFocus = "tab";
-  if (currentView === "single") renderSingleView();
+  focus = { kind: "tab" };
+  if (historyVisible) {
+    historyVisible = false;
+    applyViewVisibility();
+  }
+  renderFocus();
   let page;
   try {
     page = await prepareCurrentPage();
@@ -723,6 +874,8 @@ async function runFullWorkflow() {
   }
   const key = pageTaskKey(page.tabId);
   if (tasks.has(key)) return;
+  const pendingGivenUrl = pageSlots.get(page.tabId)?.pendingGivenUrl || null;
+  const pendingGivenUrlVerified = Boolean(pageSlots.get(page.tabId)?.pendingGivenUrlVerified);
   setTask(key, {
     kind: "page",
     tabId: page.tabId,
@@ -733,8 +886,19 @@ async function runFullWorkflow() {
   });
   writePageStatus(page.tabId, { state: "working", title: "正在连接页面", detail: "检查当前帖文详情页…", percent: 3 });
   try {
-    const response = await sendCaptureAndSummarize(page, null, false);
+    const response = await sendCaptureAndSummarize(page, null, false, pendingGivenUrl);
+    // 暂存链接的“已验证/未能验证”状态由面板决定，内容脚本只负责写入 givenUrl
+    if (pendingGivenUrl && response.capture?.source) {
+      response.capture.source.givenUrlVerified = pendingGivenUrlVerified;
+    }
     writePageResult(page.tabId, response.result, response.capture || null);
+    if (pendingGivenUrl) {
+      const slot = pageSlots.get(page.tabId);
+      if (slot) {
+        slot.pendingGivenUrl = null;
+        slot.pendingGivenUrlVerified = false;
+      }
+    }
     writePageStatus(page.tabId, {
       state: "done",
       title: "概括完成",
@@ -754,35 +918,38 @@ async function runFullWorkflow() {
 }
 
 async function regenerateShot() {
-  const capture = shotSingleSlot.capture;
+  const capture = shotSlot.capture;
   if (!capture) {
     await runFullWorkflow();
     return;
   }
+  focus = { kind: "shot" };
+  renderFocus();
   setTask("shot:single", {
     kind: "shot",
     title: captureLabel(capture) || "重新生成",
     detail: "复用截图证据，重新调用文字模型…",
     percent: 66
   });
-  shotSingleSlot.status = { state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 };
-  if (currentView === "single" && singleFocus === "shot") renderStatus(shotSingleSlot.status);
+  shotSlot.status = { state: "working", title: "正在重新生成", detail: "复用页面与图片证据，重新调用文字模型…", percent: 66 };
+  renderStatus(shotSlot.status);
   try {
     const page = await prepareCurrentPage();
     const response = await sendCaptureAndSummarize(page, capture, true);
-    shotSingleSlot.result = response.result;
-    shotSingleSlot.status = {
+    shotSlot.result = response.result;
+    shotSlot.status = {
       state: "done",
       title: "重新生成完成",
       detail: completionDetail(response.result, "新版本已替换原概括。"),
       percent: 100
     };
   } catch (error) {
-    shotSingleSlot.status = { state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 };
+    shotSlot.status = { state: "error", title: "重新生成失败", detail: error?.message || "发生未知错误。", percent: 66 };
   } finally {
     removeTask("shot:single");
   }
-  if (currentView === "single" && singleFocus === "shot") renderSingleView();
+  if (focus.kind === "shot") renderFocus();
+  else refreshButtons();
 }
 
 async function regenerateActiveTab() {
@@ -793,6 +960,8 @@ async function regenerateActiveTab() {
     await runFullWorkflow();
     return;
   }
+  focus = { kind: "tab" };
+  renderFocus();
   setTask(pageTaskKey(tabId), {
     kind: "page",
     tabId,
@@ -817,41 +986,519 @@ async function regenerateActiveTab() {
       state: "error",
       title: "重新生成失败",
       detail: error?.message || "发生未知错误。",
-      percent: 66
+      percent: 0
     });
   } finally {
     removeTask(pageTaskKey(tabId));
   }
 }
 
-function mergeProgressTitle(stage) {
-  if (stage === "vision") return "正在识别图片";
-  if (stage === "text") return "正在撰写合并概括";
-  if (stage === "notification") return "正在推送飞书";
-  return "正在合并概括";
+// —— 添加素材：链接识别 ——
+
+function showMaterialFeedback(text, state = "info") {
+  elements.materialFeedback.textContent = text;
+  elements.materialFeedback.dataset.state = state;
+  elements.materialFeedback.hidden = false;
+}
+
+function clearMaterialFeedback() {
+  elements.materialFeedback.hidden = true;
+  elements.materialFeedback.textContent = "";
+  delete elements.materialFeedback.dataset.state;
+}
+
+function hideLinkChoice() {
+  pendingLinkChoice = null;
+  elements.linkChoice.hidden = true;
+  elements.linkChoiceOptions.innerHTML = "";
+}
+
+function currentTabCandidate() {
+  const platform = currentPostPlatform();
+  if (!platform || activeTabId == null) return null;
+  const slot = currentSlot();
+  const noteId = slot?.context?.noteId ||
+    noteIdFromUrlForPlatform(platform, slot?.context?.pageUrl || activeTabUrl);
+  if (!noteId) return null;
+  return {
+    kind: "tab",
+    platform,
+    noteId,
+    label: captureLabel(slot?.capture) || "当前帖文"
+  };
+}
+
+function basketCandidates() {
+  return basketItems
+    .filter((item) => item.kind !== "user_screenshot" && /^(?:note|wbnote):/.test(item.id))
+    .map((item) => ({
+      kind: "basket",
+      id: item.id,
+      platform: item.platform,
+      noteId: item.id.replace(/^(?:note|wbnote):/, ""),
+      label: item.title || item.author || item.id
+    }));
+}
+
+function basketItemLabel(item) {
+  if (!item) return "";
+  const prefix = item.kind === "user_screenshot" ? "截图" : item.platform === "weibo" ? "微博" : "网页";
+  const name = item.title || (item.author ? `@${item.author}` : item.id);
+  return `${prefix}「${name}」`;
+}
+
+async function resolveLinkViaBackend(url) {
+  const response = await chrome.runtime.sendMessage({ type: "XHS_AI_RESOLVE_LINK", url });
+  if (!response?.ok) throw new Error(response?.error || "链接解析失败。");
+  return response;
+}
+
+function isSupportedGivenLink(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === "xhslink.cn" || host.endsWith(".xhslink.cn") ||
+      host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com") ||
+      host === "weibo.com" || host.endsWith(".weibo.com");
+  } catch {
+    return false;
+  }
+}
+
+function validateScreenshotLink(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || "").trim());
+  } catch {
+    throw new Error("链接不是有效网址。");
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:" ||
+    !(host.endsWith("xiaohongshu.com") || host === "xhslink.cn" || host.endsWith(".xhslink.cn"))) {
+    throw new Error("截图帖文的链接需为小红书地址（xiaohongshu.com 或 xhslink.cn）。");
+  }
+  return parsed.href;
+}
+
+// 链接归位到当前页签：已有结果就直接换链接；还没提取就暂存，提取时带入。
+async function applyLinkToTab(url, verified) {
+  if (activeTabId == null) return false;
+  const slot = touchPageSlot(activeTabId);
+  if (slot.result && slot.capture) {
+    const response = await requestRelink(
+      slot.capture,
+      slot.result,
+      url,
+      verified,
+      { tabId: activeTabId, pageSessionId: slot.context?.pageSessionId || null }
+    );
+    slot.capture = response.payload;
+    slot.result = response.result;
+    slot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: "链接已更新（未重新推送飞书）。",
+      percent: 100
+    };
+    const id = payloadItemId(response.payload);
+    if (id && basketItems.some((item) => item.id === id)) {
+      await setBasketItemLink(id, url, verified);
+      await rerenderMergeIfPossible();
+    }
+    if (focus.kind === "tab" && !historyVisible) renderFocus();
+    return true;
+  }
+  slot.pendingGivenUrl = String(url || "").trim() || null;
+  slot.pendingGivenUrlVerified = Boolean(verified);
+  // 同一条帖子已在清单里时一起同步，避免单条结果与清单条目各持一份链接
+  const platform = currentPostPlatform();
+  const noteId = slot.context?.noteId ||
+    noteIdFromUrlForPlatform(platform, slot.context?.pageUrl || activeTabUrl);
+  const itemId = noteId ? `${platform === "weibo" ? "wbnote" : "note"}:${noteId}` : null;
+  if (itemId && basketItems.some((item) => item.id === itemId)) {
+    await setBasketItemLink(itemId, url, verified);
+    await rerenderMergeIfPossible();
+  }
+  if (focus.kind === "tab" && !historyVisible) renderCurrentPost();
+  return Boolean(slot.pendingGivenUrl);
+}
+
+async function requestRelink(payload, result, givenUrl, verified, context = {}) {
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_RELINK",
+    payload,
+    result,
+    givenUrl,
+    verified,
+    ...(Number.isInteger(context.tabId) ? { tabId: context.tabId } : {}),
+    ...(context.pageSessionId ? { pageSessionId: context.pageSessionId } : {})
+  });
+  if (!response?.ok) throw new Error(response?.error || "链接更新失败。");
+  return response;
+}
+
+async function relinkCurrentResultOnly(url, verified) {
+  const payload = focusedPayload();
+  const result = currentResult();
+  if (!payload || !result) return;
+  const slot = focus.kind === "tab" ? currentSlot() : null;
+  const response = await requestRelink(payload, result, url, verified, focus.kind === "tab"
+    ? { tabId: activeTabId, pageSessionId: slot?.context?.pageSessionId || null }
+    : {});
+  if (focus.kind === "shot") {
+    shotSlot.capture = response.payload;
+    shotSlot.result = response.result;
+    shotSlot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: "链接已更新（未重新推送飞书）。",
+      percent: 100
+    };
+  } else {
+    if (!slot) return;
+    slot.capture = response.payload;
+    slot.result = response.result;
+    slot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: "链接已更新（未重新推送飞书）。",
+      percent: 100
+    };
+  }
+}
+
+async function setBasketItemLink(id, url, verified) {
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_MERGE_SET_LINK",
+    id,
+    givenUrl: url,
+    verified
+  });
+  if (!response?.ok) throw new Error(response?.error || "清单链接更新失败。");
+  basketItems = response.basket || [];
+  renderBasket();
+}
+
+async function rerenderMergeIfPossible() {
+  if (!mergeSlot.result) return;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_MERGE_RERENDER",
+      result: mergeSlot.result
+    });
+    if (response?.ok && response.result) {
+      mergeSlot.result = response.result;
+      if (focus.kind === "merge" && !historyVisible) renderResult(mergeSlot.result);
+    }
+  } catch {
+    // 合并结果留在原样，不影响单条链接已经保存
+  }
+}
+
+// 保存结果卡片上的链接：解析只用于校验，不调用模型。
+async function saveResultLink() {
+  const payload = focusedPayload();
+  if (!payload) return;
+  elements.resultLinkHint.hidden = true;
+  pendingResultLinkConfirm = null;
+  const raw = String(elements.resultLinkInput.value || "").trim();
+  if (!raw) {
+    try {
+      await applyGivenLinkToResult("", false);
+      closeResultLinkEditor();
+    } catch (error) {
+      showResultLinkHint(error?.message || "链接更新失败。");
+    }
+    return;
+  }
+  if (payload.source?.origin === "user_screenshot") {
+    try {
+      const normalized = validateScreenshotLink(raw);
+      await applyGivenLinkToResult(normalized, false);
+      closeResultLinkEditor();
+    } catch (error) {
+      showResultLinkHint(error?.message || "链接更新失败。");
+    }
+    return;
+  }
+  if (!isSupportedGivenLink(raw)) {
+    showResultLinkHint("请填写小红书或微博帖文链接。");
+    return;
+  }
+  let resolved = null;
+  try {
+    resolved = await resolveLinkViaBackend(raw);
+  } catch {
+    resolved = null;
+  }
+  const targetNoteId = payload.source?.noteId || null;
+  const mismatch = Boolean(resolved?.noteId && targetNoteId && resolved.noteId !== targetNoteId);
+  if (mismatch) {
+    pendingResultLinkConfirm = { url: raw };
+    showResultLinkConfirm("这条链接指向另一条帖文");
+    return;
+  }
+  const verified = Boolean(resolved?.noteId && targetNoteId && resolved.noteId === targetNoteId);
+  try {
+    await applyGivenLinkToResult(raw, verified);
+    closeResultLinkEditor();
+  } catch (error) {
+    showResultLinkHint(error?.message || "链接更新失败。");
+  }
+}
+
+async function applyGivenLinkToResult(url, verified) {
+  await relinkCurrentResultOnly(url, verified);
+  const payload = focusedPayload();
+  const id = payloadItemId(payload);
+  if (id && basketItems.some((item) => item.id === id)) {
+    await setBasketItemLink(id, url, verified);
+    await rerenderMergeIfPossible();
+  }
+  if (focus.kind === "shot" || focus.kind === "tab") renderFocus();
+}
+
+async function saveBasketLink() {
+  const id = basketLinkEditingId;
+  if (!id) return;
+  elements.basketLinkHint.hidden = true;
+  pendingBasketLinkConfirm = null;
+  const item = basketItems.find((entry) => entry.id === id);
+  if (!item) {
+    closeBasketLinkEditor();
+    return;
+  }
+  const raw = String(elements.basketLinkInput.value || "").trim();
+  if (!raw) {
+    try {
+      await applyGivenLinkToBasket(id, "", false);
+      closeBasketLinkEditor();
+    } catch (error) {
+      showBasketLinkHint(error?.message || "链接更新失败。");
+    }
+    return;
+  }
+  if (item.kind === "user_screenshot") {
+    try {
+      const normalized = validateScreenshotLink(raw);
+      await applyGivenLinkToBasket(id, normalized, false);
+      closeBasketLinkEditor();
+    } catch (error) {
+      showBasketLinkHint(error?.message || "链接更新失败。");
+    }
+    return;
+  }
+  if (!isSupportedGivenLink(raw)) {
+    showBasketLinkHint("请填写小红书或微博帖文链接。");
+    return;
+  }
+  let resolved = null;
+  try {
+    resolved = await resolveLinkViaBackend(raw);
+  } catch {
+    resolved = null;
+  }
+  const targetNoteId = id.replace(/^(?:note|wbnote):/, "");
+  const mismatch = Boolean(resolved?.noteId && resolved.noteId !== targetNoteId);
+  if (mismatch) {
+    pendingBasketLinkConfirm = { id, url: raw };
+    showBasketLinkConfirm("这条链接指向另一条帖文");
+    return;
+  }
+  const verified = Boolean(resolved?.noteId && resolved.noteId === targetNoteId);
+  try {
+    await applyGivenLinkToBasket(id, raw, verified);
+    closeBasketLinkEditor();
+  } catch (error) {
+    showBasketLinkHint(error?.message || "链接更新失败。");
+  }
+}
+
+async function applyGivenLinkToBasket(id, url, verified) {
+  await setBasketItemLink(id, url, verified);
+  const payload = focusedPayload();
+  if (payload && payloadItemId(payload) === id && currentResult()) {
+    await relinkCurrentResultOnly(url, verified);
+  }
+  await rerenderMergeIfPossible();
+  renderFocus();
+  showMaterialFeedback("链接已更新（未重新推送飞书）。");
+}
+
+// 解析失败时绝不猜：内联列出当前帖文、清单每条（含截图）与新帖。
+function showLinkChoice(url) {
+  pendingLinkChoice = { url };
+  const options = [];
+  const tabCandidate = currentTabCandidate();
+  if (tabCandidate) {
+    options.push({ choice: "tab", kind: "tab", label: `当前帖文${tabCandidate.label ? `「${tabCandidate.label}」` : ""}` });
+  }
+  for (const item of basketItems) {
+    options.push({ choice: `basket:${item.id}`, kind: "basket", label: basketItemLabel(item) });
+  }
+  options.push({ choice: "new", kind: "new", label: "作为新帖打开" });
+  elements.linkChoiceOptions.innerHTML = options.map((option) => (
+    `<button class="link-choice-option" type="button" data-choice="${escapeHtml(option.choice)}" data-kind="${option.kind}">${escapeHtml(option.label)}</button>`
+  )).join("");
+  elements.linkChoice.hidden = false;
+}
+
+async function handleMaterialLink() {
+  const raw = elements.materialInput.value;
+  const url = extractPostUrl(raw);
+  if (!url) {
+    showMaterialFeedback("没有找到小红书或微博帖文链接。", "error");
+    hideLinkChoice();
+    return;
+  }
+  hideLinkChoice();
+  const token = ++linkResolveToken;
+  showMaterialFeedback("正在识别链接…");
+  let resolved;
+  try {
+    resolved = await resolveLinkViaBackend(url);
+  } catch (error) {
+    if (token !== linkResolveToken) return;
+    // 短链请求失败也绝不猜：内联让用户选择链接归属
+    showLinkChoice(url);
+    showMaterialFeedback(error?.message || "链接解析失败，请手动选择链接归属。", "error");
+    return;
+  }
+  if (token !== linkResolveToken) return;
+  if (!resolved?.noteId) {
+    showLinkChoice(url);
+    showMaterialFeedback("无法自动判断这条链接属于哪条帖文，请在下方选择。", "error");
+    return;
+  }
+  const tabCandidate = currentTabCandidate();
+  const candidates = [...(tabCandidate ? [tabCandidate] : []), ...basketCandidates()];
+  const matches = candidates.filter((candidate) => (
+    candidate.platform === resolved.platform && candidate.noteId === resolved.noteId
+  ));
+  if (!matches.length) {
+    // 解析出的 ID 对不上任何已有素材：当作新帖打开
+    elements.materialInput.value = "";
+    clearMaterialFeedback();
+    await runLinkWorkflow(url);
+    return;
+  }
+  const tabMatchedItemId = tabCandidate &&
+    (resolved.platform === tabCandidate.platform && resolved.noteId === tabCandidate.noteId)
+    ? `${resolved.platform === "weibo" ? "wbnote" : "note"}:${resolved.noteId}`
+    : null;
+  const labels = [];
+  try {
+    for (const match of matches) {
+      if (match.kind === "tab") {
+        await applyLinkToTab(url, true);
+        labels.push(match.label);
+      } else if (match.id !== tabMatchedItemId) {
+        // 命中当前页签时 applyLinkToTab 已经同步了同一帖子的清单条目
+        await applyLinkToBasketItemByMatch(match.id, url, true);
+        labels.push(match.label);
+      }
+    }
+  } catch (error) {
+    showMaterialFeedback(error?.message || "链接归位失败。", "error");
+    return;
+  }
+  elements.materialInput.value = "";
+  showMaterialFeedback(`已把链接补到「${labels[0]}」${labels.length > 1 ? ` 等 ${labels.length} 处` : ""}。`);
+  renderFocus();
+}
+
+// 从「添加素材」匹配到清单条目时的入口：不切换焦点
+async function applyLinkToBasketItemByMatch(id, url, verified) {
+  await setBasketItemLink(id, url, verified);
+  const payload = focusedPayload();
+  if (payload && payloadItemId(payload) === id && currentResult()) {
+    await relinkCurrentResultOnly(url, verified);
+  }
+  await rerenderMergeIfPossible();
+}
+
+async function chooseLinkTarget(choice) {
+  const pending = pendingLinkChoice;
+  if (!pending) return;
+  const url = pending.url;
+  hideLinkChoice();
+  elements.materialInput.value = "";
+  clearMaterialFeedback();
+  if (choice === "new") {
+    await runLinkWorkflow(url);
+    return;
+  }
+  try {
+    if (choice === "tab") {
+      await applyLinkToTab(url, false);
+      showMaterialFeedback("已把链接关联到当前帖文。");
+    } else if (choice.startsWith("basket:")) {
+      const id = choice.slice("basket:".length);
+      await applyGivenLinkToBasket(id, url, false);
+      const item = basketItems.find((entry) => entry.id === id);
+      showMaterialFeedback(`已把链接补到${basketItemLabel(item)}。`);
+    }
+  } catch (error) {
+    showMaterialFeedback(error?.message || "链接归位失败。", "error");
+  }
+  renderFocus();
+}
+
+// —— 清单 ——
+
+function basketLinkButton(item) {
+  const hasLink = Boolean(item.link);
+  const unverified = hasLink && item.linkVerified === false;
+  const text = hasLink ? shortenLink(item.link) : "＋补充链接";
+  return `<button class="basket-link-value" type="button" data-basket-link="${escapeHtml(item.id)}" ` +
+    `data-empty="${hasLink ? "false" : "true"}" data-unverified="${unverified ? "true" : "false"}" ` +
+    `title="${escapeHtml(hasLink ? item.link : "补充这条帖文的链接")}">${escapeHtml(text)}</button>` +
+    `<button class="link-edit-button" type="button" data-basket-link="${escapeHtml(item.id)}" ` +
+    `title="编辑链接" aria-label="编辑链接">✎</button>`;
 }
 
 function renderBasket() {
-  elements.mergeList.innerHTML = basketItems.map((item) => {
+  if (basketLinkEditingId && !basketItems.some((item) => item.id === basketLinkEditingId)) {
+    basketLinkEditingId = null;
+  }
+  elements.basketList.innerHTML = basketItems.map((item) => {
     const isShot = item.kind === "user_screenshot";
     const isWeibo = !isShot && item.platform === "weibo";
     const badgeLabel = isShot ? "截图" : isWeibo ? "微博" : "网页";
     const badgeClass = isShot ? "merge-badge-shot" : isWeibo ? "merge-badge-weibo" : "merge-badge-page";
     const label = [item.author || "未知账号", item.title].filter(Boolean).join("：");
-    const meta = `${item.isVideo ? "视频 · " : ""}${item.commentCount || 0} 条评论${item.hasUrl ? "" : " · 无链接"}`;
-    return `<li class="merge-item" data-id="${escapeHtml(item.id)}">` +
+    const meta = `${item.isVideo ? "视频 · " : ""}${item.commentCount || 0} 条评论`;
+    const unverified = item.link && item.linkVerified === false ? "（未能验证）" : "";
+    return `<li class="merge-item basket-item" data-id="${escapeHtml(item.id)}">` +
+      `<div class="basket-main">` +
       `<span class="merge-badge ${badgeClass}">${badgeLabel}</span>` +
       `<span class="merge-item-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>` +
       `<span class="merge-item-meta">${escapeHtml(meta)}</span>` +
       `<button class="merge-remove" type="button" title="移除">✕</button>` +
-      "</li>";
+      `</div>` +
+      `<div class="basket-link-line"><span class="basket-link-label">链接</span>${basketLinkButton(item)}` +
+      `${unverified ? `<span class="merge-item-meta">${unverified}</span>` : ""}</div>` +
+      `</li>`;
   }).join("");
-  elements.mergeList.hidden = basketItems.length === 0;
-  elements.mergeClearButton.hidden = basketItems.length === 0;
-  elements.mergeSummarizeButton.hidden = basketItems.length === 0;
-  elements.mergeSummarizeLabel.textContent = basketItems.length > 1
-    ? `合并概括（${basketItems.length} 条帖文）`
-    : "概括这条帖文";
+  const count = basketItems.length;
+  elements.basketPanel.hidden = count === 0;
+  elements.basketCount.textContent = String(count);
+  elements.mergeClearButton.hidden = count === 0;
+  elements.mergeSummarizeButton.hidden = count < 2;
+  elements.mergeSummarizeLabel.textContent = `合并概括（${count} 条）`;
+  elements.basketSingleHint.hidden = count !== 1;
+  elements.basketLinkEditor.hidden = !basketLinkEditingId;
+  if (basketLinkEditingId) {
+    const item = basketItems.find((entry) => entry.id === basketLinkEditingId);
+    elements.basketLinkEditorLabel.textContent = item ? `为${basketItemLabel(item)}补充链接` : "补充链接";
+    // 编辑框移到对应条目下方，保持“原地编辑”的观感；列表重渲染后重新挂载
+    const selector = `.basket-item[data-id="${String(basketLinkEditingId).replace(/"/g, '\\"')}"]`;
+    const row = elements.basketList.querySelector?.(selector);
+    if (row?.appendChild) row.appendChild(elements.basketLinkEditor);
+    elements.basketLinkEditor.hidden = false;
+  }
+  refreshResultBasketButton();
 }
 
 async function refreshBasket() {
@@ -863,6 +1510,455 @@ async function refreshBasket() {
   }
   renderBasket();
 }
+
+function refreshResultBasketButton() {
+  if (focus.kind === "merge" || historyVisible) {
+    elements.resultAddBasketButton.hidden = true;
+    return;
+  }
+  elements.resultAddBasketButton.hidden = false;
+  const inBasket = basketHasPayload(focusedPayload());
+  elements.resultAddBasketButton.textContent = inBasket ? "已在清单" : "加入清单";
+  elements.resultAddBasketButton.disabled = inBasket;
+}
+
+async function addPayloadToBasket(payload) {
+  const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_ADD", payload });
+  if (!response?.ok) throw new Error(response?.error || "加入清单失败。");
+  basketItems = response.basket || [];
+  renderBasket();
+  return response;
+}
+
+function payloadWithPendingLink(payload, slot) {
+  const pending = slot?.pendingGivenUrl;
+  if (!pending) return payload;
+  const source = { ...payload.source, givenUrl: pending };
+  if (source.origin !== "user_screenshot") source.givenUrlVerified = Boolean(slot.pendingGivenUrlVerified);
+  else delete source.givenUrlVerified;
+  return { ...payload, source };
+}
+
+// 当前帖文「加入清单」：已有采集数据就直接复用，没有才重新采集。
+async function addCurrentPostToBasket() {
+  if (activeTabId == null) return;
+  const tabId = activeTabId;
+  const slot = pageSlots.get(tabId);
+  if (slot?.capture) {
+    const payload = payloadWithPendingLink(slot.capture, slot);
+    try {
+      const added = await addPayloadToBasket(payload);
+      if (slot.pendingGivenUrl) {
+        slot.capture = payload;
+        slot.pendingGivenUrl = null;
+        slot.pendingGivenUrlVerified = false;
+      }
+      const detail = added.replaced
+        ? "已替换清单中的同一条帖文。"
+        : `已加入清单，当前共 ${basketItems.length} 条。`;
+      writePageStatus(tabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+      if (focus.kind !== "tab") showMaterialFeedback(detail);
+      renderBasket();
+      refreshButtons();
+    } catch (error) {
+      const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+      writePageStatus(tabId, status);
+      if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
+    }
+    return;
+  }
+
+  let page;
+  try {
+    page = await prepareCurrentPage();
+  } catch (error) {
+    const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+    writePageStatus(error.tabId ?? tabId, status);
+    if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
+    return;
+  }
+  if (tasks.has(pageTaskKey(page.tabId))) return;
+  writePageStatus(page.tabId, { state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 });
+  try {
+    const response = await chrome.tabs.sendMessage(page.tabId, {
+      type: "XHS_CAPTURE_FOR_MERGE",
+      options: { limit: LIMIT }
+    });
+    if (!response?.ok || !response.payload) throw new Error(response?.error || "采集未完成。");
+    const currentSlot = pageSlots.get(page.tabId);
+    const payload = payloadWithPendingLink(response.payload, currentSlot);
+    const added = await addPayloadToBasket(payload);
+    if (currentSlot?.pendingGivenUrl) {
+      currentSlot.pendingGivenUrl = null;
+      currentSlot.pendingGivenUrlVerified = false;
+    }
+    const detail = added.replaced
+      ? "已替换清单中的同一条帖文。"
+      : `当前清单共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`;
+    writePageStatus(page.tabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+    if (focus.kind !== "tab") showMaterialFeedback(detail);
+  } catch (error) {
+    const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+    writePageStatus(page.tabId, status);
+    if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
+  }
+  renderBasket();
+}
+
+// 结果卡片「加入清单」：直接复用结果对应的采集 payload，不重新采集。
+async function addFocusedResultToBasket() {
+  const payload = focusedPayload();
+  if (!payload) {
+    if (focus.kind === "tab") await addCurrentPostToBasket();
+    return;
+  }
+  if (basketHasPayload(payload)) return;
+  try {
+    const added = await addPayloadToBasket(payload);
+    const detail = added.replaced
+      ? "已替换清单中的同一条帖文。"
+      : `已加入清单，当前共 ${basketItems.length} 条。`;
+    if (focus.kind === "shot") {
+      shotSlot.status = { state: "done", title: "已加入合并清单", detail, percent: 100 };
+    } else if (focus.kind === "tab" && activeTabId != null) {
+      writePageStatus(activeTabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+    }
+    renderFocus();
+  } catch (error) {
+    showMaterialFeedback(error?.message || "加入清单失败。", "error");
+  }
+}
+
+async function removeBasketItem(id) {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_REMOVE", id });
+    if (!response?.ok) throw new Error(response?.error || "移除失败。");
+    basketItems = response.basket || [];
+    if (basketLinkEditingId === id) closeBasketLinkEditor();
+    renderBasket();
+    refreshButtons();
+  } catch (error) {
+    showMaterialFeedback(error?.message || "移除失败。", "error");
+  }
+}
+
+async function clearBasket() {
+  if (!basketItems.length) return;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
+    if (!response?.ok) throw new Error(response?.error || "清空失败。");
+  } catch (error) {
+    showMaterialFeedback(error?.message || "清空失败。", "error");
+    return;
+  }
+  basketItems = [];
+  basketLinkEditingId = null;
+  renderBasket();
+  refreshButtons();
+}
+
+// —— 合并概括 ——
+
+function mergeProgressTitle(stage) {
+  if (stage === "vision") return "正在识别图片";
+  if (stage === "text") return "正在撰写合并概括";
+  if (stage === "notification") return "正在推送飞书";
+  return "正在合并概括";
+}
+
+async function runMergeSummarize(force = false) {
+  if (tasks.has("merge") || basketItems.length < 2) return;
+  focus = { kind: "merge" };
+  if (historyVisible) {
+    historyVisible = false;
+    applyViewVisibility();
+  }
+  setTask("merge", {
+    kind: "merge",
+    title: "合并概括",
+    detail: `整合 ${basketItems.length} 条帖文的证据…`,
+    percent: 8
+  });
+  mergeSlot.status = {
+    state: "working",
+    title: "正在合并概括",
+    detail: `整合 ${basketItems.length} 条帖文的证据…`,
+    percent: 8
+  };
+  renderFocus();
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
+    if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
+    mergeSlot.result = response.result;
+    mergeSlot.status = {
+      state: "done",
+      title: force ? "重新生成完成" : "合并概括完成",
+      detail: completionDetail(response.result, `已合并 ${response.result.postCount || basketItems.length} 条帖文，可直接复制。`),
+      percent: 100
+    };
+  } catch (error) {
+    mergeSlot.status = { state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 };
+  } finally {
+    removeTask("merge");
+  }
+  if (focus.kind === "merge") renderFocus();
+  else refreshButtons();
+}
+
+// —— 截图：一份暂存列表，两个提交动作 ——
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`读取 ${file.name} 失败。`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片无法解析，请确认文件未损坏。"));
+    image.src = dataUrl;
+  });
+}
+
+// 控制发往后台的消息体积：长边超过 1600px 的截图等比缩小后转 JPEG。
+async function downscaleDataUrl(dataUrl, maxEdge = 1600) {
+  const image = await loadImageElement(dataUrl);
+  const longest = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
+  if (!longest || longest <= maxEdge) return dataUrl;
+  const scale = maxEdge / longest;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
+const ACCEPTED_SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
+// 点击拖放区、Ctrl+V 粘贴或拖入的图片都进同一份暂存列表，凑齐后由按钮统一提交。
+async function stageScreenshotFiles(files) {
+  if (!files?.length) return;
+  const failures = [];
+  for (const file of files) {
+    const label = file.name || "剪贴板图片";
+    if (!ACCEPTED_SCREENSHOT_TYPES.includes(file.type)) {
+      failures.push(`${label} 不是支持的图片格式（PNG / JPEG / WebP）。`);
+      continue;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      failures.push(`${label} 超过 12 MB，请压缩后重试。`);
+      continue;
+    }
+    try {
+      stagedScreenshots.push({
+        id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        name: label,
+        dataUrl: await downscaleDataUrl(await readImageFile(file))
+      });
+    } catch (error) {
+      failures.push(error?.message || `读取 ${label} 失败。`);
+    }
+  }
+  renderStaging();
+  if (failures.length) {
+    showMaterialFeedback(failures[0], "error");
+  }
+}
+
+function renderStaging() {
+  elements.materialStaging.innerHTML = stagedScreenshots.map((item) => (
+    `<li class="staging-item"><img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
+    `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="移除 ${escapeHtml(item.name)}">×</button></li>`
+  )).join("");
+  const count = stagedScreenshots.length;
+  elements.materialStaging.hidden = count === 0;
+  elements.materialShotActions.hidden = count === 0;
+  elements.shotSummarizeButton.textContent = count > 1 ? `识别这 ${count} 张截图并概括` : "识别这张截图并概括";
+  elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入清单` : "识别这张截图并加入清单";
+}
+
+async function summarizeScreenshotImages(images, writeStatus) {
+  const recognized = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SCREENSHOT_RECOGNIZE",
+    images
+  });
+  if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
+  shotSlot.capture = recognized.payload;
+  writeStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SUMMARIZE",
+    payload: recognized.payload,
+    force: false
+  });
+  if (!response?.ok) throw new Error(response?.error || "概括未完成。");
+  shotSlot.result = response.result;
+  const warningNote = recognized.warnings?.length
+    ? `；${recognized.warnings.length} 项信息未能完全识别（如时间、互动数）`
+    : "";
+  writeStatus({
+    state: "done",
+    title: "截图概括完成",
+    detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + warningNote,
+    percent: 100
+  });
+}
+
+async function addScreenshotImagesToBasket(images) {
+  const response = await chrome.runtime.sendMessage({
+    type: "XHS_AI_SCREENSHOT_ADD",
+    images
+  });
+  if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
+  basketItems = response.basket || [];
+  renderBasket();
+  const warningNote = response.warnings?.length
+    ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
+    : "";
+  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${warningNote}。`);
+}
+
+async function commitStagedScreenshots(mode) {
+  const isMerge = mode === "basket";
+  const taskKey = isMerge ? "shot:merge" : "shot:single";
+  if (!stagedScreenshots.length || tasks.has(taskKey)) return;
+  if (!isMerge) {
+    focus = { kind: "shot" };
+    if (historyVisible) {
+      historyVisible = false;
+      applyViewVisibility();
+    }
+    renderFocus();
+  }
+  const writeStatus = (status) => {
+    if (isMerge) return;
+    shotSlot.status = status;
+    if (focus.kind === "shot" && !historyVisible) renderStatus(status);
+    if (status.state === "working") {
+      setTask(taskKey, { detail: status.detail, percent: status.percent });
+    }
+  };
+  setTask(taskKey, {
+    kind: "shot",
+    title: isMerge ? "识别截图加入清单" : "识别截图并概括",
+    detail: `共 ${stagedScreenshots.length} 张截图，正在提取帖文内容…`,
+    percent: 15
+  });
+  writeStatus({ state: "working", title: "正在识别截图", detail: `共 ${stagedScreenshots.length} 张截图，正在提取帖文内容…`, percent: 15 });
+  const committedIds = new Set(stagedScreenshots.map((item) => item.id));
+  try {
+    const images = stagedScreenshots.map((item) => item.dataUrl);
+    if (isMerge) {
+      await addScreenshotImagesToBasket(images);
+    } else {
+      await summarizeScreenshotImages(images, writeStatus);
+    }
+    // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
+    stagedScreenshots = stagedScreenshots.filter((item) => !committedIds.has(item.id));
+    renderStaging();
+  } catch (error) {
+    if (isMerge) {
+      showMaterialFeedback(error?.message || "截图识别失败。", "error");
+    } else {
+      writeStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
+    }
+  } finally {
+    removeTask(taskKey);
+    if (focus.kind === (isMerge ? "merge" : "shot")) renderFocus();
+    else {
+      renderBasket();
+      refreshButtons();
+    }
+  }
+}
+
+// —— 结果卡片上的链接编辑 ——
+
+function renderResultLink() {
+  if (focus.kind === "merge" || historyVisible) {
+    elements.resultLinkRow.hidden = true;
+    elements.resultLinkEditor.hidden = true;
+    return;
+  }
+  elements.resultLinkRow.hidden = false;
+  const payload = focusedPayload();
+  const link = effectiveLink(payload);
+  elements.resultLinkDisplay.textContent = link ? shortenLink(link) : "＋补充链接";
+  elements.resultLinkDisplay.dataset.empty = link ? "false" : "true";
+  elements.resultLinkDisplay.title = link || "补充原帖链接";
+  const unverified = Boolean(link && payload?.source?.givenUrl && payload.source.givenUrlVerified === false);
+  elements.resultLinkState.hidden = !unverified;
+  elements.resultLinkEditor.hidden = !resultLinkEditing;
+  if (!resultLinkEditing) elements.resultLinkHint.hidden = true;
+}
+
+function openResultLinkEditor() {
+  const payload = focusedPayload();
+  resultLinkEditing = true;
+  elements.resultLinkInput.value = effectiveLink(payload);
+  elements.resultLinkHint.hidden = true;
+  pendingResultLinkConfirm = null;
+  renderResultLink();
+  elements.resultLinkInput.focus?.();
+}
+
+function closeResultLinkEditor() {
+  resultLinkEditing = false;
+  elements.resultLinkEditor.hidden = true;
+  elements.resultLinkHint.hidden = true;
+  pendingResultLinkConfirm = null;
+  renderResultLink();
+}
+
+function showResultLinkHint(text) {
+  elements.resultLinkHint.textContent = text;
+  elements.resultLinkHint.hidden = false;
+}
+
+function showResultLinkConfirm(text) {
+  elements.resultLinkHint.hidden = false;
+  elements.resultLinkHint.innerHTML = `${escapeHtml(text)} ` +
+    `<button type="button" data-link-choice="use">仍然使用</button>` +
+    `<button type="button" data-link-choice="cancel">取消</button>`;
+}
+
+function showBasketLinkHint(text) {
+  elements.basketLinkHint.textContent = text;
+  elements.basketLinkHint.hidden = false;
+}
+
+function showBasketLinkConfirm(text) {
+  elements.basketLinkHint.hidden = false;
+  elements.basketLinkHint.innerHTML = `${escapeHtml(text)} ` +
+    `<button type="button" data-link-choice="use">仍然使用</button>` +
+    `<button type="button" data-link-choice="cancel">取消</button>`;
+}
+
+function openBasketLinkEditor(id) {
+  const item = basketItems.find((entry) => entry.id === id);
+  if (!item) return;
+  basketLinkEditingId = id;
+  pendingBasketLinkConfirm = null;
+  elements.basketLinkInput.value = item.link || "";
+  elements.basketLinkHint.hidden = true;
+  renderBasket();
+  elements.basketLinkEditor.hidden = false;
+  elements.basketLinkInput.focus?.();
+}
+
+function closeBasketLinkEditor() {
+  basketLinkEditingId = null;
+  pendingBasketLinkConfirm = null;
+  elements.basketLinkEditor.hidden = true;
+  elements.basketLinkHint.hidden = true;
+  renderBasket();
+}
+
+// —— 历史屏 ——
 
 function historyBadge(item) {
   if (item.kind === "merge") return { label: "合并", className: "merge-badge-merge" };
@@ -881,7 +1977,6 @@ function summaryHeadline(text) {
 function renderHistory() {
   elements.historyList.innerHTML = historyItems.map((item) => {
     const badge = historyBadge(item);
-    // 提不出标题行时（异常数据）退回“作者：帖文标题”
     const headline = summaryHeadline(item.result?.text);
     const label = headline || (item.kind === "merge"
       ? item.title
@@ -908,13 +2003,23 @@ async function refreshHistory() {
   renderHistory();
 }
 
-// 历史只读：结果卡进入“查看”态，可复制、可打开原帖，不能重新生成。
-function showHistoryEntry(item) {
-  historyEntry = item;
-  renderResult(item.result);
+// 历史只读：结果卡进入“查看”态，可复制、可打开原帖，不能重新生成、补链接或加入清单。
+function renderHistoryResult(item) {
+  elements.resultText.value = item.result?.text || "";
   elements.resultTime.textContent = formatHistoryTime(item.createdAt);
+  elements.resultSourceLabel.textContent = "历史";
+  renderEvidence(item.result || {});
   elements.regenerateButton.hidden = true;
   elements.openSourceButton.hidden = !item.url;
+  elements.resultAddBasketButton.hidden = true;
+  elements.resultLinkRow.hidden = true;
+  elements.resultLinkEditor.hidden = true;
+  elements.resultCard.hidden = false;
+}
+
+function showHistoryEntry(item) {
+  historyEntry = item;
+  renderHistoryResult(item);
   renderHistory();
 }
 
@@ -922,6 +2027,26 @@ function clearViewedHistoryEntry() {
   historyEntry = null;
   elements.resultCard.hidden = true;
   elements.resultText.value = "";
+}
+
+async function openHistory() {
+  if (historyVisible) {
+    closeHistory();
+    return;
+  }
+  focusBeforeHistory = focus;
+  historyVisible = true;
+  applyViewVisibility();
+  await refreshHistory();
+  if (historyEntry) renderHistoryResult(historyEntry);
+  else hideResultCard();
+}
+
+function closeHistory() {
+  historyVisible = false;
+  focus = focusBeforeHistory;
+  applyViewVisibility();
+  renderFocus();
 }
 
 function flashHistoryError(detail) {
@@ -976,300 +2101,7 @@ async function clearHistoryRecords() {
   }
 }
 
-async function addCurrentPostToBasket() {
-  let page;
-  try {
-    page = await prepareCurrentPage();
-  } catch (error) {
-    mergeFocus = "merge";
-    if (currentView === "merge") renderMergeView();
-    mergeSlot.status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
-    if (currentView === "merge") renderMergeView();
-    return;
-  }
-  if (tasks.has(pageTaskKey(page.tabId))) return;
-  mergeFocus = "merge";
-  mergeSlot.status = { state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 };
-  if (currentView === "merge") renderMergeView();
-  try {
-    const response = await chrome.tabs.sendMessage(page.tabId, {
-      type: "XHS_CAPTURE_FOR_MERGE",
-      options: { limit: LIMIT }
-    });
-    if (!response?.ok || !response.payload) throw new Error(response?.error || "采集未完成。");
-    const added = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_ADD", payload: response.payload });
-    if (!added?.ok) throw new Error(added?.error || "加入清单失败。");
-    basketItems = added.basket || [];
-    renderBasket();
-    mergeSlot.status = {
-      state: "done",
-      title: added.replaced ? "已替换清单中的同一条帖文" : "已加入合并清单",
-      detail: `当前清单共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`,
-      percent: 100
-    };
-  } catch (error) {
-    mergeSlot.status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
-  }
-  if (currentView === "merge") renderMergeView();
-}
-
-async function removeBasketItem(id) {
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_REMOVE", id });
-    if (!response?.ok) throw new Error(response?.error || "移除失败。");
-    basketItems = response.basket || [];
-    renderBasket();
-  } catch (error) {
-    mergeSlot.status = { state: "error", title: "移除失败", detail: error?.message || "发生未知错误。", percent: 0 };
-    if (currentView === "merge") renderMergeView();
-  }
-}
-
-async function clearBasket() {
-  if (!basketItems.length) return;
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
-    if (!response?.ok) throw new Error(response?.error || "清空失败。");
-  } catch (error) {
-    mergeSlot.status = { state: "error", title: "清空失败", detail: error?.message || "发生未知错误。", percent: 0 };
-    if (currentView === "merge") renderMergeView();
-    return;
-  }
-  basketItems = [];
-  renderBasket();
-}
-
-function readImageFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error(`读取 ${file.name} 失败。`));
-    reader.readAsDataURL(file);
-  });
-}
-
-function loadImageElement(dataUrl) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("图片无法解析，请确认文件未损坏。"));
-    image.src = dataUrl;
-  });
-}
-
-// 控制发往后台的消息体积：长边超过 1600px 的截图等比缩小后转 JPEG。
-async function downscaleDataUrl(dataUrl, maxEdge = 1600) {
-  const image = await loadImageElement(dataUrl);
-  const longest = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
-  if (!longest || longest <= maxEdge) return dataUrl;
-  const scale = maxEdge / longest;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.9);
-}
-
-async function addScreenshotImagesToBasket(images, sourceUrl, writeStatus) {
-  const response = await chrome.runtime.sendMessage({
-    type: "XHS_AI_SCREENSHOT_ADD",
-    images,
-    sourceUrl
-  });
-  if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
-  basketItems = response.basket || [];
-  renderBasket();
-  const warningNote = response.warnings?.length
-    ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
-    : "";
-  writeStatus({
-    state: "done",
-    title: "截图已识别并加入清单",
-    detail: `当前清单共 ${basketItems.length} 条帖文${warningNote}。`,
-    percent: 100
-  });
-  elements.screenshotUrl.value = "";
-}
-
-async function summarizeScreenshotImages(images, sourceUrl, writeStatus) {
-  const recognized = await chrome.runtime.sendMessage({
-    type: "XHS_AI_SCREENSHOT_RECOGNIZE",
-    images,
-    sourceUrl
-  });
-  if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
-  writeStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
-  const response = await chrome.runtime.sendMessage({
-    type: "XHS_AI_SUMMARIZE",
-    payload: recognized.payload,
-    force: false
-  });
-  if (!response?.ok) throw new Error(response?.error || "概括未完成。");
-  shotSingleSlot.result = response.result;
-  shotSingleSlot.capture = recognized.payload;
-  const warningNote = recognized.warnings?.length
-    ? `；${recognized.warnings.length} 项信息未能完全识别（如时间、互动数）`
-    : "";
-  writeStatus({
-    state: "done",
-    title: "截图概括完成",
-    detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + warningNote,
-    percent: 100
-  });
-  elements.shotSingleUrl.value = "";
-}
-
-const ACCEPTED_SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const stagedScreenshots = { single: [], merge: [] };
-
-// 点击拖放区、Ctrl+V 粘贴或拖入的图片都先进暂存区，凑齐同一条帖文的截图后由按钮统一提交识别。
-async function stageScreenshotFiles(files) {
-  if (!files?.length) return;
-  const staged = stagedScreenshots[currentView];
-  // 历史屏不接收截图
-  if (!staged) return;
-  const failures = [];
-  for (const file of files) {
-    const label = file.name || "剪贴板图片";
-    if (!ACCEPTED_SCREENSHOT_TYPES.includes(file.type)) {
-      failures.push(`${label} 不是支持的图片格式（PNG / JPEG / WebP）。`);
-      continue;
-    }
-    if (file.size > 12 * 1024 * 1024) {
-      failures.push(`${label} 超过 12 MB，请压缩后重试。`);
-      continue;
-    }
-    try {
-      staged.push({
-        id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        name: label,
-        dataUrl: await downscaleDataUrl(await readImageFile(file))
-      });
-    } catch (error) {
-      failures.push(error?.message || `读取 ${label} 失败。`);
-    }
-  }
-  renderStaging();
-  if (failures.length) {
-    const status = {
-      state: "error",
-      title: failures.length === files.length ? "截图未能添加" : "部分截图未能添加",
-      detail: failures[0],
-      percent: 0
-    };
-    // 报错写进当前视图正在看的槽位，不切换焦点（可能正有截图任务在跑）
-    if (currentView === "merge") {
-      if (mergeFocus === "shot") shotMergeStatus.status = status;
-      else mergeSlot.status = status;
-      renderStatus(status);
-    } else if (currentView === "single") {
-      if (singleFocus === "shot") shotSingleSlot.status = status;
-      else writePageStatus(activeTabId, status);
-      renderStatus(status);
-    }
-  }
-}
-
-function renderStaging() {
-  for (const view of ["single", "merge"]) {
-    const staged = stagedScreenshots[view];
-    const list = view === "single" ? elements.shotSingleStaging : elements.screenshotStaging;
-    const runButton = view === "single" ? elements.shotSingleRun : elements.screenshotRun;
-    list.innerHTML = staged.map((item) => (
-      `<li class="staging-item"><img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
-      `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="移除 ${escapeHtml(item.name)}">×</button></li>`
-    )).join("");
-    list.hidden = !staged.length;
-    runButton.hidden = !staged.length;
-    runButton.textContent = view === "single"
-      ? (staged.length > 1 ? `识别这 ${staged.length} 张截图并概括` : "识别这张截图并概括")
-      : (staged.length > 1 ? `识别这 ${staged.length} 张截图并加入清单` : "识别这张截图并加入清单");
-  }
-}
-
-async function commitStagedScreenshots(view) {
-  const staged = stagedScreenshots[view];
-  const taskKey = view === "merge" ? "shot:merge" : "shot:single";
-  const isMerge = view === "merge";
-  if (!staged.length || tasks.has(taskKey)) return;
-  if (isMerge) {
-    mergeFocus = "shot";
-  } else {
-    singleFocus = "shot";
-    if (currentView === "single") renderSingleView();
-  }
-  const writeStatus = (status) => {
-    if (isMerge) {
-      shotMergeStatus.status = status;
-      if (currentView === "merge" && mergeFocus === "shot") renderStatus(status);
-    } else {
-      shotSingleSlot.status = status;
-      if (currentView === "single" && singleFocus === "shot") renderStatus(status);
-    }
-    if (status.state === "working") {
-      setTask(taskKey, { detail: status.detail, percent: status.percent });
-    }
-  };
-  setTask(taskKey, {
-    kind: "shot",
-    title: isMerge ? "识别截图加入清单" : "识别截图并概括",
-    detail: `共 ${staged.length} 张截图，正在提取帖文内容…`,
-    percent: 15
-  });
-  writeStatus({ state: "working", title: "正在识别截图", detail: `共 ${staged.length} 张截图，正在提取帖文内容…`, percent: 15 });
-  const committedIds = new Set(staged.map((item) => item.id));
-  try {
-    const images = staged.map((item) => item.dataUrl);
-    const sourceUrlInput = isMerge ? elements.screenshotUrl : elements.shotSingleUrl;
-    if (isMerge) {
-      await addScreenshotImagesToBasket(images, sourceUrlInput.value.trim(), writeStatus);
-    } else {
-      await summarizeScreenshotImages(images, sourceUrlInput.value.trim(), writeStatus);
-    }
-    // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
-    stagedScreenshots[view] = stagedScreenshots[view].filter((item) => !committedIds.has(item.id));
-    renderStaging();
-  } catch (error) {
-    writeStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
-  } finally {
-    removeTask(taskKey);
-    if (currentView === (isMerge ? "merge" : "single")) renderCurrentView();
-  }
-}
-
-async function runMergeSummarize(force = false) {
-  if (tasks.has("merge") || !basketItems.length) return;
-  mergeFocus = "merge";
-  setTask("merge", {
-    kind: "merge",
-    title: "合并概括",
-    detail: `整合 ${basketItems.length} 条帖文的证据…`,
-    percent: 8
-  });
-  mergeSlot.status = {
-    state: "working",
-    title: "正在合并概括",
-    detail: `整合 ${basketItems.length} 条帖文的证据…`,
-    percent: 8
-  };
-  if (currentView === "merge") renderMergeView();
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
-    if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
-    mergeSlot.result = response.result;
-    mergeSlot.status = {
-      state: "done",
-      title: force ? "重新生成完成" : "合并概括完成",
-      detail: completionDetail(response.result, `已合并 ${response.result.postCount || basketItems.length} 条帖文，可直接复制。`),
-      percent: 100
-    };
-  } catch (error) {
-    mergeSlot.status = { state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 };
-  } finally {
-    removeTask("merge");
-  }
-  if (currentView === "merge") renderMergeView();
-}
+// —— 消息与事件 ——
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
@@ -1283,11 +2115,9 @@ chrome.runtime.onMessage.addListener((message) => {
     };
     mergeSlot.status = status;
     setTask("merge", { detail: status.detail, percent: status.percent });
-    if (currentView === "merge" && mergeFocus === "merge") renderStatus(status);
+    if (focus.kind === "merge" && !historyVisible) renderStatus(status);
   }
 });
-
-// —— Chrome 页签跟随：切到哪个页签，单条视图就显示哪个页签的状态与结果 ——
 
 chrome.tabs.onActivated?.addListener?.((info) => {
   void setActiveTab(info?.tabId);
@@ -1308,17 +2138,26 @@ chrome.windows?.onFocusChanged?.addListener?.((windowId) => {
 chrome.tabs.onRemoved?.addListener?.((tabId) => {
   pageSlots.delete(tabId);
   removeTask(pageTaskKey(tabId));
-  if (activeTabId === tabId) activeTabId = null;
+  if (activeTabId === tabId) {
+    activeTabId = null;
+    activeTabUrl = "";
+    if (focus.kind === "tab" && !historyVisible) renderFocus();
+  }
   refreshButtons();
 });
 
-// 任务条点击：页签任务跳到对应 Chrome 页签，其余任务切到自己的视图
+// 任务条点击：页签任务跳到对应 Chrome 页签，其余任务切到自己的结果来源
 elements.taskList.addEventListener("click", (event) => {
   const row = event.target?.closest?.(".task-item");
   if (!row) return;
   const task = tasks.get(row.dataset?.key);
   if (!task) return;
   if (task.kind === "page" && Number.isInteger(task.tabId)) {
+    focus = { kind: "tab" };
+    if (historyVisible) {
+      historyVisible = false;
+      applyViewVisibility();
+    }
     void (async () => {
       try {
         const tab = await chrome.tabs.update(task.tabId, { active: true });
@@ -1327,69 +2166,63 @@ elements.taskList.addEventListener("click", (event) => {
         // 页签可能已被关闭
       }
     })();
+    renderFocus();
     return;
   }
-  if (task.key === "shot:single") {
-    singleFocus = "shot";
-    switchView("single");
+  if (task.key === "shot:single" || task.key === "shot:merge") {
+    setFocus("shot");
     return;
   }
-  if (task.key === "shot:merge") {
-    mergeFocus = "shot";
-    switchView("merge");
-    return;
-  }
-  if (task.kind === "merge") switchView("merge");
+  if (task.kind === "merge") setFocus("merge");
 });
 
 elements.extractButton.addEventListener("click", runFullWorkflow);
-elements.linkRun.addEventListener("click", runLinkWorkflow);
-elements.linkInput.addEventListener("keydown", (event) => {
+elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
+elements.resultAddBasketButton.addEventListener("click", addFocusedResultToBasket);
+elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
+elements.historyButton.addEventListener("click", () => { void openHistory(); });
+elements.historyBackButton.addEventListener("click", closeHistory);
+
+elements.materialLinkButton.addEventListener("click", () => { void handleMaterialLink(); });
+elements.materialInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
-    runLinkWorkflow();
+    void handleMaterialLink();
   }
 });
-elements.settingsButton.addEventListener("click", () => chrome.runtime.openOptionsPage());
-elements.tabSingle.addEventListener("click", () => switchView("single"));
-elements.tabMerge.addEventListener("click", () => switchView("merge"));
-// 「历史」按钮是开关：进入历史屏，再点一次回到进入前的概括页签
-elements.historyButton.addEventListener("click", () => {
-  switchView(currentView === "history" ? tabBeforeHistory : "history");
+elements.linkChoiceOptions.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-choice]");
+  if (!button) return;
+  void chooseLinkTarget(button.dataset?.choice);
 });
-elements.historyBackButton.addEventListener("click", () => switchView(tabBeforeHistory));
-elements.mergeAddButton.addEventListener("click", addCurrentPostToBasket);
-for (const [view, zone, input, runButton, stagingList] of [
-  ["single", elements.shotSingleDropzone, elements.shotSingleInput, elements.shotSingleRun, elements.shotSingleStaging],
-  ["merge", elements.mergeDropzone, elements.screenshotInput, elements.screenshotRun, elements.screenshotStaging]
-]) {
-  zone.addEventListener("click", () => input.click());
-  zone.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      input.click();
-    }
-  });
-  input.addEventListener("change", () => {
-    stageScreenshotFiles(Array.from(input.files || []));
-    input.value = "";
-  });
-  runButton.addEventListener("click", () => commitStagedScreenshots(view));
-  stagingList.addEventListener("click", (event) => {
-    const button = event.target?.closest?.(".staging-remove");
-    if (!button) return;
-    stagedScreenshots[view] = stagedScreenshots[view].filter((item) => item.id !== button.dataset?.id);
-    renderStaging();
-  });
-  zone.addEventListener("dragenter", (event) => {
-    if (event.dataTransfer?.types?.includes("Files")) zone.dataset.dragover = "true";
-  });
-  zone.addEventListener("dragleave", (event) => {
-    if (!zone.contains(event.relatedTarget)) zone.dataset.dragover = "false";
-  });
-}
 
-// 粘贴/拖入的图片与文件选择共用同一个暂存区；纯文本粘贴不拦截，链接输入框可正常贴 URL。
+elements.materialDropzone.addEventListener("click", () => elements.materialFileInput.click());
+elements.materialDropzone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    elements.materialFileInput.click();
+  }
+});
+elements.materialFileInput.addEventListener("change", () => {
+  void stageScreenshotFiles(Array.from(elements.materialFileInput.files || []));
+  elements.materialFileInput.value = "";
+});
+elements.shotSummarizeButton.addEventListener("click", () => { void commitStagedScreenshots("summarize"); });
+elements.shotBasketButton.addEventListener("click", () => { void commitStagedScreenshots("basket"); });
+elements.materialStaging.addEventListener("click", (event) => {
+  const button = event.target?.closest?.(".staging-remove");
+  if (!button) return;
+  stagedScreenshots = stagedScreenshots.filter((item) => item.id !== button.dataset?.id);
+  renderStaging();
+});
+elements.materialDropzone.addEventListener("dragenter", (event) => {
+  if (event.dataTransfer?.types?.includes("Files")) elements.materialDropzone.dataset.dragover = "true";
+});
+elements.materialDropzone.addEventListener("dragleave", (event) => {
+  if (!elements.materialDropzone.contains(event.relatedTarget)) elements.materialDropzone.dataset.dragover = "false";
+});
+
+// 粘贴/拖入的图片与文件选择共用同一份暂存列表；纯文本粘贴不拦截，链接输入框可正常贴 URL。
 function imageFilesFromDataTransfer(dataTransfer) {
   return Array.from(dataTransfer?.files || []).filter((file) => file.type?.startsWith("image/"));
 }
@@ -1398,7 +2231,7 @@ document.addEventListener("paste", (event) => {
   const files = imageFilesFromDataTransfer(event.clipboardData);
   if (!files.length) return;
   event.preventDefault();
-  stageScreenshotFiles(files);
+  void stageScreenshotFiles(files);
 });
 
 document.addEventListener("dragover", (event) => {
@@ -1410,18 +2243,67 @@ document.addEventListener("drop", (event) => {
   if (!event.dataTransfer?.types?.includes("Files")) return;
   // 拦下浏览器“用拖入文件替换页面”的默认行为，再只挑图片进暂存区
   event.preventDefault();
-  elements.shotSingleDropzone.dataset.dragover = "false";
-  elements.mergeDropzone.dataset.dragover = "false";
+  elements.materialDropzone.dataset.dragover = "false";
   const files = imageFilesFromDataTransfer(event.dataTransfer);
-  if (files.length) stageScreenshotFiles(files);
+  if (files.length) void stageScreenshotFiles(files);
 });
-elements.mergeSummarizeButton.addEventListener("click", () => runMergeSummarize(false));
-elements.mergeClearButton.addEventListener("click", clearBasket);
-elements.mergeList.addEventListener("click", (event) => {
-  const row = event.target?.closest?.(".merge-item");
-  if (!row || event.target.closest?.(".merge-remove")) return;
-  removeBasketItem(row.dataset?.id);
+
+elements.mergeSummarizeButton.addEventListener("click", () => { void runMergeSummarize(false); });
+elements.mergeClearButton.addEventListener("click", () => { void clearBasket(); });
+elements.basketList.addEventListener("click", (event) => {
+  const row = event.target?.closest?.(".basket-item");
+  if (!row) return;
+  if (event.target.closest?.(".merge-remove")) {
+    void removeBasketItem(row.dataset?.id);
+    return;
+  }
+  const linkButton = event.target.closest?.("[data-basket-link]") ||
+    event.target.closest?.(".basket-link-value");
+  if (linkButton) openBasketLinkEditor(row.dataset?.id);
 });
+elements.basketLinkSave.addEventListener("click", () => { void saveBasketLink(); });
+elements.basketLinkCancel.addEventListener("click", closeBasketLinkEditor);
+elements.basketLinkInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void saveBasketLink();
+  }
+});
+elements.basketLinkHint.addEventListener("click", (event) => {
+  const choice = event.target?.closest?.("[data-link-choice]")?.dataset?.linkChoice;
+  if (!choice || !pendingBasketLinkConfirm) return;
+  const pending = pendingBasketLinkConfirm;
+  pendingBasketLinkConfirm = null;
+  elements.basketLinkHint.hidden = true;
+  if (choice === "cancel") return;
+  void applyGivenLinkToBasket(pending.id, pending.url, false)
+    .then(() => closeBasketLinkEditor())
+    .catch((error) => {
+      showBasketLinkHint(error?.message || "链接更新失败。");
+    });
+});
+
+elements.resultLinkEdit.addEventListener("click", openResultLinkEditor);
+elements.resultLinkSave.addEventListener("click", () => { void saveResultLink(); });
+elements.resultLinkCancel.addEventListener("click", closeResultLinkEditor);
+elements.resultLinkInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void saveResultLink();
+  }
+});
+elements.resultLinkHint.addEventListener("click", (event) => {
+  const choice = event.target?.closest?.("[data-link-choice]")?.dataset?.linkChoice;
+  if (!choice || !pendingResultLinkConfirm) return;
+  const pending = pendingResultLinkConfirm;
+  pendingResultLinkConfirm = null;
+  elements.resultLinkHint.hidden = true;
+  if (choice === "cancel") return;
+  void applyGivenLinkToResult(pending.url, false)
+    .then(() => closeResultLinkEditor())
+    .catch((error) => showResultLinkHint(error?.message || "链接更新失败。"));
+});
+
 elements.historyClearButton.addEventListener("click", clearHistoryRecords);
 elements.historyList.addEventListener("click", (event) => {
   const row = event.target?.closest?.(".history-item");
@@ -1449,12 +2331,12 @@ elements.copyButton.addEventListener("click", async () => {
 });
 
 elements.regenerateButton.addEventListener("click", async () => {
-  if (currentView === "merge") {
+  if (historyVisible || historyEntry) return;
+  if (focus.kind === "merge") {
     await runMergeSummarize(true);
     return;
   }
-  if (currentView !== "single") return;
-  if (singleFocus === "shot") {
+  if (focus.kind === "shot") {
     if (tasks.has("shot:single")) return;
     await regenerateShot();
     return;
@@ -1493,15 +2375,24 @@ async function hydrateWorkflows() {
 void (async () => {
   try {
     const tab = await getActiveTab();
-    if (tab?.id != null) activeTabId = tab.id;
+    if (tab?.id != null) {
+      activeTabId = tab.id;
+      activeTabUrl = String(tab.url || "");
+    }
   } catch {
     // 查询失败时等 onActivated 再跟进
   }
-  switchView("single");
-  restoreStoredView();
+  applyViewVisibility();
+  renderFocus();
   refreshBasket();
   refreshHistory();
   refreshButtons();
   restoreCurrentWorkflow();
   hydrateWorkflows();
+  // 视图不再需要记忆：清掉旧版本遗留的存储键
+  try {
+    void chrome.storage?.local?.remove?.("xhsPanelView")?.catch?.(() => {});
+  } catch {
+    // storage 不可用时忽略
+  }
 })();

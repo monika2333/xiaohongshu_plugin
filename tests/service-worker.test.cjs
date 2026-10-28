@@ -75,6 +75,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
+assert.equal(manifest.version, "0.13.0");
+assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
+assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+assert.equal(packageJson.version, "0.13.0");
 // 面板行为对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
 assert.equal(panelBehaviors.length, 1);
 assert.equal(panelBehaviors[0].openPanelOnActionClick, true);
@@ -753,6 +758,253 @@ const payload = {
 
   await context.clearHistory();
   assert.equal(storageState.local.xhsAiHistoryV1.length, 0);
+
+  // —— 链接解析：长链直接取路径 ID；短链按 路径 → 查询参数 → og:url 顺序解析 ——
+  const pathResolved = await context.resolveLink(
+    `https://www.xiaohongshu.com/explore/${payload.source.noteId}?xsec_token=test-token`
+  );
+  assert.equal(pathResolved.ok, true);
+  assert.equal(pathResolved.platform, "xiaohongshu");
+  assert.equal(pathResolved.noteId, payload.source.noteId);
+  const weiboResolved = await context.resolveLink("https://weibo.com/1257000310/RhJDvgyf3");
+  assert.equal(weiboResolved.platform, "weibo");
+  assert.equal(weiboResolved.noteId, "RhJDvgyf3");
+  // 纯数字路径段是 mid，可能不等同于 mblogid：按解析不出 ID 处理
+  const weiboNumericMid = await context.resolveLink("https://weibo.com/1257000310/5012345678901234");
+  assert.equal(weiboNumericMid.platform, "weibo");
+  assert.equal(weiboNumericMid.noteId, null);
+  await assert.rejects(context.resolveLink("https://example.com/not-a-post"), /只支持小红书或微博/);
+
+  const shortNoteId = "6ab3c400000000000200d10e";
+  let shortFetch = null;
+  context.fetch = async (url, options) => {
+    shortFetch = { url, options };
+    assert.equal(options.redirect, "follow");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    assert.ok(options.signal, "短链请求应带超时信号");
+    return {
+      ok: true,
+      url: `https://www.xiaohongshu.com/discovery/item/${shortNoteId}?xsec_token=tok&xsec_source=app_share`,
+      text: async () => "<html></html>"
+    };
+  };
+  const shortByPath = await context.resolveLink("https://xhslink.cn/o/path-id");
+  assert.equal(shortByPath.noteId, shortNoteId);
+  assert.equal(shortFetch.url, "https://xhslink.cn/o/path-id");
+
+  const encodedRedirect = encodeURIComponent(
+    `https://www.xiaohongshu.com/explore/${shortNoteId}?xsec_token=tok`
+  );
+  context.fetch = async () => ({
+    ok: true,
+    url: `https://www.xiaohongshu.com/website-login/captcha?redirectPath=${encodedRedirect}`,
+    text: async () => "<html></html>"
+  });
+  const shortByQuery = await context.resolveLink("https://xhslink.cn/o/query-id");
+  assert.equal(shortByQuery.noteId, shortNoteId);
+
+  // 风控/404 页会把 redirectPath 再套一层编码塞进 source 参数，需要解两层
+  const nestedRedirect = encodeURIComponent(
+    encodeURIComponent(`https://www.xiaohongshu.com/discovery/item/${shortNoteId}?xsec_token=tok`)
+  );
+  context.fetch = async () => ({
+    ok: true,
+    url: `https://www.xiaohongshu.com/404?source=${nestedRedirect}&error_code=300031`,
+    text: async () => "<html></html>"
+  });
+  const shortByNestedQuery = await context.resolveLink("https://xhslink.cn/o/nested-query");
+  assert.equal(shortByNestedQuery.noteId, shortNoteId);
+
+  context.fetch = async () => ({
+    ok: true,
+    url: "https://www.xiaohongshu.com/website-login/captcha",
+    text: async () => `<html><head><meta property="og:url" content="https://www.xiaohongshu.com/explore/${shortNoteId}?xsec_token=tok"></head></html>`
+  });
+  const shortByOgUrl = await context.resolveLink("https://xhslink.cn/o/og-id");
+  assert.equal(shortByOgUrl.noteId, shortNoteId);
+
+  context.fetch = async () => ({
+    ok: true,
+    url: "https://www.xiaohongshu.com/website-login/captcha",
+    text: async () => "<html><head><title>登录</title></head><body>没有帖子 ID</body></html>"
+  });
+  const shortUnresolved = await context.resolveLink("https://xhslink.cn/o/unresolved");
+  assert.equal(shortUnresolved.ok, true);
+  assert.equal(shortUnresolved.noteId, null);
+  assert.equal(shortUnresolved.platform, "xiaohongshu");
+
+  context.fetch = async () => {
+    const error = new Error("aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+  await assert.rejects(context.resolveLink("https://xhslink.cn/o/timeout"), /短链超时|解析短链超时/);
+
+  // —— 换链接：只写 givenUrl、重新渲染、同步历史，不调用模型 ——
+  await context.clearHistory();
+  const relinkPayload = { ...textOnlyPayload, source: { ...textOnlyPayload.source } };
+  const relinkStructured = {
+    headline: "换链接测试",
+    eventSummary: "用户发帖反映测试事件",
+    opinionPoints: ["部分网民关注进展"]
+  };
+  const relinkResult = {
+    text: "旧链接文本",
+    structured: relinkStructured,
+    historyId: "hist-relink",
+    evidence: { textModel: "test-model" },
+    notification: null,
+    createdAt: 100
+  };
+  await context.recordHistory(relinkPayload, relinkResult, "hist-relink");
+  let relinkModelCalls = 0;
+  context.fetch = async () => {
+    relinkModelCalls += 1;
+    throw new Error("换链接不应发起任何网络请求（短链已在面板解析）");
+  };
+  const relinked = await context.relinkResult({
+    payload: relinkPayload,
+    result: relinkResult,
+    givenUrl: "https://xhslink.cn/o/relinked",
+    verified: true
+  });
+  assert.equal(relinked.ok, true);
+  assert.equal(relinkModelCalls, 0);
+  assert.equal(relinked.payload.source.givenUrl, "https://xhslink.cn/o/relinked");
+  assert.equal(relinked.payload.source.givenUrlVerified, true);
+  assert.equal(relinked.payload.source.url, relinkPayload.source.url);
+  assert.match(relinked.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/relinked）$/);
+  assert.doesNotMatch(relinked.result.text, /xsec_token/);
+  let relinkHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-relink");
+  assert.equal(relinkHistory.url, "https://xhslink.cn/o/relinked");
+  assert.match(relinkHistory.result.text, /xhslink\.cn\/o\/relinked/);
+
+  // 清空 givenUrl：结果回到落地页地址，历史同步
+  const cleared = await context.relinkResult({
+    payload: relinked.payload,
+    result: relinked.result,
+    givenUrl: "",
+    verified: false
+  });
+  assert.equal(cleared.payload.source.givenUrl, undefined);
+  assert.equal(cleared.payload.source.givenUrlVerified, undefined);
+  assert.doesNotMatch(cleared.result.text, /xhslink\.cn/);
+  assert.match(cleared.result.text, /xsec_token=test-token/);
+  relinkHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-relink");
+  assert.equal(relinkHistory.url, cleared.payload.source.url);
+
+  // 带了页签信息时同步工作流快照，面板重开不会显示旧链接
+  const relinkSender = { tab: { id: 70 }, url: textOnlyPayload.source.url };
+  await context.recordCaptureProgress({
+    pageSessionId: "page-session-relink",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: textOnlyPayload.source.noteId,
+    noteTitle: "换链接测试",
+    title: "正在读取评论",
+    detail: "已加载 2 条一级评论",
+    count: 2
+  }, relinkSender);
+  const relinkedWorkflow = await context.relinkResult({
+    payload: relinkPayload,
+    result: relinkResult,
+    givenUrl: "https://xhslink.cn/o/workflow-link",
+    verified: true,
+    tabId: 70,
+    pageSessionId: "page-session-relink"
+  });
+  const workflowAfterRelink = await context.getWorkflowState(
+    70,
+    "page-session-relink",
+    textOnlyPayload.source.url
+  );
+  assert.equal(workflowAfterRelink.capture.source.givenUrl, "https://xhslink.cn/o/workflow-link");
+  assert.equal(workflowAfterRelink.result.text, relinkedWorkflow.result.text);
+  assert.equal(workflowAfterRelink.progress.title, "链接已更新");
+
+  // 截图帖文：只写 givenUrl，不设 givenUrlVerified；清空后回到“原帖已删除”
+  const screenshotRelinked = await context.relinkResult({
+    payload: screenshotPayload,
+    result: { text: "旧截图文本", structured: relinkStructured, historyId: null, evidence: {}, notification: null },
+    givenUrl: "https://xhslink.cn/o/shot-relink",
+    verified: true
+  });
+  assert.equal(screenshotRelinked.payload.source.givenUrl, "https://xhslink.cn/o/shot-relink");
+  assert.equal("givenUrlVerified" in screenshotRelinked.payload.source, false);
+  assert.match(screenshotRelinked.result.text, /xhslink\.cn\/o\/shot-relink/);
+  const screenshotCleared = await context.relinkResult({
+    payload: screenshotRelinked.payload,
+    result: screenshotRelinked.result,
+    givenUrl: "",
+    verified: false
+  });
+  assert.match(screenshotCleared.result.text, /原帖已删除，内容据用户上传截图整理/);
+
+  // —— 清单条目补链接：网页条目写 givenUrl，截图条目沿用 URL 合法性校验 ——
+  await context.clearMergeBasket();
+  await context.addToMergeBasket(textOnlyPayload);
+  await context.addToMergeBasket(screenshotPayload);
+  const linkedBasket = await context.setMergeItemLink({
+    id: `note:${textOnlyPayload.source.noteId}`,
+    givenUrl: "https://xhslink.cn/o/basket-note",
+    verified: false
+  });
+  assert.equal(linkedBasket.ok, true);
+  assert.equal(linkedBasket.basket[0].link, "https://xhslink.cn/o/basket-note");
+  assert.equal(linkedBasket.basket[0].linkVerified, false);
+  const linkedShotBasket = await context.setMergeItemLink({
+    id: "shot:shot-test-1",
+    givenUrl: "https://xhslink.cn/o/basket-shot",
+    verified: true
+  });
+  assert.equal(linkedShotBasket.basket[1].link, "https://xhslink.cn/o/basket-shot");
+  assert.equal(linkedShotBasket.basket[1].linkVerified, null);
+  const storedShotPayload = (await context.getMergeBasket()).find((item) => item.id === "shot:shot-test-1").payload;
+  assert.equal(storedShotPayload.source.givenUrl, "https://xhslink.cn/o/basket-shot");
+  assert.equal("givenUrlVerified" in storedShotPayload.source, false);
+  await assert.rejects(
+    context.setMergeItemLink({ id: "shot:shot-test-1", givenUrl: "https://example.com/not-xhs", verified: false }),
+    /小红书帖文地址/
+  );
+  await context.setMergeItemLink({ id: "shot:shot-test-1", givenUrl: "", verified: false });
+  assert.equal((await context.getMergeBasket()).find((item) => item.id === "shot:shot-test-1").payload.source.givenUrl, undefined);
+
+  // —— 合并结果原地重渲染：条目集合未变才更新，且不调用模型 ——
+  const mergeHistoryId = "hist-merge-rerender";
+  const mergeResult = {
+    text: "旧合并文本",
+    structured: {
+      headline: "网传某校学生婚姻选择言论引争议",
+      eventSummary: "账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事。",
+      opinionPoints: ["部分网民好奇事件全貌"]
+    },
+    itemIds: [`note:${textOnlyPayload.source.noteId}`, "shot:shot-test-1"],
+    historyId: mergeHistoryId,
+    postCount: 2,
+    evidence: { postCount: 2, textModel: "test-model" },
+    notification: null,
+    createdAt: 200
+  };
+  await context.recordMergedHistory([textOnlyPayload, screenshotPayload], mergeResult, mergeHistoryId);
+  let rerenderModelCalls = 0;
+  context.fetch = async () => {
+    rerenderModelCalls += 1;
+    throw new Error("合并结果重渲染不应调用模型");
+  };
+  const rerendered = await context.rerenderMergeResult({ result: mergeResult });
+  assert.equal(rerendered.ok, true);
+  assert.equal(rerenderModelCalls, 0);
+  assert.match(rerendered.result.text, /basket-note/);
+  assert.doesNotMatch(rerendered.result.text, /basket-shot/);
+  const rerenderHistory = (await context.listHistory()).items.find((entry) => entry.id === mergeHistoryId);
+  assert.equal(rerenderHistory.result.text, rerendered.result.text);
+
+  const unchangedMerge = await context.rerenderMergeResult({
+    result: { ...mergeResult, itemIds: [`note:${textOnlyPayload.source.noteId}`] }
+  });
+  assert.equal(unchangedMerge.ok, true);
+  assert.equal(unchangedMerge.unchanged, true);
+  assert.equal(unchangedMerge.result, undefined);
 
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {
