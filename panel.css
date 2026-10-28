@@ -318,7 +318,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .result-actions #result-add-basket-button,
 .result-actions #open-source-button { flex: 1 1 0; min-width: 0; }
 .icon-button { display: grid; flex: 0 0 40px; width: 40px; padding: 0; place-items: center; color: var(--ink); background: transparent; border: 1px solid var(--ink); }
-.icon-button svg { width: 18px; height: 18px; }
+.icon-button svg { width: 20px; height: 20px; }
 .icon-button:hover { background: var(--paper-deep); }
 .copy-button { color: var(--paper); background: var(--red); border: 1px solid var(--red-dark); }
 .secondary-button { color: var(--ink); background: transparent; border: 1px solid var(--ink); }
