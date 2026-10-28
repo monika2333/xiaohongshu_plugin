@@ -1,4 +1,4 @@
-﻿const assert = require("node:assert/strict");
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
@@ -80,6 +80,21 @@ assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 assert.equal(packageJson.version, "0.13.1");
+
+// —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
+const repoRoot = path.join(__dirname, "..");
+assert.ok(fs.existsSync(path.join(repoRoot, "AGENTS.md")), "缺少 AGENTS.md");
+assert.ok(fs.existsSync(path.join(repoRoot, ".memory", "context.md")), "缺少 .memory/context.md");
+assert.ok(fs.existsSync(path.join(repoRoot, ".memory", "tasks", "2026-10-28-v0.13.1-fixes.md")), "缺少 0.13.1 任务记录");
+assert.ok(!fs.existsSync(path.join(repoRoot, "DELIVERY.md")), "根目录不应再有 DELIVERY.md");
+const gitignoreText = fs.readFileSync(path.join(repoRoot, ".gitignore"), "utf8");
+assert.match(gitignoreText, /^\.worktrees\/\r?$/m);
+const packageScript = fs.readFileSync(path.join(repoRoot, "scripts", "package.ps1"), "utf8");
+for (const name of ["manifest.json", "panel.html", "panel.js", "options.html", "service-worker.js", "icons", "_locales"]) {
+  assert.ok(packageScript.includes(name), `打包白名单缺少 ${name}`);
+}
+assert.doesNotMatch(packageScript, /README\.md|PRIVACY_POLICY\.md|tests\//);
+
 // 面板行为对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
 assert.equal(panelBehaviors.length, 1);
 assert.equal(panelBehaviors[0].openPanelOnActionClick, true);
