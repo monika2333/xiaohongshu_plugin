@@ -265,6 +265,13 @@ for (const id of [
 ]) {
   assert.match(panelHtml, new RegExp(`id="${id}"`), `panel.html 缺少 #${id}`);
 }
+// 结果动作同一行：复制 → 加入清单 →（历史）打开原帖 → 重新生成图标
+const actionOrder = ["copy-button", "result-add-basket-button", "open-source-button", "regenerate-button"]
+  .map((id) => panelHtml.indexOf(`id="${id}"`));
+assert.ok(actionOrder.every((index) => index > 0), "结果动作按钮缺失");
+assert.ok(actionOrder.every((index, position) => position === 0 || index > actionOrder[position - 1]), "结果动作顺序不对");
+assert.match(panelHtml, /id="regenerate-button"[^>]*title="重新生成"/);
+assert.doesNotMatch(panelHtml, /id="regenerate-button"[^>]*>\s*重新生成/);
 
 async function settle(rounds = 6) {
   for (let index = 0; index < rounds; index += 1) {
