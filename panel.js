@@ -1995,7 +1995,10 @@ function renderResultLink() {
   elements.resultLinkDisplay.dataset.empty = link ? "false" : "true";
   elements.resultLinkDisplay.title = link || "补充原帖链接";
   const unverified = Boolean(link && payload?.source?.givenUrl && payload.source.givenUrlVerified === false);
-  elements.resultLinkState.hidden = !unverified;
+  // 编辑时链接本身变成输入框：隐藏展示文本和铅笔按钮，不另起一行
+  elements.resultLinkDisplay.hidden = resultLinkEditing;
+  elements.resultLinkEdit.hidden = resultLinkEditing;
+  elements.resultLinkState.hidden = resultLinkEditing || !unverified;
   elements.resultLinkEditor.hidden = !resultLinkEditing;
   if (!resultLinkEditing) elements.resultLinkHint.hidden = true;
 }
@@ -2008,6 +2011,7 @@ function openResultLinkEditor() {
   pendingResultLinkConfirm = null;
   renderResultLink();
   elements.resultLinkInput.focus?.();
+  elements.resultLinkInput.select?.();
 }
 
 function closeResultLinkEditor() {

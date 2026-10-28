@@ -999,6 +999,10 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   });
   elements["#result-link-edit"].listeners.click();
   assert.equal(elements["#result-link-editor"].hidden, false);
+  // 编辑时原链接行本身变成输入框，不再在下方另起一行
+  assert.equal(elements["#result-link-display"].hidden, true);
+  assert.equal(elements["#result-link-edit"].hidden, true);
+  assert.ok(elements["#result-link-input"].value.length > 0);
   elements["#result-link-input"].value = pageUrlById[8];
   await elements["#result-link-save"].listeners.click();
   await settle(8);
@@ -1036,6 +1040,8 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findRuntime("XHS_AI_RELINK")[0].verified, true);
   assert.match(elements["#result-text"].value, /换过的链接/);
   assert.equal(elements["#result-link-editor"].hidden, true);
+  assert.equal(elements["#result-link-display"].hidden, false);
+  assert.equal(elements["#result-link-edit"].hidden, false);
   assert.match(elements["#result-link-display"].textContent, /xhslink\.cn\/o\/matched7/);
 
   // 清空链接：网页帖文回到落地页地址
