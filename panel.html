@@ -120,8 +120,20 @@
             <div id="result-link-editor" class="result-link-editor" hidden>
               <input id="result-link-input" class="screenshot-url" type="url"
                 placeholder="粘贴这条帖文的链接（留空可删除）">
-              <button id="result-link-save" class="secondary-button" type="button">保存链接</button>
-              <button id="result-link-cancel" class="merge-clear" type="button">取消</button>
+              <button id="result-link-save" class="link-action-button save" type="button"
+                title="保存链接" aria-label="保存链接">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M5 12.8 9.4 17.2 19 6.4" fill="none" stroke="currentColor"
+                    stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button id="result-link-cancel" class="link-action-button cancel" type="button"
+                title="取消编辑" aria-label="取消编辑">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M6.4 6.4 17.6 17.6M17.6 6.4 6.4 17.6" fill="none" stroke="currentColor"
+                    stroke-width="2.2" stroke-linecap="round"/>
+                </svg>
+              </button>
             </div>
           </div>
           <p id="result-link-hint" class="link-hint" hidden></p>

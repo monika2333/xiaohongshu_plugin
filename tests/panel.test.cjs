@@ -274,6 +274,10 @@ assert.ok(actionOrder.every((index) => index > 0), "结果动作按钮缺失");
 assert.ok(actionOrder.every((index, position) => position === 0 || index > actionOrder[position - 1]), "结果动作顺序不对");
 assert.match(panelHtml, /id="regenerate-button"[^>]*title="重新生成"/);
 assert.doesNotMatch(panelHtml, /id="regenerate-button"[^>]*>\s*重新生成/);
+for (const [id, title] of [["result-link-save", "保存链接"], ["result-link-cancel", "取消编辑"]]) {
+  assert.match(panelHtml, new RegExp(`id="${id}"[^>]*title="${title}"`), `#${id} 缺少悬停提示`);
+  assert.doesNotMatch(panelHtml, new RegExp(`id="${id}"[^>]*>\\s*${title}`), `#${id} 不应是文字按钮`);
+}
 
 async function settle(rounds = 6) {
   for (let index = 0; index < rounds; index += 1) {

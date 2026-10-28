@@ -310,8 +310,14 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .link-edit-button:hover { color: var(--ink); border-color: var(--ink); }
 .result-link-editor { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 6px; }
 .result-link-editor .screenshot-url { flex: 1 1 auto; width: auto; min-width: 0; margin-top: 0; }
-.result-link-editor .secondary-button,
-.result-link-editor .merge-clear { flex: 0 0 auto; min-height: 30px; padding: 0 8px; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.link-action-button { display: grid; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; place-items: center; color: var(--ink); background: transparent; border: 0; border-radius: 50%; cursor: pointer; }
+.link-action-button svg { display: block; width: 20px; height: 20px; }
+.link-action-button.save { color: var(--green); }
+.link-action-button.save:hover,
+.link-action-button.save:focus-visible { background: rgba(36, 104, 74, .14); }
+.link-action-button.cancel:hover,
+.link-action-button.cancel:focus-visible { background: rgba(29, 26, 23, .09); }
+.link-action-button:focus-visible { outline: none; }
 #result-link-hint { margin-top: 6px; }
 .result-actions { display: flex; gap: 8px; align-items: stretch; margin-top: 9px; }
 .result-actions button { min-height: 38px; cursor: pointer; font-size: 11px; font-weight: 700; }
