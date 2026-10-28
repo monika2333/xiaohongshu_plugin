@@ -1023,7 +1023,7 @@ function currentTabCandidate() {
     kind: "tab",
     platform,
     noteId,
-    label: captureLabel(slot?.capture) || "当前帖文"
+    label: "当前帖文"
   };
 }
 
@@ -1417,7 +1417,7 @@ function showLinkChoice(url) {
   const options = [];
   const tabCandidate = currentTabCandidate();
   if (tabCandidate) {
-    options.push({ choice: "tab", kind: "tab", label: `当前帖文${tabCandidate.label ? `「${tabCandidate.label}」` : ""}` });
+    options.push({ choice: "tab", kind: "tab", label: "当前帖文" });
   }
   for (const item of basketItems) {
     options.push({ choice: `basket:${item.id}`, kind: "basket", label: basketItemLabel(item) });
@@ -1493,6 +1493,8 @@ async function handleMaterialLink() {
   elements.materialInput.value = "";
   if (taskPending) {
     showMaterialFeedback("任务完成后自动补上链接。");
+  } else if (labels.length === 1 && labels[0] === "当前帖文") {
+    showMaterialFeedback("已把链接补到当前帖文。");
   } else {
     showMaterialFeedback(`已把链接补到「${labels[0]}」${labels.length > 1 ? ` 等 ${labels.length} 处` : ""}。`);
   }

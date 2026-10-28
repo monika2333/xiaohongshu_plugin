@@ -863,7 +863,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK").length >= 1, true);
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK")[0].id, `note:${XHS_NOTE_7}`);
   assert.match(elements["#result-text"].value, /xhslink\.cn\/o\/note7short/);
-  assert.match(elements["#material-feedback"].textContent, /已把链接补到/);
+  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
   assert.equal(findRuntime("XHS_AI_MERGE_SUMMARIZE").length, 0);
   assert.equal(elements["#material-input"].value, "");
 
@@ -944,7 +944,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = "https://xhslink.cn/o/note10short";
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.match(elements["#material-feedback"].textContent, /已把链接补到/);
+  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
   assert.equal(elements["#material-input"].value, "");
   assert.equal(elements["#material-staging"].hidden, true);
   await elements["#extract-button"].listeners.click();
@@ -1149,7 +1149,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = shortLink11;
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.match(elements["#material-feedback"].textContent, /已把链接补到/);
+  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
   resolveElevenCapture();
   await elevenAddClick;
   await settle(10);
