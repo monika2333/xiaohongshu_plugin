@@ -106,7 +106,7 @@ let stagedScreenshots = [];
 
 // 结果与状态只属于当前焦点：tab 跟随活动页签，shot 归截图任务，merge 归合并任务。
 const DEFAULT_STATUS = {
-  tab: { state: "idle", title: "准备就绪", detail: "请先打开一个小红书帖文详情页。", percent: 0 },
+  tab: { state: "idle", title: "准备就绪", detail: "请先打开帖文详情页。", percent: 0 },
   shot: { state: "idle", title: "准备就绪", detail: "选择或粘贴截图后，可识别并概括，或加入清单。", percent: 0 },
   merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
 };

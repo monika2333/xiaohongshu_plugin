@@ -212,6 +212,9 @@ async function settle(rounds = 2) {
     });
     await settle();
 
+    assert.equal(elements["#status-title"].textContent, "准备就绪");
+    assert.equal(elements["#status-detail"].textContent, "请先打开帖文详情页。");
+
     await elements["#extract-button"].listeners.click();
 
     assert.equal(state.cookieChecks.length, 0);
