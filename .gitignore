@@ -1,4 +1,4 @@
-# 依赖与打包产物
+﻿# 依赖与打包产物
 node_modules/
 *.zip
 *.crx
@@ -7,3 +7,6 @@ node_modules/
 # 操作系统杂项
 .DS_Store
 Thumbs.db
+
+# git worktree
+.worktrees/

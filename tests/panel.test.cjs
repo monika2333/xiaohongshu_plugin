@@ -61,6 +61,7 @@ const selectors = [
   "#basket-single-hint",
   "#merge-summarize-button",
   "#merge-summarize-label",
+  "#merge-view-result-button",
   "#merge-clear-button",
   "#result-card",
   "#result-source-label",
@@ -93,6 +94,7 @@ const XHS_NOTE_7 = "6a76029300000000250070c1";
 const XHS_NOTE_8 = "6a76029300000000250070c2";
 const XHS_NOTE_10 = "6a76029300000000250070ca";
 const XHS_NOTE_11 = "6a76029300000000250070cb";
+const XHS_NOTE_12 = "6a76029300000000250070cc";
 const XHS_NOTE_99 = "6ab3c400000000000200d10e";
 const WEIBO_ID_9 = "RhJDvgyf3";
 const pageUrlById = {
@@ -101,6 +103,7 @@ const pageUrlById = {
   9: `https://weibo.com/1257000310/${WEIBO_ID_9}`,
   10: `https://www.xiaohongshu.com/explore/${XHS_NOTE_10}?xsec_token=test-token-10`,
   11: `https://www.xiaohongshu.com/explore/${XHS_NOTE_11}?xsec_token=test-token-11`,
+  12: `https://www.xiaohongshu.com/explore/${XHS_NOTE_12}?xsec_token=test-token-12`,
   99: `https://www.xiaohongshu.com/explore/${XHS_NOTE_99}?xsec_token=tok&xsec_source=app_share`
 };
 const noteIdById = {
@@ -109,6 +112,7 @@ const noteIdById = {
   9: WEIBO_ID_9,
   10: XHS_NOTE_10,
   11: XHS_NOTE_11,
+  12: XHS_NOTE_12,
   99: XHS_NOTE_99
 };
 const sessionById = {
@@ -117,6 +121,7 @@ const sessionById = {
   9: "page-session-9",
   10: "page-session-10",
   11: "page-session-11",
+  12: "page-session-12",
   99: "page-session-99"
 };
 let activeTabIdMock = 7;
@@ -255,7 +260,8 @@ for (const id of [
   "link-choice",
   "material-staging",
   "shot-summarize-button",
-  "shot-basket-button"
+  "shot-basket-button",
+  "merge-view-result-button"
 ]) {
   assert.match(panelHtml, new RegExp(`id="${id}"`), `panel.html 缺少 #${id}`);
 }
@@ -530,7 +536,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   // 合并焦点下重新生成走合并概括
   setRuntime(async (message) => {
     if (message.type === "XHS_AI_MERGE_SUMMARIZE") {
-      return { ok: true, result: makeResult("★ 合并概括测试\n9月10日，甲再次发帖。（小红书 https://example.com/a）", { postCount: 2, merged: true }) };
+      return { ok: true, result: makeResult("★ 合并概括测试\n9月10日，甲再次发帖。（小红书 https://example.com/a）", { postCount: 2, merged: true, itemIds: [`note:${XHS_NOTE_7}`, `note:${XHS_NOTE_8}`] }) };
     }
     return { ok: true };
   });
@@ -539,12 +545,23 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#status-title"].textContent, "重新生成完成");
   assert.match(elements["#result-text"].value, /再次发帖/);
 
-  // —— 切回页签 7：显示页签自己的结果，合并结果不带过来 ——
+  // —— 切回页签 7：显示页签自己的结果；清单区提供「查看合并结果」入口 ——
   await switchChromeTab(7);
   assert.equal(elements["#result-source-label"].textContent, "当前页签");
   assert.match(elements["#result-text"].value, /第一条概括/);
   assert.doesNotMatch(elements["#result-text"].value, /合并概括测试/);
   assert.equal(elements["#result-link-row"].hidden, false);
+  assert.equal(elements["#merge-view-result-button"].hidden, false);
+  assert.equal(elements["#merge-view-result-button"].textContent, "查看合并结果");
+  const mergeSummarizeCallsBeforeView = findRuntime("XHS_AI_MERGE_SUMMARIZE").length;
+  await elements["#merge-view-result-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#result-source-label"].textContent, "合并 2 条");
+  assert.match(elements["#result-text"].value, /再次发帖/);
+  assert.equal(findRuntime("XHS_AI_MERGE_SUMMARIZE").length, mergeSummarizeCallsBeforeView);
+  assert.equal(elements["#merge-view-result-button"].hidden, true);
+  await switchChromeTab(8);
+  await switchChromeTab(7);
 
   // —— 页签级重新生成：只锁页签按钮，任务条同步 ——
   let resolveRegenerate;
@@ -616,7 +633,8 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     ok: true,
     result: makeResult("★ 并行合并\n并行合并正文。（小红书 https://example.com/parallel）", {
       postCount: 2,
-      merged: true
+      merged: true,
+      itemIds: [`note:${XHS_NOTE_7}`, `note:${XHS_NOTE_8}`]
     })
   });
   await concurrentMergeClick;
@@ -1091,32 +1109,168 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
     return { ok: true };
   });
+  let resolveElevenCapture;
   setTabHandler(async (tabId, message) => {
     if (message.type === "XHS_PAGE_CONTEXT") return pageContextFor(tabId);
     if (message.type === "XHS_CAPTURE_FOR_MERGE") {
-      return {
-        ok: true,
-        payload: makeCapture(11, "帖文十一", "戊"),
-        topLevelCount: 3,
-        imageCount: 0
-      };
+      return new Promise((resolve) => {
+        resolveElevenCapture = () => resolve({
+          ok: true,
+          payload: makeCapture(11, "帖文十一", "戊"),
+          topLevelCount: 3,
+          imageCount: 0
+        });
+      });
     }
     throw new Error(`Unexpected tab message: ${message.type}`);
   });
   await switchChromeTab(11);
+  const elevenAddClick = elements["#merge-add-button"].listeners.click();
+  await settle();
+  assert.equal(findTabMessage("XHS_CAPTURE_FOR_MERGE").length, 1);
+  assert.equal(findRuntime("XHS_AI_MERGE_ADD").length, 0);
+  // 采集进行中贴入同一帖短链：以入清单那一刻槽位里的暂存链接为准
   elements["#material-input"].value = shortLink11;
   await elements["#material-link-button"].listeners.click();
   await settle(10);
   assert.match(elements["#material-feedback"].textContent, /已把链接补到/);
-  await elements["#merge-add-button"].listeners.click();
+  resolveElevenCapture();
+  await elevenAddClick;
   await settle(10);
-  assert.equal(findTabMessage("XHS_CAPTURE_FOR_MERGE").length, 1);
   const addedEleven = findRuntime("XHS_AI_MERGE_ADD")[0];
   assert.ok(addedEleven);
   assert.equal(addedEleven.payload.source.givenUrl, shortLink11);
   assert.equal(addedEleven.payload.source.givenUrlVerified, true);
   assert.equal(elements["#basket-count"].textContent, "5");
 
+  // 清单新增条目后，旧合并结果只能作为「上次合并」查看
+  assert.equal(elements["#merge-view-result-button"].hidden, false);
+  assert.equal(elements["#merge-view-result-button"].textContent, "查看上次合并结果");
+  const mergeCallsBeforeLastView = findRuntime("XHS_AI_MERGE_SUMMARIZE").length;
+  await elements["#merge-view-result-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#result-source-label"].textContent, "上次合并 2 条");
+  assert.match(elements["#result-text"].value, /并行合并/);
+  assert.equal(findRuntime("XHS_AI_MERGE_SUMMARIZE").length, mergeCallsBeforeLastView);
+
+  await switchChromeTab(8);
+  await switchChromeTab(7);
+
+  // —— 修复项 1：提取进行中贴入的链接，完成后立即补到新结果 ——
+  const shortLink12 = "https://xhslink.cn/o/note12short";
+  let resolveTwelveCapture;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_RESOLVE_LINK") {
+      return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_12, resolvedUrl: pageUrlById[12] };
+    }
+    if (message.type === "XHS_AI_RELINK") {
+      const source = { ...message.payload.source, givenUrl: message.givenUrl, givenUrlVerified: message.verified };
+      return {
+        ok: true,
+        payload: { ...message.payload, source },
+        result: { ...message.result, text: `★ 帖文十二概括\n正文。（小红书 ${message.givenUrl}）` }
+      };
+    }
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    return { ok: true };
+  });
+  setTabHandler(async (tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContextFor(tabId);
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      assert.equal(message.givenUrl, null);
+      return new Promise((resolve) => {
+        resolveTwelveCapture = () => resolve({
+          ok: true,
+          result: makeResult(`★ 帖文十二概括\n正文。（小红书 ${pageUrlById[12]}）`),
+          capture: makeCapture(12, "帖文十二", "己")
+        });
+      });
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  });
+  await switchChromeTab(12);
+  const twelveExtractClick = elements["#extract-button"].listeners.click();
+  await settle();
+  assert.equal(taskCount(), 1);
+  elements["#material-input"].value = shortLink12;
+  await elements["#material-link-button"].listeners.click();
+  await settle(10);
+  assert.match(elements["#material-feedback"].textContent, /任务完成后自动补上链接/);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, 0);
+  assert.equal(taskCount(), 1);
+  resolveTwelveCapture();
+  await twelveExtractClick;
+  await settle(12);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, 1);
+  assert.equal(findRuntime("XHS_AI_RELINK")[0].givenUrl, shortLink12);
+  assert.match(elements["#result-text"].value, /note12short/);
+  assert.equal(elements["#status-title"].textContent, "链接已更新");
+  assert.equal(taskCount(), 0);
+  assert.equal(findRuntime("XHS_AI_SUMMARIZE").length, 0);
+
+  // —— 修复项 3：重新生成进行中补链接，任务不提前消失，完成后应用 ——
+  await switchChromeTab(7);
+  const shortLinkBusy = "https://xhslink.cn/o/busy7";
+  let resolveBusyRegenerate;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_RESOLVE_LINK") {
+      return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_7, resolvedUrl: pageUrlById[7] };
+    }
+    if (message.type === "XHS_AI_RELINK") {
+      const source = { ...message.payload.source, givenUrl: message.givenUrl, givenUrlVerified: message.verified };
+      return {
+        ok: true,
+        payload: { ...message.payload, source },
+        result: { ...message.result, text: `★ 第一条概括\n补过链接。（小红书 ${message.givenUrl}）` }
+      };
+    }
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_SET_LINK") {
+      basket = basket.map((item) => item.id === message.id
+        ? { ...item, link: message.givenUrl, linkVerified: message.verified }
+        : item);
+      return { ok: true, basket };
+    }
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    return { ok: true };
+  });
+  setTabHandler(async (tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContextFor(tabId);
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      assert.equal(message.force, true);
+      return new Promise((resolve) => {
+        resolveBusyRegenerate = () => resolve({
+          ok: true,
+          result: makeResult(`★ 第一条概括\n旧链接版本。（小红书 ${pageUrlById[7]}）`),
+          capture: makeCapture(7, "第一条帖文", "甲")
+        });
+      });
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  });
+  const busyRegenerateClick = elements["#regenerate-button"].listeners.click();
+  await settle();
+  assert.equal(taskCount(), 1);
+  assert.equal(elements["#status-title"].textContent, "正在重新生成");
+  elements["#material-input"].value = shortLinkBusy;
+  await elements["#material-link-button"].listeners.click();
+  await settle(10);
+  assert.match(elements["#material-feedback"].textContent, /任务完成后自动补上链接/);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, 0);
+  assert.equal(taskCount(), 1);
+  assert.equal(elements["#status-title"].textContent, "正在重新生成");
+  resolveBusyRegenerate();
+  await busyRegenerateClick;
+  await settle(12);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, 1);
+  assert.equal(findRuntime("XHS_AI_RELINK")[0].givenUrl, shortLinkBusy);
+  assert.match(elements["#result-text"].value, /busy7/);
+  assert.equal(elements["#status-title"].textContent, "链接已更新");
+  assert.equal(taskCount(), 0);
+  assert.ok(findRuntime("XHS_AI_MERGE_SET_LINK").some((message) => message.id === `note:${XHS_NOTE_7}`));
+
+  await switchChromeTab(8);
   await switchChromeTab(7);
 
   // —— 历史屏：独立状态，可回看、打开原帖、删除与清空 ——

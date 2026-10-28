@@ -1,4 +1,4 @@
-const assert = require("node:assert/strict");
+﻿const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
@@ -75,11 +75,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.13.0");
+assert.equal(manifest.version, "0.13.1");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.13.0");
+assert.equal(packageJson.version, "0.13.1");
 // 面板行为对象产生自 vm realm，跨 realm 比较原型会失败，逐字段断言
 assert.equal(panelBehaviors.length, 1);
 assert.equal(panelBehaviors[0].openPanelOnActionClick, true);
@@ -895,16 +895,13 @@ const payload = {
   assert.equal(relinkHistory.url, cleared.payload.source.url);
 
   // 带了页签信息时同步工作流快照，面板重开不会显示旧链接
-  const relinkSender = { tab: { id: 70 }, url: textOnlyPayload.source.url };
-  await context.recordCaptureProgress({
-    pageSessionId: "page-session-relink",
+  await context.updateWorkflowState(70, "page-session-relink", {
     pageUrl: textOnlyPayload.source.url,
     noteId: textOnlyPayload.source.noteId,
     noteTitle: "换链接测试",
-    title: "正在读取评论",
-    detail: "已加载 2 条一级评论",
-    count: 2
-  }, relinkSender);
+    status: "done",
+    progress: { state: "done", title: "概括完成", detail: "已按固定格式生成。", percent: 100 }
+  });
   const relinkedWorkflow = await context.relinkResult({
     payload: relinkPayload,
     result: relinkResult,
@@ -921,6 +918,51 @@ const payload = {
   assert.equal(workflowAfterRelink.capture.source.givenUrl, "https://xhslink.cn/o/workflow-link");
   assert.equal(workflowAfterRelink.result.text, relinkedWorkflow.result.text);
   assert.equal(workflowAfterRelink.progress.title, "链接已更新");
+
+  // 页签任务仍在进行：不覆盖工作流快照，只返回重渲染结果
+  await context.recordCaptureProgress({
+    pageSessionId: "page-session-busy",
+    pageUrl: textOnlyPayload.source.url,
+    noteId: textOnlyPayload.source.noteId,
+    noteTitle: "任务进行中",
+    title: "正在读取评论",
+    detail: "已加载 1 条一级评论",
+    count: 1
+  }, { tab: { id: 71 }, url: textOnlyPayload.source.url });
+  const busyRelink = await context.relinkResult({
+    payload: relinkPayload,
+    result: relinkResult,
+    givenUrl: "https://xhslink.cn/o/busy-link",
+    verified: true,
+    tabId: 71,
+    pageSessionId: "page-session-busy"
+  });
+  assert.match(busyRelink.result.text, /busy-link/);
+  const busyWorkflow = await context.getWorkflowState(71, "page-session-busy", textOnlyPayload.source.url);
+  assert.equal(busyWorkflow.status, "working");
+  assert.equal(busyWorkflow.result, null);
+  assert.equal(busyWorkflow.capture, undefined);
+  assert.equal(busyWorkflow.progress.title, "正在读取评论");
+
+  // 页面会话不一致：同样不改写工作流
+  await context.updateWorkflowState(72, "page-session-old", {
+    pageUrl: textOnlyPayload.source.url,
+    noteId: textOnlyPayload.source.noteId,
+    status: "done",
+    progress: { state: "done", title: "概括完成", detail: "已完成。", percent: 100 }
+  });
+  await context.relinkResult({
+    payload: relinkPayload,
+    result: relinkResult,
+    givenUrl: "https://xhslink.cn/o/other-session",
+    verified: true,
+    tabId: 72,
+    pageSessionId: "page-session-new"
+  });
+  const crossSessionWorkflow = await context.getWorkflowState(72, "page-session-old", textOnlyPayload.source.url);
+  assert.equal(crossSessionWorkflow.status, "done");
+  assert.equal(crossSessionWorkflow.capture, undefined);
+  assert.equal(crossSessionWorkflow.progress.title, "概括完成");
 
   // 截图帖文：只写 givenUrl，不设 givenUrlVerified；清空后回到“原帖已删除”
   const screenshotRelinked = await context.relinkResult({

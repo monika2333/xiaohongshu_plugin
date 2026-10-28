@@ -1021,22 +1021,30 @@ async function relinkResult(message) {
   await updateHistoryEntry(result.historyId, { url: historyUrl, text: nextResult.text });
 
   const tabId = Number(message.tabId);
-  if (Number.isInteger(tabId) && cleanText(message.pageSessionId)) {
-    // 同步该页签的工作流快照，面板重开时不会又显示旧链接
-    await updateWorkflowState(tabId, cleanText(message.pageSessionId), {
-      pageUrl: cleanText(nextPayload.source.url) || message.pageUrl || "",
-      noteId: nextPayload.source.noteId || null,
-      status: "done",
-      capture: nextPayload,
-      result: nextResult,
-      error: null,
-      progress: {
-        state: "done",
-        title: "链接已更新",
-        detail: "链接已更新（未重新推送飞书）。",
-        percent: 100
-      }
-    }).catch(() => {});
+  const pageSessionId = cleanText(message.pageSessionId);
+  if (Number.isInteger(tabId) && pageSessionId) {
+    // 页签任务进行中（或页面会话已变）时不能用换链接结果覆盖工作流：
+    // 面板会把链接暂存到 pendingGivenUrl，等任务完成后再统一补上。
+    const stored = await chrome.storage.session.get(WORKFLOW_STATES_KEY);
+    const currentWorkflow = stored[WORKFLOW_STATES_KEY]?.[workflowKey(tabId)] || null;
+    const sameSession = currentWorkflow?.pageSessionId === pageSessionId;
+    if (currentWorkflow && sameSession && currentWorkflow.status !== "working") {
+      // 同步该页签的工作流快照，面板重开时不会又显示旧链接
+      await updateWorkflowState(tabId, pageSessionId, {
+        pageUrl: cleanText(nextPayload.source.url) || message.pageUrl || "",
+        noteId: nextPayload.source.noteId || null,
+        status: "done",
+        capture: nextPayload,
+        result: nextResult,
+        error: null,
+        progress: {
+          state: "done",
+          title: "链接已更新",
+          detail: "链接已更新（未重新推送飞书）。",
+          percent: 100
+        }
+      }).catch(() => {});
+    }
   }
   return { ok: true, payload: nextPayload, result: nextResult };
 }

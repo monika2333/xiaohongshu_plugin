@@ -45,6 +45,7 @@ const elements = {
   basketSingleHint: document.querySelector("#basket-single-hint"),
   mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
+  mergeViewResultButton: document.querySelector("#merge-view-result-button"),
   mergeClearButton: document.querySelector("#merge-clear-button"),
   resultCard: document.querySelector("#result-card"),
   resultSourceLabel: document.querySelector("#result-source-label"),
@@ -205,10 +206,19 @@ function renderEvidence(result) {
   ].filter(Boolean).join(" · ");
 }
 
+// 合并结果是否仍对应当前清单：条目集合变化后只能作为「上次合并」查看
+function mergeResultMatchesBasket(result) {
+  if (!result?.itemIds) return true;
+  const current = basketItems.map((item) => item.id).sort();
+  const recorded = result.itemIds.slice().sort();
+  return current.length === recorded.length &&
+    current.every((id, index) => id === recorded[index]);
+}
+
 function resultSourceLabel(result) {
   if (focus.kind === "merge") {
     const count = result.postCount || result.evidence?.postCount || basketItems.length;
-    return `合并 ${count} 条`;
+    return `${mergeResultMatchesBasket(result) ? "合并" : "上次合并"} ${count} 条`;
   }
   return focus.kind === "shot" ? "截图" : "当前页签";
 }
@@ -892,19 +902,14 @@ async function runFullWorkflow() {
       response.capture.source.givenUrlVerified = pendingGivenUrlVerified;
     }
     writePageResult(page.tabId, response.result, response.capture || null);
-    if (pendingGivenUrl) {
-      const slot = pageSlots.get(page.tabId);
-      if (slot) {
-        slot.pendingGivenUrl = null;
-        slot.pendingGivenUrlVerified = false;
-      }
-    }
     writePageStatus(page.tabId, {
       state: "done",
       title: "概括完成",
       detail: completionDetail(response.result, "已按固定格式生成，可直接复制。"),
       percent: 100
     });
+    // 提取期间用户可能又贴了链接：以完成那一刻槽位里的暂存链接为准
+    await settlePendingLinkAfterWorkflow(page.tabId, pendingGivenUrl);
   } catch (error) {
     writePageStatus(page.tabId, {
       state: "error",
@@ -981,6 +986,8 @@ async function regenerateActiveTab() {
       detail: completionDetail(response.result, "新版本已替换原概括。"),
       percent: 100
     });
+    // 重新生成期间贴入的链接以完成那一刻的暂存值为准
+    await settlePendingLinkAfterWorkflow(page.tabId, null);
   } catch (error) {
     writePageStatus(tabId, {
       state: "error",
@@ -1082,14 +1089,26 @@ function validateScreenshotLink(value) {
 }
 
 // 链接归位到当前页签：已有结果就直接换链接；还没提取就暂存，提取时带入。
-async function applyLinkToTab(url, verified) {
-  if (activeTabId == null) return false;
+// 页签任务进行中时一律只写 pendingGivenUrl，由任务完成后的统一检查补上。
+async function applyLinkToTab(url, verified, { announce = true } = {}) {
+  if (activeTabId == null) return "none";
   const slot = touchPageSlot(activeTabId);
+  const targetUrl = String(url || "").trim();
+  if (tasks.has(pageTaskKey(activeTabId))) {
+    if (!targetUrl) {
+      showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
+      return "blocked";
+    }
+    slot.pendingGivenUrl = targetUrl;
+    slot.pendingGivenUrlVerified = Boolean(verified);
+    if (announce) showMaterialFeedback("任务完成后自动补上链接。");
+    return "task-pending";
+  }
   if (slot.result && slot.capture) {
     const response = await requestRelink(
       slot.capture,
       slot.result,
-      url,
+      targetUrl,
       verified,
       { tabId: activeTabId, pageSessionId: slot.context?.pageSessionId || null }
     );
@@ -1103,13 +1122,13 @@ async function applyLinkToTab(url, verified) {
     };
     const id = payloadItemId(response.payload);
     if (id && basketItems.some((item) => item.id === id)) {
-      await setBasketItemLink(id, url, verified);
+      await setBasketItemLink(id, targetUrl, verified);
       await rerenderMergeIfPossible();
     }
     if (focus.kind === "tab" && !historyVisible) renderFocus();
-    return true;
+    return "applied";
   }
-  slot.pendingGivenUrl = String(url || "").trim() || null;
+  slot.pendingGivenUrl = targetUrl || null;
   slot.pendingGivenUrlVerified = Boolean(verified);
   // 同一条帖子已在清单里时一起同步，避免单条结果与清单条目各持一份链接
   const platform = currentPostPlatform();
@@ -1117,11 +1136,52 @@ async function applyLinkToTab(url, verified) {
     noteIdFromUrlForPlatform(platform, slot.context?.pageUrl || activeTabUrl);
   const itemId = noteId ? `${platform === "weibo" ? "wbnote" : "note"}:${noteId}` : null;
   if (itemId && basketItems.some((item) => item.id === itemId)) {
-    await setBasketItemLink(itemId, url, verified);
+    await setBasketItemLink(itemId, targetUrl, verified);
     await rerenderMergeIfPossible();
   }
   if (focus.kind === "tab" && !historyVisible) renderCurrentPost();
-  return Boolean(slot.pendingGivenUrl);
+  return slot.pendingGivenUrl ? "pending" : "none";
+}
+
+// 任务跑完后补上运行期间贴入的链接；只换链接，不调用模型、不重推飞书。
+async function settlePendingLinkAfterWorkflow(tabId, usedGivenUrl) {
+  const slot = pageSlots.get(tabId);
+  if (!slot) return;
+  const latest = String(slot.pendingGivenUrl || "").trim();
+  if (!latest) return;
+  if (latest === String(usedGivenUrl || "").trim()) {
+    slot.pendingGivenUrl = null;
+    slot.pendingGivenUrlVerified = false;
+    return;
+  }
+  if (!slot.result || !slot.capture) return;
+  const verified = Boolean(slot.pendingGivenUrlVerified);
+  try {
+    const response = await requestRelink(slot.capture, slot.result, latest, verified, {
+      tabId,
+      pageSessionId: slot.context?.pageSessionId || null
+    });
+    slot.capture = response.payload;
+    slot.result = response.result;
+    slot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: "链接已更新（未重新推送飞书）。",
+      percent: 100
+    };
+    const id = payloadItemId(response.payload);
+    if (id && basketItems.some((item) => item.id === id)) {
+      await setBasketItemLink(id, latest, verified);
+      await rerenderMergeIfPossible();
+    }
+    slot.pendingGivenUrl = null;
+    slot.pendingGivenUrlVerified = false;
+    if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
+    showMaterialFeedback("链接已更新（未重新推送飞书）。");
+  } catch (error) {
+    // 补链接失败时保留 pending，下一次提取或加入清单还会再试
+    showMaterialFeedback(error?.message || "链接更新失败。", "error");
+  }
 }
 
 async function requestRelink(payload, result, givenUrl, verified, context = {}) {
@@ -1141,8 +1201,21 @@ async function requestRelink(payload, result, givenUrl, verified, context = {}) 
 async function relinkCurrentResultOnly(url, verified) {
   const payload = focusedPayload();
   const result = currentResult();
-  if (!payload || !result) return;
+  if (!payload || !result) return "none";
   const slot = focus.kind === "tab" ? currentSlot() : null;
+  if (focus.kind === "tab" && activeTabId != null && tasks.has(pageTaskKey(activeTabId))) {
+    if (slot) {
+      const targetUrl = String(url || "").trim();
+      if (!targetUrl) {
+        showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
+        return "blocked";
+      }
+      slot.pendingGivenUrl = targetUrl;
+      slot.pendingGivenUrlVerified = Boolean(verified);
+      showMaterialFeedback("任务完成后自动补上链接。");
+    }
+    return "task-pending";
+  }
   const response = await requestRelink(payload, result, url, verified, focus.kind === "tab"
     ? { tabId: activeTabId, pageSessionId: slot?.context?.pageSessionId || null }
     : {});
@@ -1156,7 +1229,7 @@ async function relinkCurrentResultOnly(url, verified) {
       percent: 100
     };
   } else {
-    if (!slot) return;
+    if (!slot) return "none";
     slot.capture = response.payload;
     slot.result = response.result;
     slot.status = {
@@ -1166,6 +1239,7 @@ async function relinkCurrentResultOnly(url, verified) {
       percent: 100
     };
   }
+  return "applied";
 }
 
 async function setBasketItemLink(id, url, verified) {
@@ -1249,14 +1323,26 @@ async function saveResultLink() {
 }
 
 async function applyGivenLinkToResult(url, verified) {
-  await relinkCurrentResultOnly(url, verified);
+  if (focus.kind === "tab") {
+    const outcome = await applyLinkToTab(url, verified, { announce: false });
+    if (outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
+    if (outcome === "task-pending") {
+      showMaterialFeedback("任务完成后自动补上链接。");
+      renderFocus();
+      return;
+    }
+    renderFocus();
+    return;
+  }
+  const outcome = await relinkCurrentResultOnly(url, verified);
+  if (outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
   const payload = focusedPayload();
   const id = payloadItemId(payload);
   if (id && basketItems.some((item) => item.id === id)) {
     await setBasketItemLink(id, url, verified);
     await rerenderMergeIfPossible();
   }
-  if (focus.kind === "shot" || focus.kind === "tab") renderFocus();
+  if (focus.kind === "shot") renderFocus();
 }
 
 async function saveBasketLink() {
@@ -1318,12 +1404,19 @@ async function saveBasketLink() {
 async function applyGivenLinkToBasket(id, url, verified) {
   await setBasketItemLink(id, url, verified);
   const payload = focusedPayload();
+  let relinkOutcome = "none";
   if (payload && payloadItemId(payload) === id && currentResult()) {
-    await relinkCurrentResultOnly(url, verified);
+    relinkOutcome = await relinkCurrentResultOnly(url, verified);
   }
   await rerenderMergeIfPossible();
   renderFocus();
-  showMaterialFeedback("链接已更新（未重新推送飞书）。");
+  if (relinkOutcome === "blocked") {
+    showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
+  } else {
+    showMaterialFeedback(relinkOutcome === "task-pending"
+      ? "任务完成后自动补上链接。"
+      : "链接已更新（未重新推送飞书）。");
+  }
 }
 
 // 解析失败时绝不猜：内联列出当前帖文、清单每条（含截图）与新帖。
@@ -1388,11 +1481,13 @@ async function handleMaterialLink() {
     ? `${resolved.platform === "weibo" ? "wbnote" : "note"}:${resolved.noteId}`
     : null;
   const labels = [];
+  let taskPending = false;
   try {
     for (const match of matches) {
       if (match.kind === "tab") {
-        await applyLinkToTab(url, true);
-        labels.push(match.label);
+        const outcome = await applyLinkToTab(url, true, { announce: false });
+        if (outcome === "task-pending") taskPending = true;
+        else if (outcome === "applied" || outcome === "pending") labels.push(match.label);
       } else if (match.id !== tabMatchedItemId) {
         // 命中当前页签时 applyLinkToTab 已经同步了同一帖子的清单条目
         await applyLinkToBasketItemByMatch(match.id, url, true);
@@ -1404,7 +1499,11 @@ async function handleMaterialLink() {
     return;
   }
   elements.materialInput.value = "";
-  showMaterialFeedback(`已把链接补到「${labels[0]}」${labels.length > 1 ? ` 等 ${labels.length} 处` : ""}。`);
+  if (taskPending) {
+    showMaterialFeedback("任务完成后自动补上链接。");
+  } else {
+    showMaterialFeedback(`已把链接补到「${labels[0]}」${labels.length > 1 ? ` 等 ${labels.length} 处` : ""}。`);
+  }
   renderFocus();
 }
 
@@ -1431,8 +1530,10 @@ async function chooseLinkTarget(choice) {
   }
   try {
     if (choice === "tab") {
-      await applyLinkToTab(url, false);
-      showMaterialFeedback("已把链接关联到当前帖文。");
+      const outcome = await applyLinkToTab(url, false, { announce: false });
+      showMaterialFeedback(outcome === "task-pending"
+        ? "任务完成后自动补上链接。"
+        : "已把链接关联到当前帖文。");
     } else if (choice.startsWith("basket:")) {
       const id = choice.slice("basket:".length);
       await applyGivenLinkToBasket(id, url, false);
@@ -1482,12 +1583,20 @@ function renderBasket() {
       `</li>`;
   }).join("");
   const count = basketItems.length;
-  elements.basketPanel.hidden = count === 0;
+  const hasMergeResult = Boolean(mergeSlot.result);
+  elements.basketPanel.hidden = count === 0 && !hasMergeResult;
   elements.basketCount.textContent = String(count);
   elements.mergeClearButton.hidden = count === 0;
   elements.mergeSummarizeButton.hidden = count < 2;
   elements.mergeSummarizeLabel.textContent = `合并概括（${count} 条）`;
   elements.basketSingleHint.hidden = count !== 1;
+  // 合并结果被切走后，清单区保留一个回到结果的入口；清单变了则标为「上次合并」
+  elements.mergeViewResultButton.hidden = !hasMergeResult || focus.kind === "merge" || historyVisible;
+  if (!elements.mergeViewResultButton.hidden) {
+    elements.mergeViewResultButton.textContent = mergeResultMatchesBasket(mergeSlot.result)
+      ? "查看合并结果"
+      : "查看上次合并结果";
+  }
   elements.basketLinkEditor.hidden = !basketLinkEditingId;
   if (basketLinkEditingId) {
     const item = basketItems.find((entry) => entry.id === basketLinkEditingId);
@@ -1497,6 +1606,9 @@ function renderBasket() {
     const row = elements.basketList.querySelector?.(selector);
     if (row?.appendChild) row.appendChild(elements.basketLinkEditor);
     elements.basketLinkEditor.hidden = false;
+  }
+  if (focus.kind === "merge" && mergeSlot.result && !elements.resultCard.hidden) {
+    elements.resultSourceLabel.textContent = resultSourceLabel(mergeSlot.result);
   }
   refreshResultBasketButton();
 }
@@ -2249,6 +2361,9 @@ document.addEventListener("drop", (event) => {
 });
 
 elements.mergeSummarizeButton.addEventListener("click", () => { void runMergeSummarize(false); });
+elements.mergeViewResultButton.addEventListener("click", () => {
+  if (mergeSlot.result) setFocus("merge");
+});
 elements.mergeClearButton.addEventListener("click", () => { void clearBasket(); });
 elements.basketList.addEventListener("click", (event) => {
   const row = event.target?.closest?.(".basket-item");

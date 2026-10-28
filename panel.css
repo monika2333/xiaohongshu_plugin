@@ -250,6 +250,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .merge-summarize .button-arrow { color: var(--paper); }
 .merge-summarize:hover { transform: translate(-1px,-1px); box-shadow: 6px 6px 0 var(--ink); }
 .merge-summarize:active { transform: translate(3px,3px); box-shadow: 1px 1px 0 var(--ink); }
+.merge-view-result { width: 100%; min-height: 36px; margin-top: 10px; cursor: pointer; font-size: 11px; font-weight: 700; }
 
 .basket-item { display: block; }
 .basket-main { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; }

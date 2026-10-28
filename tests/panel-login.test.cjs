@@ -59,6 +59,7 @@ const selectors = [
   "#basket-single-hint",
   "#merge-summarize-button",
   "#merge-summarize-label",
+  "#merge-view-result-button",
   "#merge-clear-button",
   "#result-card",
   "#result-source-label",
