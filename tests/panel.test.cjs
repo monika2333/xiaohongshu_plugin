@@ -399,7 +399,9 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#result-card"].hidden, false);
   assert.match(elements["#result-text"].value, /第二条概括/);
   assert.equal(elements["#result-source-label"].textContent, "当前页签");
-  assert.equal(elements["#current-post-label"].textContent, "第二条帖文");
+  // 提取完成后只保留平台徽标，不在按钮上方重复渲染标题/正文
+  assert.equal(elements["#current-post-label"].hidden, true);
+  assert.equal(elements["#current-post-label"].textContent, "");
   assert.equal(elements["#status-title"].textContent, "概括完成");
   assert.equal(elements["#status-count"].textContent, "100%");
   assert.equal(elements["#result-add-basket-button"].textContent, "加入清单");
@@ -425,6 +427,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#result-card"].hidden, false);
   assert.match(elements["#result-text"].value, /第一条概括/);
   assert.doesNotMatch(elements["#result-text"].value, /第二条概括/);
+  assert.equal(elements["#current-post-label"].hidden, true);
   assert.equal(taskCount(), 0);
   assert.equal(elements["#task-strip"].hidden, true);
 

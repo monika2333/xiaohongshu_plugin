@@ -1,4 +1,4 @@
-﻿const assert = require("node:assert/strict");
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
@@ -190,6 +190,9 @@ async function settle(rounds = 2) {
     });
     await settle();
 
+    assert.equal(elements["#current-post-badge"].textContent, "微博");
+    assert.equal(elements["#current-post-label"].hidden, true);
+
     await elements["#extract-button"].listeners.click();
 
     assert.equal(state.pageMessages, 3); // 恢复工作流 + PAGE_CONTEXT + 采集概括
@@ -215,6 +218,8 @@ async function settle(rounds = 2) {
     assert.equal(state.scriptExecutions.length, 0);
     assert.equal(state.pageMessages, 0);
     assert.match(elements["#status-detail"].textContent, /请先打开小红书或微博帖文详情页/);
+    assert.equal(elements["#current-post-label"].hidden, false);
+    assert.match(elements["#current-post-label"].textContent, /打开小红书或微博帖文详情页后可在此提取/);
   }
 
   process.stdout.write("panel login preflight tests passed\n");

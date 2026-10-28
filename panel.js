@@ -173,19 +173,11 @@ function renderCurrentPost() {
     elements.currentPostBadge.textContent = badge.label;
     elements.currentPostBadge.className = `merge-badge ${badge.className}`;
   }
-  const capture = slot?.capture;
-  let label = "";
-  if (platform && capture) {
-    label = String(capture.note?.title || "").trim();
-    if (!label) {
-      const author = String(capture.note?.author || "").trim();
-      if (author) label = `@${author}`;
-    }
-  }
+  // 帖文页只显示平台徽标：提取到的标题/正文已经进入结果卡，不再在按钮上方重复铺开
   elements.currentPostLabel.textContent = platform
-    ? (label || "")
+    ? ""
     : "打开小红书或微博帖文详情页后可在此提取。";
-  elements.currentPostLabel.hidden = Boolean(platform && !label);
+  elements.currentPostLabel.hidden = Boolean(platform);
 }
 
 function renderEvidence(result) {
