@@ -4,6 +4,9 @@ const WEIBO_LOGIN_REQUIRED_MESSAGE = "检测到当前微博页面尚未登录。
 // 链接概括：等待短链跳转与帖文渲染的总时长和轮询间隔
 const LINK_OPEN_TIMEOUT_MS = 25000;
 const LINK_POLL_INTERVAL_MS = 600;
+// 补链接后给用户的反馈：编辑过的结果无法自动替换时，链接仍已保存，不能当错误提示
+const RELINK_UPDATED_HINT = "链接已更新（未重新推送飞书）。";
+const RELINK_KEPT_HINT = "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -93,6 +96,7 @@ let feishuConfigured = false;
 let linkResolveToken = 0;
 let historyClearResetTimer = null;
 let historyHintResetTimer = null;
+let lastMergeLinkChange = null;
 const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。";
 
 // —— 并行任务模型 ——
@@ -1013,6 +1017,15 @@ function clearMaterialFeedback() {
   delete elements.materialFeedback.dataset.state;
 }
 
+// 一次补链接可能同时更新单条与合并结果；只要有一处因正文被编辑而未能替换，就提示用户手动改。
+function relinkFeedbackText(...linkApplied) {
+  return linkApplied.includes("kept") ? RELINK_KEPT_HINT : RELINK_UPDATED_HINT;
+}
+
+function showRelinkFeedback(...linkApplied) {
+  showMaterialFeedback(relinkFeedbackText(...linkApplied));
+}
+
 function hideLinkChoice() {
   pendingLinkChoice = null;
   elements.linkChoice.hidden = true;
@@ -1090,18 +1103,18 @@ function validateScreenshotLink(value) {
 // 链接归位到当前页签：已有结果就直接换链接；还没提取就暂存，提取时带入。
 // 页签任务进行中时一律只写 pendingGivenUrl，由任务完成后的统一检查补上。
 async function applyLinkToTab(url, verified, { announce = true } = {}) {
-  if (activeTabId == null) return "none";
+  if (activeTabId == null) return { outcome: "none", linkApplied: null };
   const slot = touchPageSlot(activeTabId);
   const targetUrl = String(url || "").trim();
   if (tasks.has(pageTaskKey(activeTabId))) {
     if (!targetUrl) {
       showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
-      return "blocked";
+      return { outcome: "blocked", linkApplied: null };
     }
     slot.pendingGivenUrl = targetUrl;
     slot.pendingGivenUrlVerified = Boolean(verified);
     if (announce) showMaterialFeedback("任务完成后自动补上链接。");
-    return "task-pending";
+    return { outcome: "task-pending", linkApplied: null };
   }
   if (slot.result && slot.capture) {
     const response = await requestRelink(
@@ -1113,19 +1126,21 @@ async function applyLinkToTab(url, verified, { announce = true } = {}) {
     );
     slot.capture = response.payload;
     slot.result = response.result;
-    slot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: "链接已更新（未重新推送飞书）。",
-      percent: 100
-    };
+    let linkApplied = response.linkApplied || "rerendered";
     const id = payloadItemId(response.payload);
     if (id && basketItems.some((item) => item.id === id)) {
       await setBasketItemLink(id, targetUrl, verified);
-      await rerenderMergeIfPossible();
+      const mergeApplied = await rerenderMergeIfPossible();
+      if (mergeApplied === "kept") linkApplied = "kept";
     }
+    slot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: relinkFeedbackText(linkApplied),
+      percent: 100
+    };
     if (focus.kind === "tab" && !historyVisible) renderFocus();
-    return "applied";
+    return { outcome: "applied", linkApplied };
   }
   slot.pendingGivenUrl = targetUrl || null;
   slot.pendingGivenUrlVerified = Boolean(verified);
@@ -1134,12 +1149,14 @@ async function applyLinkToTab(url, verified, { announce = true } = {}) {
   const noteId = slot.context?.noteId ||
     noteIdFromUrlForPlatform(platform, slot.context?.pageUrl || activeTabUrl);
   const itemId = noteId ? `${platform === "weibo" ? "wbnote" : "note"}:${noteId}` : null;
+  let mergeApplied = null;
   if (itemId && basketItems.some((item) => item.id === itemId)) {
     await setBasketItemLink(itemId, targetUrl, verified);
-    await rerenderMergeIfPossible();
+    mergeApplied = await rerenderMergeIfPossible();
   }
   if (focus.kind === "tab" && !historyVisible) renderCurrentPost();
-  return slot.pendingGivenUrl ? "pending" : "none";
+  if (!slot.pendingGivenUrl) return { outcome: "none", linkApplied: null };
+  return { outcome: "pending", linkApplied: mergeApplied };
 }
 
 // 任务跑完后补上运行期间贴入的链接；只换链接，不调用模型、不重推飞书。
@@ -1162,21 +1179,23 @@ async function settlePendingLinkAfterWorkflow(tabId, usedGivenUrl) {
     });
     slot.capture = response.payload;
     slot.result = response.result;
-    slot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: "链接已更新（未重新推送飞书）。",
-      percent: 100
-    };
+    let linkApplied = response.linkApplied || "rerendered";
     const id = payloadItemId(response.payload);
     if (id && basketItems.some((item) => item.id === id)) {
       await setBasketItemLink(id, latest, verified);
-      await rerenderMergeIfPossible();
+      const mergeApplied = await rerenderMergeIfPossible();
+      if (mergeApplied === "kept") linkApplied = "kept";
     }
+    slot.status = {
+      state: "done",
+      title: "链接已更新",
+      detail: relinkFeedbackText(linkApplied),
+      percent: 100
+    };
     slot.pendingGivenUrl = null;
     slot.pendingGivenUrlVerified = false;
     if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
-    showMaterialFeedback("链接已更新（未重新推送飞书）。");
+    showMaterialFeedback(relinkFeedbackText(linkApplied));
   } catch (error) {
     // 补链接失败时保留 pending，下一次提取或加入清单还会再试
     showMaterialFeedback(error?.message || "链接更新失败。", "error");
@@ -1200,45 +1219,46 @@ async function requestRelink(payload, result, givenUrl, verified, context = {}) 
 async function relinkCurrentResultOnly(url, verified) {
   const payload = focusedPayload();
   const result = currentResult();
-  if (!payload || !result) return "none";
+  if (!payload || !result) return { outcome: "none", linkApplied: null };
   const slot = focus.kind === "tab" ? currentSlot() : null;
   if (focus.kind === "tab" && activeTabId != null && tasks.has(pageTaskKey(activeTabId))) {
     if (slot) {
       const targetUrl = String(url || "").trim();
       if (!targetUrl) {
         showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
-        return "blocked";
+        return { outcome: "blocked", linkApplied: null };
       }
       slot.pendingGivenUrl = targetUrl;
       slot.pendingGivenUrlVerified = Boolean(verified);
       showMaterialFeedback("任务完成后自动补上链接。");
     }
-    return "task-pending";
+    return { outcome: "task-pending", linkApplied: null };
   }
   const response = await requestRelink(payload, result, url, verified, focus.kind === "tab"
     ? { tabId: activeTabId, pageSessionId: slot?.context?.pageSessionId || null }
     : {});
+  const linkApplied = response.linkApplied || "rerendered";
   if (focus.kind === "shot") {
     shotSlot.capture = response.payload;
     shotSlot.result = response.result;
     shotSlot.status = {
       state: "done",
       title: "链接已更新",
-      detail: "链接已更新（未重新推送飞书）。",
+      detail: relinkFeedbackText(linkApplied),
       percent: 100
     };
   } else {
-    if (!slot) return "none";
+    if (!slot) return { outcome: "none", linkApplied: null };
     slot.capture = response.payload;
     slot.result = response.result;
     slot.status = {
       state: "done",
       title: "链接已更新",
-      detail: "链接已更新（未重新推送飞书）。",
+      detail: relinkFeedbackText(linkApplied),
       percent: 100
     };
   }
-  return "applied";
+  return { outcome: "applied", linkApplied };
 }
 
 async function setBasketItemLink(id, url, verified) {
@@ -1249,23 +1269,34 @@ async function setBasketItemLink(id, url, verified) {
     verified
   });
   if (!response?.ok) throw new Error(response?.error || "清单链接更新失败。");
+  // rerender 需要改动前后的来源后缀与链接，才能保住合并结果里的手工编辑
+  lastMergeLinkChange = response.linkChange || null;
   basketItems = response.basket || [];
   renderBasket();
 }
 
 async function rerenderMergeIfPossible() {
-  if (!mergeSlot.result) return;
+  if (!mergeSlot.result) {
+    lastMergeLinkChange = null;
+    return null;
+  }
+  const linkChange = lastMergeLinkChange;
+  lastMergeLinkChange = null;
   try {
     const response = await chrome.runtime.sendMessage({
       type: "XHS_AI_MERGE_RERENDER",
-      result: mergeSlot.result
+      result: mergeSlot.result,
+      ...(linkChange ? { linkChange } : {})
     });
     if (response?.ok && response.result) {
       mergeSlot.result = response.result;
       if (focus.kind === "merge" && !historyVisible) renderResult(mergeSlot.result);
+      return response.linkApplied || null;
     }
+    return null;
   } catch {
     // 合并结果留在原样，不影响单条链接已经保存
+    return null;
   }
 }
 
@@ -1323,25 +1354,33 @@ async function saveResultLink() {
 
 async function applyGivenLinkToResult(url, verified) {
   if (focus.kind === "tab") {
-    const outcome = await applyLinkToTab(url, verified, { announce: false });
-    if (outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
-    if (outcome === "task-pending") {
+    const applied = await applyLinkToTab(url, verified, { announce: false });
+    if (applied.outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
+    if (applied.outcome === "task-pending") {
       showMaterialFeedback("任务完成后自动补上链接。");
       renderFocus();
       return;
     }
     renderFocus();
+    if (applied.outcome === "applied") showRelinkFeedback(applied.linkApplied);
     return;
   }
-  const outcome = await relinkCurrentResultOnly(url, verified);
-  if (outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
+  const applied = await relinkCurrentResultOnly(url, verified);
+  if (applied.outcome === "blocked") throw new Error("任务进行中，完成后才能清空链接。");
+  if (applied.outcome === "task-pending") {
+    renderFocus();
+    return;
+  }
+  let linkApplied = applied.linkApplied;
   const payload = focusedPayload();
   const id = payloadItemId(payload);
   if (id && basketItems.some((item) => item.id === id)) {
     await setBasketItemLink(id, url, verified);
-    await rerenderMergeIfPossible();
+    const mergeApplied = await rerenderMergeIfPossible();
+    if (mergeApplied === "kept") linkApplied = "kept";
   }
   if (focus.kind === "shot") renderFocus();
+  if (linkApplied) showRelinkFeedback(linkApplied);
 }
 
 async function saveBasketLink() {
@@ -1404,17 +1443,21 @@ async function applyGivenLinkToBasket(id, url, verified) {
   await setBasketItemLink(id, url, verified);
   const payload = focusedPayload();
   let relinkOutcome = "none";
+  let linkApplied = null;
   if (payload && payloadItemId(payload) === id && currentResult()) {
-    relinkOutcome = await relinkCurrentResultOnly(url, verified);
+    const applied = await relinkCurrentResultOnly(url, verified);
+    relinkOutcome = applied.outcome;
+    linkApplied = applied.linkApplied;
   }
-  await rerenderMergeIfPossible();
+  const mergeApplied = await rerenderMergeIfPossible();
+  if (mergeApplied === "kept") linkApplied = "kept";
   renderFocus();
   if (relinkOutcome === "blocked") {
     showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
+  } else if (relinkOutcome === "task-pending") {
+    showMaterialFeedback("任务完成后自动补上链接。");
   } else {
-    showMaterialFeedback(relinkOutcome === "task-pending"
-      ? "任务完成后自动补上链接。"
-      : "链接已更新（未重新推送飞书）。");
+    showRelinkFeedback(linkApplied || mergeApplied || "rerendered");
   }
 }
 
@@ -1481,16 +1524,21 @@ async function handleMaterialLink() {
     : null;
   const labels = [];
   let taskPending = false;
+  let kept = false;
   try {
     for (const match of matches) {
       if (match.kind === "tab") {
-        const outcome = await applyLinkToTab(url, true, { announce: false });
-        if (outcome === "task-pending") taskPending = true;
-        else if (outcome === "applied" || outcome === "pending") labels.push(match.label);
+        const applied = await applyLinkToTab(url, true, { announce: false });
+        if (applied.outcome === "task-pending") taskPending = true;
+        else if (applied.outcome === "applied" || applied.outcome === "pending") {
+          labels.push(match.label);
+          if (applied.linkApplied === "kept") kept = true;
+        }
       } else if (match.id !== tabMatchedItemId) {
         // 命中当前页签时 applyLinkToTab 已经同步了同一帖子的清单条目
-        await applyLinkToBasketItemByMatch(match.id, url, true);
+        const applied = await applyLinkToBasketItemByMatch(match.id, url, true);
         labels.push(match.label);
+        if (applied.linkApplied === "kept") kept = true;
       }
     }
   } catch (error) {
@@ -1500,10 +1548,10 @@ async function handleMaterialLink() {
   elements.materialInput.value = "";
   if (taskPending) {
     showMaterialFeedback("任务完成后自动补上链接。");
-  } else if (labels.length === 1 && labels[0] === "当前帖文") {
-    showMaterialFeedback("已把链接补到当前帖文。");
+  } else if (kept) {
+    showRelinkFeedback("kept");
   } else {
-    showMaterialFeedback(`已把链接补到「${labels[0]}」${labels.length > 1 ? ` 等 ${labels.length} 处` : ""}。`);
+    showRelinkFeedback(labels.length ? "rerendered" : null);
   }
   renderFocus();
 }
@@ -1511,11 +1559,15 @@ async function handleMaterialLink() {
 // 从「添加素材」匹配到清单条目时的入口：不切换焦点
 async function applyLinkToBasketItemByMatch(id, url, verified) {
   await setBasketItemLink(id, url, verified);
+  let linkApplied = null;
   const payload = focusedPayload();
   if (payload && payloadItemId(payload) === id && currentResult()) {
-    await relinkCurrentResultOnly(url, verified);
+    const applied = await relinkCurrentResultOnly(url, verified);
+    if (applied.outcome === "applied") linkApplied = applied.linkApplied;
   }
-  await rerenderMergeIfPossible();
+  const mergeApplied = await rerenderMergeIfPossible();
+  if (mergeApplied === "kept") linkApplied = "kept";
+  return { linkApplied: linkApplied || mergeApplied };
 }
 
 async function chooseLinkTarget(choice) {
@@ -1531,15 +1583,16 @@ async function chooseLinkTarget(choice) {
   }
   try {
     if (choice === "tab") {
-      const outcome = await applyLinkToTab(url, false, { announce: false });
-      showMaterialFeedback(outcome === "task-pending"
-        ? "任务完成后自动补上链接。"
-        : "已把链接关联到当前帖文。");
+      const applied = await applyLinkToTab(url, false, { announce: false });
+      if (applied.outcome === "task-pending") {
+        showMaterialFeedback("任务完成后自动补上链接。");
+      } else {
+        showRelinkFeedback(applied.linkApplied || "rerendered");
+      }
     } else if (choice.startsWith("basket:")) {
       const id = choice.slice("basket:".length);
+      // applyGivenLinkToBasket 已经按 linkApplied 写好反馈
       await applyGivenLinkToBasket(id, url, false);
-      const item = basketItems.find((entry) => entry.id === id);
-      showMaterialFeedback(`已把链接补到${basketItemLabel(item)}。`);
     }
   } catch (error) {
     showMaterialFeedback(error?.message || "链接归位失败。", "error");

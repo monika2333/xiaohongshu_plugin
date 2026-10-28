@@ -28,6 +28,7 @@
 3. 本次如果产生了用户确认过的设计决定，追加到 `.memory/decisions.md`。
 4. `.memory/context.md` 里的事实如果变了（新模块、新消息、新约束、版本号），改写对应段落，保持它反映当前状态。不要往里追加流水账。
 5. 在给用户的回复里写明任务记录的路径。
+6. 纯样式或文案的小调整，同一会话内合并为一份任务记录；任务记录和代码放在同一个提交里，不再单独提交「补充任务记录」。
 
 ## 写入 `.memory` 的规矩
 
@@ -35,6 +36,7 @@
 - **禁止写入**：API Key、飞书 Webhook、签名密钥、App Secret、Cookie 值、用户个人信息，以及带 `xsec_token` 等参数的真实帖文链接。需要举例时只保留形态，例如 `xhslink.cn/o/<短码>`。
 - `context.md` 控制在约 200 行以内，超出时精简旧内容，而不是截断。
 - `decisions.md` 只记录用户确认过的决定。你自己的推测、建议和未决问题写进任务记录的「遗留问题」或 `backlog.md`。
+- 用 UTF-8 无 BOM 写入。PowerShell 5.1 下要显式指定编码，例如 `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`。
 
 ## 打包
 

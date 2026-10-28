@@ -869,7 +869,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK").length >= 1, true);
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK")[0].id, `note:${XHS_NOTE_7}`);
   assert.match(elements["#result-text"].value, /xhslink\.cn\/o\/note7short/);
-  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
+  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
   assert.equal(findRuntime("XHS_AI_MERGE_SUMMARIZE").length, 0);
   assert.equal(elements["#material-input"].value, "");
 
@@ -950,7 +950,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = "https://xhslink.cn/o/note10short";
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
+  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
   assert.equal(elements["#material-input"].value, "");
   assert.equal(elements["#material-staging"].hidden, true);
   await elements["#extract-button"].listeners.click();
@@ -1190,7 +1190,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = shortLink11;
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.equal(elements["#material-feedback"].textContent, "已把链接补到当前帖文。");
+  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
   resolveElevenCapture();
   await elevenAddClick;
   await settle(10);
@@ -1407,6 +1407,46 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#history-list"].hidden, true);
   assert.equal(elements["#history-clear-button"].hidden, true);
   assert.equal(elements["#result-card"].hidden, true);
+
+  // —— 补链接：编辑过的结果无法自动替换时，用提示态显示 kept 文案 ——
+  assert.equal(context.relinkFeedbackText("kept"), "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。");
+  assert.equal(context.relinkFeedbackText("rerendered"), "链接已更新（未重新推送飞书）。");
+  await elements["#history-back-button"].listeners.click();
+  await switchChromeTab(7);
+  assert.equal(elements["#result-card"].hidden, false);
+  context.clearMaterialFeedback();
+  const keptEditedText = "★ 第一条概括\n用户编辑后的正文。（小红书 https://xhslink.cn/o/old-kept）";
+  elements["#result-text"].value = keptEditedText;
+  elements["#result-text"].listeners.input();
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_RESOLVE_LINK") {
+      return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_7, resolvedUrl: pageUrlById[7] };
+    }
+    if (message.type === "XHS_AI_RELINK") {
+      return {
+        ok: true,
+        payload: message.payload,
+        result: { ...message.result, text: message.result.text, renderedText: message.result.text },
+        linkApplied: "kept"
+      };
+    }
+    if (message.type === "XHS_AI_MERGE_SET_LINK") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    return { ok: true };
+  });
+  elements["#result-link-edit"].listeners.click();
+  elements["#result-link-input"].value = "https://xhslink.cn/o/new-kept";
+  await elements["#result-link-save"].listeners.click();
+  await settle(10);
+  const keptRelink = findRuntime("XHS_AI_RELINK")[0];
+  assert.ok(keptRelink);
+  assert.equal(keptRelink.result.text, keptEditedText);
+  assert.equal(elements["#result-text"].value, keptEditedText);
+  assert.equal(
+    elements["#material-feedback"].textContent,
+    "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。"
+  );
+  assert.equal(elements["#material-feedback"].dataset.state, "info");
 
   // —— 解析工具：小红书短链/长链、微博长链、非帖文地址 ——
   assert.equal(

@@ -648,6 +648,14 @@
     return Number.isFinite(value) ? String(value) : "";
   }
 
+  // 结果末尾程序写入的来源后缀；补链接时单独复用它做局部替换。
+  function renderSourceSuffix(payload) {
+    const sourceUrl = sourceLink(payload?.source);
+    return sourceUrl
+      ? `（${platformLabel(payload?.source)} ${sourceUrl}）`
+      : "（原帖已删除，内容据用户上传截图整理）";
+  }
+
   function renderSummary(structured, payload) {
     const likes = formatMetric(payload.interactions?.likes?.raw, payload.interactions?.likes?.value);
     const comments = formatMetric(
@@ -669,9 +677,7 @@
       .map((item) => withoutTrailingPunctuation(stripUrls(item, evidenceUrls)))
       .filter(Boolean);
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
-    const sourceSuffix = sourceUrl
-      ? `（${platformLabel(payload?.source)} ${sourceUrl}）`
-      : "（原帖已删除，内容据用户上传截图整理）";
+    const sourceSuffix = renderSourceSuffix(payload);
     const paragraph = `${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${paragraph}`;
   }
@@ -851,11 +857,35 @@
     };
   }
 
-  function renderMergedSummary(structured, payloads) {
+  // 合并结果的来源后缀：同一平台合并成一组链接，跨平台逐条标注平台。
+  function renderMergedSourceSuffix(payloads) {
+    const list = Array.isArray(payloads) ? payloads : [];
     const sources = [];
+    let missingLinkCount = 0;
+    for (const payload of list) {
+      const url = sourceLink(payload?.source);
+      if (url) sources.push({ platform: platformLabel(payload?.source), url });
+      else missingLinkCount += 1;
+    }
+    const platformLabels = [...new Set(sources.map((source) => source.platform))];
+    const sourcePrefix = platformLabels.length === 1 ? `${platformLabels[0]} ` : "";
+    const sourceEntries = sources.map((source) => (
+      platformLabels.length === 1 ? source.url : `${source.platform} ${source.url}`
+    ));
+    if (!sources.length) {
+      return list.length > 1
+        ? "（原帖均已删除，内容据用户上传截图整理）"
+        : "（原帖已删除，内容据用户上传截图整理）";
+    }
+    if (missingLinkCount > 0) {
+      return `（${sourcePrefix}${[...sourceEntries, `另${missingLinkCount}条原帖已删除`].join("；")}）`;
+    }
+    return `（${sourcePrefix}${sourceEntries.join("；")}）`;
+  }
+
+  function renderMergedSummary(structured, payloads) {
     // 模型拿到的证据仍是落地页长链，正文里两种链接都要剔掉
     const stripList = new Set();
-    let missingLinkCount = 0;
     let likesTotal = 0;
     let likesKnown = 0;
     let commentsTotal = 0;
@@ -864,8 +894,6 @@
 
     for (const payload of payloads) {
       const url = sourceLink(payload?.source);
-      if (url) sources.push({ platform: platformLabel(payload?.source), url });
-      else missingLinkCount += 1;
       for (const candidate of [url, cleanText(payload?.source?.url)]) {
         if (candidate) stripList.add(candidate);
       }
@@ -902,21 +930,7 @@
     const opinions = opinionPoints.length ? `${opinionPoints.join("；")}。` : "";
 
     // 同一平台时沿用“（小红书 链接1；链接2）”的形式；跨平台混排时逐条标注来源平台。
-    const platformLabels = [...new Set(sources.map((source) => source.platform))];
-    const sourcePrefix = platformLabels.length === 1 ? `${platformLabels[0]} ` : "";
-    const sourceEntries = sources.map((source) => (
-      platformLabels.length === 1 ? source.url : `${source.platform} ${source.url}`
-    ));
-    let sourceSuffix;
-    if (!sources.length) {
-      sourceSuffix = payloads.length > 1
-        ? "（原帖均已删除，内容据用户上传截图整理）"
-        : "（原帖已删除，内容据用户上传截图整理）";
-    } else if (missingLinkCount > 0) {
-      sourceSuffix = `（${sourcePrefix}${[...sourceEntries, `另${missingLinkCount}条原帖已删除`].join("；")}）`;
-    } else {
-      sourceSuffix = `（${sourcePrefix}${sourceEntries.join("；")}）`;
-    }
+    const sourceSuffix = renderMergedSourceSuffix(payloads);
 
     return `★ ${withoutTrailingPunctuation(structured.headline)}\n${sentence(eventSummary)}${engagement}${opinions}${sourceSuffix}`;
   }
@@ -1045,6 +1059,7 @@
     normalizeVisionItem,
     selectVisionEvidence,
     renderSummary,
+    renderSourceSuffix,
     prepareVision,
     summarize,
     testProvider,
@@ -1060,6 +1075,7 @@
     buildEvidence,
     buildMergedEvidence,
     renderMergedSummary,
+    renderMergedSourceSuffix,
     summarizeMerged
   };
 })();

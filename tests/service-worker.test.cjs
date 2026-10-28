@@ -75,11 +75,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.14.3");
+assert.equal(manifest.version, "0.14.4");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.14.3");
+assert.equal(packageJson.version, "0.14.4");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -180,6 +180,18 @@ const payload = {
   assert.match(rendered, /12次点赞、100条评论/);
   assert.match(rendered, /部分网民质疑相关管理方式；部分网民猜测事件与职称评定有关。/);
   assert.match(rendered, /（小红书 https:\/\/www\.xiaohongshu\.com\/explore\/6a76029300000000250070c1\?xsec_token=test-token&xsec_source=pc_feed）$/);
+  // 抽出后缀函数后，渲染输出必须逐字保持不变
+  assert.equal(
+    context.XhsAi.renderSourceSuffix(payload),
+    "（小红书 https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed）"
+  );
+  assert.equal(
+    rendered,
+    "★ 高校教师称被移出工作群\n" +
+    "8月8日，小红书用户发帖反映其被移出学院工作群。截至目前，该帖文获12次点赞、100条评论。" +
+    "部分网民质疑相关管理方式；部分网民猜测事件与职称评定有关。" +
+    context.XhsAi.renderSourceSuffix(payload)
+  );
   // 链接概括流：来源链接优先用用户提供的链接（短链）
   const givenRendered = context.XhsAi.renderSummary(structured, {
     ...payload,
@@ -558,6 +570,18 @@ const payload = {
   assert.match(mergedRender, /上述帖文共获67次点赞、1098条评论。/);
   assert.match(mergedRender, /部分网民好奇事件全貌；部分网民分享校园墙截图。（小红书/);
   assert.match(mergedRender, /（小红书 https:\/\/xhslink\.cn\/o\/live-short；另1条原帖已删除）$/);
+  assert.equal(
+    context.XhsAi.renderMergedSourceSuffix([textOnlyPayload, screenshotPayload]),
+    "（小红书 https://xhslink.cn/o/live-short；另1条原帖已删除）"
+  );
+  assert.equal(
+    mergedRender,
+    "★ 网传某校学生发表不当言论引争议\n" +
+    "8月8日，账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事；当日另一账号也就该话题发表意见。" +
+    "截至目前，上述帖文共获67次点赞、1098条评论。" +
+    "部分网民好奇事件全貌；部分网民分享校园墙截图。" +
+    context.XhsAi.renderMergedSourceSuffix([textOnlyPayload, screenshotPayload])
+  );
 
   const shotOnlyRender = context.XhsAi.renderMergedSummary({
     headline: "据截图反映某事件",
@@ -672,6 +696,7 @@ const payload = {
   );
   assert.equal(mergedResponse.result.evidence.postCount, 2);
   assert.equal(mergedResponse.result.evidence.topLevelComments, 2);
+  assert.equal(mergedResponse.result.renderedText, mergedResponse.result.text);
   assert.ok(runtimeMessages.some((message) => message.type === "XHS_AI_MERGE_PROGRESS"));
 
   const cachedMerge = await context.summarizeMergeBasket({ force: false });
@@ -721,6 +746,7 @@ const payload = {
   assert.equal(shotSingle.ok, true);
   assert.match(shotSingle.result.text, /截至目前，该帖文获1200次点赞、233条评论。/);
   assert.match(shotSingle.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/recognize-test）$/);
+  assert.equal(shotSingle.result.renderedText, shotSingle.result.text);
 
   const renderedShotSingle = context.XhsAi.renderSummary({
     headline: "据截图反映某事件",
@@ -886,10 +912,12 @@ const payload = {
   });
   assert.equal(relinked.ok, true);
   assert.equal(relinkModelCalls, 0);
+  assert.equal(relinked.linkApplied, "rerendered");
   assert.equal(relinked.payload.source.givenUrl, "https://xhslink.cn/o/relinked");
   assert.equal(relinked.payload.source.givenUrlVerified, true);
   assert.equal(relinked.payload.source.url, relinkPayload.source.url);
   assert.match(relinked.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/relinked）$/);
+  assert.equal(relinked.result.renderedText, relinked.result.text);
   assert.doesNotMatch(relinked.result.text, /xsec_token/);
   let relinkHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-relink");
   assert.equal(relinkHistory.url, "https://xhslink.cn/o/relinked");
@@ -997,6 +1025,109 @@ const payload = {
   });
   assert.match(screenshotCleared.result.text, /原帖已删除，内容据用户上传截图整理/);
 
+  // —— 0.14.4：编辑过的结果补链接只换来源后缀或旧链接，不整段覆盖 ——
+  await context.clearHistory();
+  const editedBasePayload = {
+    ...relinkPayload,
+    source: { ...relinkPayload.source, givenUrl: "https://xhslink.cn/o/old-edit" }
+  };
+  const editedRendered = context.XhsAi.renderSummary(relinkStructured, editedBasePayload);
+  const editedNote = "补充：这是用户手工加的说明。";
+  const editedText = editedRendered.replace("用户发帖反映测试事件。", `用户发帖反映测试事件。${editedNote}`);
+  assert.notEqual(editedText, editedRendered);
+  const editedResult = {
+    text: editedText,
+    renderedText: editedRendered,
+    structured: relinkStructured,
+    historyId: "hist-edited-relink",
+    evidence: { textModel: "test-model" },
+    notification: null,
+    createdAt: 300
+  };
+  await context.recordHistory(editedBasePayload, editedResult, "hist-edited-relink");
+  const editedRelinked = await context.relinkResult({
+    payload: editedBasePayload,
+    result: editedResult,
+    givenUrl: "https://xhslink.cn/o/new-edit",
+    verified: true
+  });
+  assert.equal(editedRelinked.linkApplied, "replaced");
+  assert.match(editedRelinked.result.text, /补充：这是用户手工加的说明。/);
+  assert.match(editedRelinked.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/new-edit）$/);
+  assert.doesNotMatch(editedRelinked.result.text, /old-edit/);
+  assert.equal(
+    editedRelinked.result.renderedText,
+    context.XhsAi.renderSummary(relinkStructured, editedRelinked.payload)
+  );
+  assert.notEqual(editedRelinked.result.text, editedRelinked.result.renderedText);
+  const editedHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-edited-relink");
+  // 历史仍保存干净的重渲染文本，不写入结果框里的手工编辑
+  assert.equal(editedHistory.result.text, editedRelinked.result.renderedText);
+  assert.doesNotMatch(editedHistory.result.text, /手工加的说明/);
+
+  // 末尾后缀被删掉、但正文里还能找到旧链接：只替换那一处链接
+  const linkOnlyText = `★ 换链接测试\n8月8日，用户发帖反映测试事件。${editedNote}原链接 https://xhslink.cn/o/old-edit`;
+  const linkOnlyResult = { ...editedResult, text: linkOnlyText, historyId: "hist-link-only" };
+  await context.recordHistory(editedBasePayload, linkOnlyResult, "hist-link-only");
+  const linkOnlyRelinked = await context.relinkResult({
+    payload: editedBasePayload,
+    result: linkOnlyResult,
+    givenUrl: "https://xhslink.cn/o/new-link-only",
+    verified: true
+  });
+  assert.equal(linkOnlyRelinked.linkApplied, "replaced");
+  assert.match(linkOnlyRelinked.result.text, /new-link-only/);
+  assert.doesNotMatch(linkOnlyRelinked.result.text, /old-edit/);
+  assert.match(linkOnlyRelinked.result.text, /手工加的说明/);
+
+  // 后缀和旧链接都找不到：保持用户文本不变，但链接照样写回 payload 与历史
+  const noLinkText = `★ 换链接测试\n8月8日，用户发帖反映测试事件。${editedNote}末尾链接已删除`;
+  const noLinkResult = { ...editedResult, text: noLinkText, historyId: "hist-kept" };
+  await context.recordHistory(editedBasePayload, noLinkResult, "hist-kept");
+  const kept = await context.relinkResult({
+    payload: editedBasePayload,
+    result: noLinkResult,
+    givenUrl: "https://xhslink.cn/o/new-kept",
+    verified: true
+  });
+  assert.equal(kept.linkApplied, "kept");
+  assert.equal(kept.result.text, noLinkText);
+  assert.equal(kept.payload.source.givenUrl, "https://xhslink.cn/o/new-kept");
+  assert.match(kept.result.renderedText, /new-kept/);
+  const keptHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-kept");
+  assert.equal(keptHistory.result.text, kept.result.renderedText);
+  assert.doesNotMatch(keptHistory.result.text, /末尾链接已删除/);
+  assert.equal(relinkModelCalls, 0);
+
+  // 截图结果编辑过：补链接与清空链接时，来源后缀在两种形态间切换，正文编辑保留
+  const shotRendered = context.XhsAi.renderSummary(relinkStructured, screenshotPayload);
+  const shotEditedResult = {
+    ...editedResult,
+    text: shotRendered.replace("用户发帖反映测试事件。", `用户发帖反映测试事件。${editedNote}`),
+    renderedText: shotRendered,
+    historyId: "hist-shot-edited"
+  };
+  await context.recordHistory(screenshotPayload, shotEditedResult, "hist-shot-edited");
+  const shotLinked = await context.relinkResult({
+    payload: screenshotPayload,
+    result: shotEditedResult,
+    givenUrl: "https://xhslink.cn/o/shot-edited",
+    verified: true
+  });
+  assert.equal(shotLinked.linkApplied, "replaced");
+  assert.match(shotLinked.result.text, /手工加的说明/);
+  assert.match(shotLinked.result.text, /（小红书 https:\/\/xhslink\.cn\/o\/shot-edited）$/);
+  assert.doesNotMatch(shotLinked.result.text, /原帖已删除/);
+  const shotClearedEdited = await context.relinkResult({
+    payload: shotLinked.payload,
+    result: shotLinked.result,
+    givenUrl: "",
+    verified: false
+  });
+  assert.equal(shotClearedEdited.linkApplied, "replaced");
+  assert.match(shotClearedEdited.result.text, /手工加的说明/);
+  assert.match(shotClearedEdited.result.text, /（原帖已删除，内容据用户上传截图整理）$/);
+
   // —— 清单条目补链接：网页条目写 givenUrl，截图条目沿用 URL 合法性校验 ——
   await context.clearMergeBasket();
   await context.addToMergeBasket(textOnlyPayload);
@@ -1062,6 +1193,78 @@ const payload = {
   assert.equal(unchangedMerge.ok, true);
   assert.equal(unchangedMerge.unchanged, true);
   assert.equal(unchangedMerge.result, undefined);
+
+  // —— 0.14.4：编辑过的合并结果改清单链接，只替换来源后缀，正文编辑保留 ——
+  const editedMergeBasket = await context.getMergeBasket();
+  const editedMergePayloads = editedMergeBasket.map((item) => item.payload);
+  const editedMergeRendered = context.XhsAi.renderMergedSummary(
+    mergeResult.structured,
+    context.XhsAi.sortPayloadsChronologically(editedMergePayloads)
+  );
+  const mergeEditedNote = "补充：合并结果被手工编辑。";
+  const mergeEditedText = editedMergeRendered.replace(
+    "账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事。",
+    `账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事。${mergeEditedNote}`
+  );
+  assert.notEqual(mergeEditedText, editedMergeRendered);
+  const editedMergeHistoryId = "hist-merge-edited";
+  const editedMergeResult = {
+    ...mergeResult,
+    text: mergeEditedText,
+    renderedText: editedMergeRendered,
+    historyId: editedMergeHistoryId
+  };
+  await context.recordMergedHistory(editedMergePayloads, editedMergeResult, editedMergeHistoryId);
+  const mergeLinkChange = await context.setMergeItemLink({
+    id: `note:${textOnlyPayload.source.noteId}`,
+    givenUrl: "https://xhslink.cn/o/merge-edited-new",
+    verified: true
+  });
+  assert.ok(mergeLinkChange.linkChange);
+  assert.match(mergeLinkChange.linkChange.previousSuffix, /basket-note/);
+  assert.match(mergeLinkChange.linkChange.nextSuffix, /merge-edited-new/);
+  const editedMergeRerendered = await context.rerenderMergeResult({
+    result: editedMergeResult,
+    linkChange: mergeLinkChange.linkChange
+  });
+  assert.equal(editedMergeRerendered.linkApplied, "replaced");
+  assert.match(editedMergeRerendered.result.text, /合并结果被手工编辑/);
+  assert.match(editedMergeRerendered.result.text, /merge-edited-new/);
+  assert.doesNotMatch(editedMergeRerendered.result.text, /basket-note/);
+  const freshMergeOrdered = context.XhsAi.sortPayloadsChronologically(
+    (await context.getMergeBasket()).map((item) => item.payload)
+  );
+  assert.equal(
+    editedMergeRerendered.result.renderedText,
+    context.XhsAi.renderMergedSummary(mergeResult.structured, freshMergeOrdered)
+  );
+  assert.notEqual(editedMergeRerendered.result.text, editedMergeRerendered.result.renderedText);
+  const editedMergeHistory = (await context.listHistory()).items.find((entry) => entry.id === editedMergeHistoryId);
+  assert.equal(editedMergeHistory.result.text, editedMergeRerendered.result.renderedText);
+  assert.doesNotMatch(editedMergeHistory.result.text, /合并结果被手工编辑/);
+
+  // 合并正文里的来源后缀被整个删掉：保持用户文本，提示面板手动改
+  const keptMergeText = editedMergeRerendered.result.renderedText.replace(/（小红书[^）]*）$/, "");
+  assert.doesNotMatch(keptMergeText, /merge-edited-new/);
+  const keptMergeResult = {
+    ...editedMergeRerendered.result,
+    text: keptMergeText,
+    historyId: "hist-merge-kept"
+  };
+  await context.recordMergedHistory(editedMergePayloads, keptMergeResult, "hist-merge-kept");
+  const secondMergeChange = await context.setMergeItemLink({
+    id: `note:${textOnlyPayload.source.noteId}`,
+    givenUrl: "https://xhslink.cn/o/merge-kept-new",
+    verified: false
+  });
+  const keptMergeRerender = await context.rerenderMergeResult({
+    result: keptMergeResult,
+    linkChange: secondMergeChange.linkChange
+  });
+  assert.equal(keptMergeRerender.linkApplied, "kept");
+  assert.equal(keptMergeRerender.result.text, keptMergeText);
+  assert.match(keptMergeRerender.result.renderedText, /merge-kept-new/);
+  assert.equal(rerenderModelCalls, 0);
 
   // —— 手动发送到飞书：配置状态与保留换行的发送 ——
   const manualConfig = { ...context.XhsAi.DEFAULT_CONFIG, rememberApiKeys: true, feishu: { mode: "webhook", appId: "", recipientId: "" } };

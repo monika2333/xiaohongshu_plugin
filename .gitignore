@@ -1,4 +1,4 @@
-﻿# 依赖与打包产物
+# 依赖与打包产物
 node_modules/
 *.zip
 *.crx

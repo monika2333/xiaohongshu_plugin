@@ -655,6 +655,8 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
   const historyId = newHistoryId();
   const storedResult = {
     ...publicResult,
+    // 程序最后一次渲染的干净文本；结果框里的编辑不写回历史，补链接时靠它判断是否被改过
+    renderedText: publicResult.text,
     notification,
     historyId,
     noteId: payload.source?.noteId || null,
@@ -889,13 +891,18 @@ async function updateHistoryEntry(historyId, { url, text } = {}) {
   const index = entries.findIndex((entry) => entry.id === id);
   if (index < 0) return null;
   const entry = entries[index];
+  const nextResult = {
+    ...entry.result,
+    ...(text !== undefined ? { text } : {})
+  };
+  // 历史里只有程序渲染的干净文本；relink 传入的 text 就是重渲染结果
+  if (text !== undefined && typeof entry.result?.renderedText === "string") {
+    nextResult.renderedText = text;
+  }
   const next = {
     ...entry,
     ...(url !== undefined ? { url } : {}),
-    result: {
-      ...entry.result,
-      ...(text !== undefined ? { text } : {})
-    }
+    result: nextResult
   };
   entries[index] = next;
   await chrome.storage.local.set({ [HISTORY_KEY]: entries });
@@ -988,6 +995,7 @@ async function summarizeMergeBasket(message) {
   const historyId = newHistoryId();
   const mergeResult = {
     ...publicResult,
+    renderedText: publicResult.text,
     notification,
     historyId,
     merged: true,
@@ -1036,6 +1044,55 @@ function payloadWithGivenUrl(payload, rawGivenUrl, verified) {
   return { ...payload, source };
 }
 
+const RELINK_UPDATED_HINT = "链接已更新（未重新推送飞书）。";
+const RELINK_KEPT_HINT = "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。";
+
+function relinkHint(linkApplied) {
+  return linkApplied === "kept" ? RELINK_KEPT_HINT : RELINK_UPDATED_HINT;
+}
+
+// 结果当前生效的来源链接：用户提供的链接优先于落地页地址。
+function payloadSourceLink(payload) {
+  return cleanText(payload?.source?.givenUrl) || cleanText(payload?.source?.url);
+}
+
+// 只替换最后一处，避免正文里偶然出现同一个词时被连带改掉。
+function replaceLastOccurrence(text, search, replacement) {
+  const source = String(text ?? "");
+  const needle = String(search ?? "");
+  if (!needle) return source;
+  const index = source.lastIndexOf(needle);
+  if (index < 0) return source;
+  return source.slice(0, index) + String(replacement ?? "") + source.slice(index + needle.length);
+}
+
+// 旧结果没有 renderedText 时视为没编辑过；编辑过才只做局部替换，避免整段覆盖。
+function isResultEdited(result) {
+  return typeof result?.renderedText === "string" && String(result.text ?? "") !== result.renderedText;
+}
+
+function applyLinkText(result, { oldSuffix, newSuffix, oldLink, newLink, renderedText }) {
+  const text = String(result?.text ?? "");
+  if (!isResultEdited(result)) {
+    return { text: renderedText, renderedText, linkApplied: "rerendered" };
+  }
+  if (oldSuffix && text.includes(oldSuffix)) {
+    return {
+      text: replaceLastOccurrence(text, oldSuffix, newSuffix || ""),
+      renderedText,
+      linkApplied: "replaced"
+    };
+  }
+  if (oldLink && text.includes(oldLink)) {
+    return {
+      text: replaceLastOccurrence(text, oldLink, newLink || ""),
+      renderedText,
+      linkApplied: "replaced"
+    };
+  }
+  return { text, renderedText, linkApplied: "kept" };
+}
+
 async function relinkResult(message) {
   const payload = message?.payload;
   const result = message?.result;
@@ -1043,9 +1100,18 @@ async function relinkResult(message) {
   if (!result.structured) throw new Error("这条结果缺少结构化概括，无法在不调用模型的情况下更新链接。");
 
   const nextPayload = payloadWithGivenUrl(payload, message.givenUrl, message.verified);
-  const nextResult = { ...result, text: XhsAi.renderSummary(result.structured, nextPayload) };
+  const renderedText = XhsAi.renderSummary(result.structured, nextPayload);
+  const applied = applyLinkText(result, {
+    oldSuffix: XhsAi.renderSourceSuffix(payload),
+    newSuffix: XhsAi.renderSourceSuffix(nextPayload),
+    oldLink: payloadSourceLink(payload),
+    newLink: payloadSourceLink(nextPayload),
+    renderedText
+  });
+  const nextResult = { ...result, text: applied.text, renderedText: applied.renderedText };
   const historyUrl = cleanText(nextPayload.source.givenUrl) || cleanText(nextPayload.source.url) || null;
-  await updateHistoryEntry(result.historyId, { url: historyUrl, text: nextResult.text });
+  // 历史保留程序重渲染出的干净文本，不写入结果框里的手工编辑
+  await updateHistoryEntry(result.historyId, { url: historyUrl, text: applied.renderedText });
 
   const tabId = Number(message.tabId);
   const pageSessionId = cleanText(message.pageSessionId);
@@ -1067,13 +1133,13 @@ async function relinkResult(message) {
         progress: {
           state: "done",
           title: "链接已更新",
-          detail: "链接已更新（未重新推送飞书）。",
+          detail: relinkHint(applied.linkApplied),
           percent: 100
         }
       }).catch(() => {});
     }
   }
-  return { ok: true, payload: nextPayload, result: nextResult };
+  return { ok: true, payload: nextPayload, result: nextResult, linkApplied: applied.linkApplied };
 }
 
 async function setMergeItemLink(message) {
@@ -1082,10 +1148,29 @@ async function setMergeItemLink(message) {
   const items = await getMergeBasket();
   const index = items.findIndex((item) => item.id === id);
   if (index < 0) throw new Error("该条目已不在清单中。");
-  const nextPayload = payloadWithGivenUrl(items[index].payload, message.givenUrl, message.verified);
+  const previousPayload = items[index].payload;
+  // 合并结果的来源后缀由整组条目渲染；把改动前后的后缀一起交给 rerender，
+  // 编辑过的合并正文才能只替换后缀、保住其余文字。
+  const previousSuffix = XhsAi.renderMergedSourceSuffix(
+    XhsAi.sortPayloadsChronologically(items.map((item) => item.payload))
+  );
+  const nextPayload = payloadWithGivenUrl(previousPayload, message.givenUrl, message.verified);
   items[index] = { ...items[index], payload: nextPayload };
   await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
-  return { ok: true, basket: items.map(basketItemSummary) };
+  const nextSuffix = XhsAi.renderMergedSourceSuffix(
+    XhsAi.sortPayloadsChronologically(items.map((item) => item.payload))
+  );
+  return {
+    ok: true,
+    basket: items.map(basketItemSummary),
+    linkChange: {
+      id,
+      previousSuffix,
+      nextSuffix,
+      previousLink: payloadSourceLink(previousPayload),
+      nextLink: payloadSourceLink(nextPayload)
+    }
+  };
 }
 
 async function rerenderMergeResult(message) {
@@ -1099,9 +1184,18 @@ async function rerenderMergeResult(message) {
   if (!sameItems) return { ok: true, unchanged: true };
 
   const ordered = XhsAi.sortPayloadsChronologically(items.map((item) => item.payload));
-  const nextResult = { ...result, text: XhsAi.renderMergedSummary(result.structured, ordered) };
-  await updateHistoryEntry(result.historyId, { text: nextResult.text });
-  return { ok: true, result: nextResult };
+  const renderedText = XhsAi.renderMergedSummary(result.structured, ordered);
+  const linkChange = message?.linkChange || null;
+  const applied = applyLinkText(result, {
+    oldSuffix: cleanText(linkChange?.previousSuffix) || null,
+    newSuffix: XhsAi.renderMergedSourceSuffix(ordered),
+    oldLink: cleanText(linkChange?.previousLink) || "",
+    newLink: cleanText(linkChange?.nextLink) || "",
+    renderedText
+  });
+  const nextResult = { ...result, text: applied.text, renderedText: applied.renderedText };
+  await updateHistoryEntry(result.historyId, { text: applied.renderedText });
+  return { ok: true, result: nextResult, linkApplied: applied.linkApplied };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
