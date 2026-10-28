@@ -300,6 +300,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
   font-size: 13px;
   line-height: 1.72;
 }
+#result-text:focus { border-color: var(--red-dark); box-shadow: inset 0 0 0 1px var(--red-dark); }
 .result-link-row { display: flex; align-items: center; gap: 6px; margin-top: 9px; padding: 8px 10px; background: rgba(255, 252, 245, .68); border: 1px solid var(--line); font-size: 10px; }
 .result-link-label { color: var(--muted); font-weight: 700; white-space: nowrap; }
 .result-link-display { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--green); white-space: nowrap; text-overflow: ellipsis; }
@@ -320,6 +321,10 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .icon-button { display: grid; flex: 0 0 40px; width: 40px; padding: 0; place-items: center; color: var(--ink); background: transparent; border: 1px solid var(--ink); }
 .icon-button svg { width: 24px; height: 24px; }
 .icon-button:hover { background: var(--paper-deep); }
+.feishu-button { color: #3370ff; border-color: rgba(51, 112, 255, .55); }
+.feishu-button:hover { background: rgba(51, 112, 255, .1); }
+.feishu-feedback { margin: 7px 0 0; color: var(--green); font-size: 10px; line-height: 1.5; }
+.feishu-feedback[data-state="error"] { color: var(--red-dark); font-weight: 700; }
 .copy-button { color: var(--paper); background: var(--red); border: 1px solid var(--red-dark); }
 .secondary-button { color: var(--ink); background: transparent; border: 1px solid var(--ink); }
 .result-actions button:disabled { cursor: wait; opacity: .55; }

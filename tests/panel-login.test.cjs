@@ -78,6 +78,8 @@ const selectors = [
   "#copy-button",
   "#open-source-button",
   "#regenerate-button",
+  "#send-feishu-button",
+  "#feishu-feedback",
   "#evidence-summary",
   "#history-button",
   "#history-back-button",

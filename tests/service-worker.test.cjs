@@ -75,11 +75,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.13.8");
+assert.equal(manifest.version, "0.14.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.13.8");
+assert.equal(packageJson.version, "0.14.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -1062,6 +1062,35 @@ const payload = {
   assert.equal(unchangedMerge.ok, true);
   assert.equal(unchangedMerge.unchanged, true);
   assert.equal(unchangedMerge.result, undefined);
+
+  // —— 手动发送到飞书：配置状态与保留换行的发送 ——
+  const manualConfig = { ...context.XhsAi.DEFAULT_CONFIG, rememberApiKeys: true, feishu: { mode: "webhook", appId: "", recipientId: "" } };
+  await context.saveAiSettings(manualConfig, { textApiKey: "test-deepseek-key", visionApiKey: "", feishuWebhookUrl: "" });
+  const unconfiguredFeishu = await context.getFeishuStatus();
+  assert.equal(unconfiguredFeishu.configured, false);
+  await assert.rejects(context.sendManualFeishu({ text: "测试" }), /尚未配置飞书/);
+
+  await context.saveAiSettings(manualConfig, {
+    textApiKey: "test-deepseek-key",
+    visionApiKey: "",
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/manual-test"
+  });
+  const configuredFeishu = await context.getFeishuStatus();
+  assert.equal(configuredFeishu.configured, true);
+
+  let manualFeishuBody = null;
+  context.fetch = async (url, options) => {
+    manualFeishuBody = { url, body: JSON.parse(options.body) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, msg: "success" }) };
+  };
+  const editedSummary = "用户编辑后的概括\n第二行内容（含换行）";
+  const manualSent = await context.sendManualFeishu({ text: editedSummary });
+  assert.equal(manualSent.ok, true);
+  assert.equal(manualSent.channel, "webhook");
+  assert.equal(manualFeishuBody.url, "https://open.feishu.cn/open-apis/bot/v2/hook/manual-test");
+  assert.equal(manualFeishuBody.body.msg_type, "text");
+  assert.equal(manualFeishuBody.body.content.text, editedSummary);
+  await assert.rejects(context.sendManualFeishu({ text: "   " }), /没有可发送的内容/);
 
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {

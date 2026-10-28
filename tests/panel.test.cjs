@@ -80,6 +80,8 @@ const selectors = [
   "#copy-button",
   "#open-source-button",
   "#regenerate-button",
+  "#send-feishu-button",
+  "#feishu-feedback",
   "#evidence-summary",
   "#history-button",
   "#history-back-button",
@@ -1074,6 +1076,41 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findRuntime("XHS_AI_RELINK")[0].givenUrl, "");
   assert.match(elements["#result-text"].value, /恢复落地页/);
   assert.match(elements["#result-link-display"].textContent, /xiaohongshu\.com\/explore/);
+
+  // —— 结果框可编辑；配置了飞书时显示手动发送图标 ——
+  assert.doesNotMatch(panelHtml, /id="result-text"[^>]*readonly/);
+  assert.equal(elements["#send-feishu-button"].hidden, true);
+  const editedText = "用户编辑后的概括\n第二行内容（含换行）";
+  elements["#result-text"].value = editedText;
+  elements["#result-text"].listeners.input();
+  await switchChromeTab(8);
+  await switchChromeTab(7);
+  assert.equal(elements["#result-text"].value, editedText);
+
+  let feishuStatus = false;
+  let sentFeishuText = null;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: feishuStatus };
+    if (message.type === "XHS_AI_SEND_FEISHU") {
+      sentFeishuText = message.text;
+      return { ok: true, channel: "webhook" };
+    }
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    return { ok: true };
+  });
+  await context.refreshFeishuStatus();
+  assert.equal(elements["#send-feishu-button"].hidden, true);
+  feishuStatus = true;
+  await context.refreshFeishuStatus();
+  assert.equal(elements["#send-feishu-button"].hidden, false);
+  await elements["#send-feishu-button"].listeners.click();
+  await settle();
+  assert.equal(sentFeishuText, editedText);
+  assert.equal(elements["#feishu-feedback"].hidden, false);
+  assert.equal(elements["#feishu-feedback"].textContent, "已发送到飞书。");
+  feishuStatus = false;
+  await context.refreshFeishuStatus();
+  assert.equal(elements["#send-feishu-button"].hidden, true);
 
   // —— 清单条目补链接：编辑框在清单下方，保存走 MERGE_SET_LINK ——
   await elements["#merge-list"].listeners.click({

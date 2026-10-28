@@ -63,6 +63,8 @@ const elements = {
   resultAddBasketButton: document.querySelector("#result-add-basket-button"),
   copyButton: document.querySelector("#copy-button"),
   regenerateButton: document.querySelector("#regenerate-button"),
+  sendFeishuButton: document.querySelector("#send-feishu-button"),
+  feishuFeedback: document.querySelector("#feishu-feedback"),
   historyButton: document.querySelector("#history-button"),
   historyBackButton: document.querySelector("#history-back-button"),
   viewHistory: document.querySelector("#view-history"),
@@ -87,6 +89,7 @@ let pendingLinkChoice = null;
 let pendingResultLinkConfirm = null;
 let pendingBasketLinkConfirm = null;
 let resultLinkEditing = false;
+let feishuConfigured = false;
 let linkResolveToken = 0;
 let historyClearResetTimer = null;
 let historyHintResetTimer = null;
@@ -225,6 +228,8 @@ function renderResult(result) {
   renderResultLink();
   refreshResultBasketButton();
   elements.resultCard.hidden = false;
+  hideFeishuFeedback();
+  refreshFeishuButton();
 }
 
 function hideResultCard() {
@@ -233,6 +238,8 @@ function hideResultCard() {
   elements.resultLinkEditor.hidden = true;
   elements.resultLinkHint.hidden = true;
   resultLinkEditing = false;
+  hideFeishuFeedback();
+  refreshFeishuButton();
 }
 
 function renderFocus() {
@@ -2068,6 +2075,53 @@ function closeBasketLinkEditor() {
   renderBasket();
 }
 
+// —— 手动发送到飞书 ——
+
+async function refreshFeishuStatus() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_GET_FEISHU_STATUS" });
+    feishuConfigured = Boolean(response?.ok && response.configured);
+  } catch {
+    feishuConfigured = false;
+  }
+  refreshFeishuButton();
+}
+
+function refreshFeishuButton() {
+  elements.sendFeishuButton.hidden = !(feishuConfigured && !elements.resultCard.hidden);
+}
+
+function hideFeishuFeedback() {
+  elements.feishuFeedback.hidden = true;
+  elements.feishuFeedback.textContent = "";
+  delete elements.feishuFeedback.dataset.state;
+}
+
+function showFeishuFeedback(text, state = "done") {
+  elements.feishuFeedback.textContent = text;
+  elements.feishuFeedback.dataset.state = state;
+  elements.feishuFeedback.hidden = false;
+}
+
+async function sendResultToFeishu() {
+  const text = elements.resultText.value.trim();
+  if (!text) {
+    showFeishuFeedback("没有可发送的内容。", "error");
+    return;
+  }
+  elements.sendFeishuButton.disabled = true;
+  hideFeishuFeedback();
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SEND_FEISHU", text });
+    if (!response?.ok) throw new Error(response?.error || "发送到飞书失败。");
+    showFeishuFeedback("已发送到飞书。");
+  } catch (error) {
+    showFeishuFeedback(error?.message || "发送到飞书失败。", "error");
+  } finally {
+    elements.sendFeishuButton.disabled = false;
+  }
+}
+
 // —— 历史屏 ——
 
 function historyBadge(item) {
@@ -2125,6 +2179,8 @@ function renderHistoryResult(item) {
   elements.resultLinkRow.hidden = true;
   elements.resultLinkEditor.hidden = true;
   elements.resultCard.hidden = false;
+  hideFeishuFeedback();
+  refreshFeishuButton();
 }
 
 function showHistoryEntry(item) {
@@ -2229,6 +2285,15 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+// 设置页保存/清除飞书配置后，侧边栏无需重开即可更新发送图标
+chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
+  if (!changes) return;
+  const relevant = areaName === "local"
+    ? "xhsAiConfig" in changes || "xhsAiPersistentSecrets" in changes
+    : areaName === "session" && "xhsAiSecrets" in changes;
+  if (relevant) void refreshFeishuStatus();
+});
+
 chrome.tabs.onActivated?.addListener?.((info) => {
   void setActiveTab(info?.tabId);
 });
@@ -2242,6 +2307,7 @@ chrome.windows?.onFocusChanged?.addListener?.((windowId) => {
     } catch {
       // 查询失败时保留当前显示
     }
+    void refreshFeishuStatus();
   })();
 });
 
@@ -2443,6 +2509,19 @@ elements.copyButton.addEventListener("click", async () => {
   }
 });
 
+// 结果文本可编辑：改动先保留在当前结果对象里；手动发送与复制都取框内当前文本
+elements.resultText.addEventListener("input", () => {
+  hideFeishuFeedback();
+  if (historyVisible) {
+    if (historyEntry?.result) historyEntry.result.text = elements.resultText.value;
+    return;
+  }
+  const result = currentResult();
+  if (result) result.text = elements.resultText.value;
+});
+
+elements.sendFeishuButton.addEventListener("click", () => { void sendResultToFeishu(); });
+
 elements.regenerateButton.addEventListener("click", async () => {
   if (historyVisible || historyEntry) return;
   if (focus.kind === "merge") {
@@ -2499,6 +2578,7 @@ void (async () => {
   renderFocus();
   refreshBasket();
   refreshHistory();
+  refreshFeishuStatus();
   refreshButtons();
   restoreCurrentWorkflow();
   hydrateWorkflows();

@@ -20,6 +20,8 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_CLEAR_KEYS",
   "XHS_AI_TEST_PROVIDER",
   "XHS_AI_TEST_FEISHU",
+  "XHS_AI_GET_FEISHU_STATUS",
+  "XHS_AI_SEND_FEISHU",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
   "XHS_AI_LIST_WORKFLOWS",
@@ -562,6 +564,31 @@ async function testFeishuSettings(rawConfig, secrets) {
     ok: true,
     detail: delivered.channel === "direct" ? "已向指定账号发送测试消息" : "已向机器人所在群发送测试消息"
   };
+}
+
+// 面板只询问“是否已配置可用”，不把 Webhook/App Secret 回传给侧边栏。
+async function getFeishuStatus() {
+  const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  let configured = false;
+  try {
+    configured = validateFeishuSettings(config, secrets);
+  } catch {
+    configured = false;
+  }
+  return { ok: true, configured };
+}
+
+// 手动发送结果框里的文本：保留换行，避免 cleanText 把编辑后的格式压平。
+async function sendManualFeishu(message) {
+  const text = String(message?.text ?? "").replace(/\u0000/g, "").trim();
+  if (!text) throw new Error("没有可发送的内容。");
+  if (text.length > 20000) throw new Error("内容过长，飞书消息最多 20000 字。");
+  const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  if (!validateFeishuSettings(config, secrets)) {
+    throw new Error("尚未配置飞书推送，请先在设置中填写。");
+  }
+  const delivered = await sendFeishuMessage(text, config, secrets);
+  return { ok: true, channel: delivered.channel };
 }
 
 async function prepareVisionPayload(message, sender) {
@@ -1108,6 +1135,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_TEST_FEISHU":
       task = testFeishuSettings(message.config, message.secrets);
+      break;
+    case "XHS_AI_GET_FEISHU_STATUS":
+      task = getFeishuStatus();
+      break;
+    case "XHS_AI_SEND_FEISHU":
+      task = sendManualFeishu(message);
       break;
     case "XHS_AI_SUMMARIZE":
       task = summarizePayload(message.payload, message.force);
