@@ -166,7 +166,7 @@ function renderStatus(status) {
 
 function platformBadge(platform) {
   if (platform === "weibo") return { label: "微博", className: "merge-badge-weibo" };
-  if (platform === "xiaohongshu") return { label: "小红书", className: "merge-badge-page" };
+  if (platform === "xiaohongshu") return { label: "小红书", className: "merge-badge-xhs" };
   return null;
 }
 
@@ -280,7 +280,7 @@ function taskBadge(task) {
   if (task.kind === "merge") return { label: "合并", className: "merge-badge-merge" };
   if (task.kind === "shot") return { label: "截图", className: "merge-badge-shot" };
   if (task.platform === "weibo") return { label: "微博", className: "merge-badge-weibo" };
-  return { label: "网页", className: "merge-badge-page" };
+  return { label: "小红书", className: "merge-badge-xhs" };
 }
 
 function renderTasks() {
@@ -1076,7 +1076,7 @@ function basketCandidates() {
 
 function basketItemLabel(item) {
   if (!item) return "";
-  const prefix = item.kind === "user_screenshot" ? "截图" : item.platform === "weibo" ? "微博" : "网页";
+  const prefix = item.kind === "user_screenshot" ? "截图" : item.platform === "weibo" ? "微博" : "小红书";
   const name = item.title || (item.author ? `@${item.author}` : item.id);
   return `${prefix}「${name}」`;
 }
@@ -1578,8 +1578,8 @@ function renderBasket() {
   elements.basketList.innerHTML = basketItems.map((item) => {
     const isShot = item.kind === "user_screenshot";
     const isWeibo = !isShot && item.platform === "weibo";
-    const badgeLabel = isShot ? "截图" : isWeibo ? "微博" : "网页";
-    const badgeClass = isShot ? "merge-badge-shot" : isWeibo ? "merge-badge-weibo" : "merge-badge-page";
+    const badgeLabel = isShot ? "截图" : isWeibo ? "微博" : "小红书";
+    const badgeClass = isShot ? "merge-badge-shot" : isWeibo ? "merge-badge-weibo" : "merge-badge-xhs";
     const label = [item.author || "未知账号", item.title].filter(Boolean).join("：");
     const meta = `${item.isVideo ? "视频 · " : ""}${item.commentCount || 0} 条评论`;
     const unverified = item.link && item.linkVerified === false ? "（未能验证）" : "";
@@ -2132,7 +2132,7 @@ function historyBadge(item) {
   if (item.kind === "merge") return { label: "合并", className: "merge-badge-merge" };
   if (item.kind === "screenshot") return { label: "截图", className: "merge-badge-shot" };
   if (item.platform === "weibo") return { label: "微博", className: "merge-badge-weibo" };
-  return { label: "网页", className: "merge-badge-page" };
+  return { label: "小红书", className: "merge-badge-xhs" };
 }
 
 // 历史列表用概括自身的标题行（★ 开头的第一行，去掉星号）做条目标题，比“作者：帖文标题”更可读

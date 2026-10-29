@@ -376,6 +376,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(taskCount(), 1);
   assert.match(elements["#task-list"].innerHTML, /第7条帖文/);
   assert.equal(elements["#current-post-badge"].textContent, "小红书");
+  assert.equal(elements["#current-post-badge"].className, "merge-badge merge-badge-xhs");
   assert.equal(elements["#current-post-badge"].hidden, false);
   assert.equal(elements["#workspace"].hidden, false);
 
@@ -1365,6 +1366,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#result-card"].hidden, true);
   assert.match(elements["#history-list"].innerHTML, /历史帖文甲/);
   assert.match(elements["#history-list"].innerHTML, /合并历史/);
+  assert.match(elements["#history-list"].innerHTML, /merge-badge merge-badge-xhs">小红书</);
 
   const historyTarget = (id, remove = false) => ({
     closest(selector) {
