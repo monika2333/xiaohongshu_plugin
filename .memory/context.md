@@ -1,14 +1,14 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-10-28（v0.14.4 补链接不再覆盖手工编辑的结果）
+> 最近更新：2026-10-29（任务档案合并整理；发布状态改为 Edge 与 Chrome Web Store 双平台上架）
 
 ## 产品概况
 
 - 名称：薯页摘录。Chrome / Edge MV3 扩展，侧边栏形态（Chrome 114+ / Edge 116+）。
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（文字模型 + 图片模型，可同用一家），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送。
-- 发布：已提交 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`），Chrome Web Store 在 Edge 之后再做。
+- 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
 - 当前版本：0.14.4。0.14.4 之前的演进见 `git log`。
 
 ## 硬约束（合规与商店）
@@ -74,7 +74,7 @@
 - 打包：`scripts/package.ps1`，按白名单打包，见 `AGENTS.md`。
 - 分工：用户与 Claude 讨论设计、写委托书、验收；具体实现交给编程 AI。
 
-## Edge 商店经验
+## 商店上架经验
 
 - 商店列表的语言由扩展的 `_locales` 决定，不是 Partner Center 里的设置。没有 `_locales` 时，中文文案放在 en-US 栏位，中国用户也能正常看到。
 - 上架市场和列表语言是分开设置的。
