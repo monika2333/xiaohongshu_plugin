@@ -239,7 +239,7 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .merge-item { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; padding: 7px 2px; border-bottom: 1px dashed var(--line); font-size: 10px; }
 .merge-badge { padding: 2px 6px; border-radius: 3px; color: var(--paper); font-size: 9px; font-weight: 700; white-space: nowrap; }
 .merge-badge-xhs { background: var(--red); }
-.merge-badge-shot { background: var(--red-dark); }
+.merge-badge-shot { background: var(--green); }
 .merge-badge-weibo { background: #d26a1f; }
 .merge-badge-merge { background: var(--ink); }
 .merge-item-label { overflow: hidden; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; font-weight: 700; }
