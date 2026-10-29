@@ -1115,6 +1115,17 @@ function validateScreenshotLink(value) {
   return parsed.href;
 }
 
+// 截图提交时顺带带上素材输入框里的链接；截图管线只覆盖小红书，微博链接不带入。
+function screenshotLinkFromMaterialInput() {
+  const url = extractPostUrl(elements.materialInput?.value);
+  if (!url) return null;
+  try {
+    return validateScreenshotLink(url);
+  } catch {
+    return null;
+  }
+}
+
 // 链接归位到当前页签：已有结果就直接换链接；还没提取就暂存，提取时带入。
 // 页签任务进行中时一律只写 pendingGivenUrl，由任务完成后的统一检查补上。
 async function applyLinkToTab(url, verified, { announce = true } = {}) {
@@ -1906,10 +1917,11 @@ function renderStaging() {
   elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入清单` : "识别这张截图并加入清单";
 }
 
-async function summarizeScreenshotImages(images, writeStatus) {
+async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
   const recognized = await chrome.runtime.sendMessage({
     type: "XHS_AI_SCREENSHOT_RECOGNIZE",
-    images
+    images,
+    ...(sourceUrl ? { sourceUrl } : {})
   });
   if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
   shotSlot.capture = recognized.payload;
@@ -1932,10 +1944,11 @@ async function summarizeScreenshotImages(images, writeStatus) {
   });
 }
 
-async function addScreenshotImagesToBasket(images) {
+async function addScreenshotImagesToBasket(images, sourceUrl) {
   const response = await chrome.runtime.sendMessage({
     type: "XHS_AI_SCREENSHOT_ADD",
-    images
+    images,
+    ...(sourceUrl ? { sourceUrl } : {})
   });
   if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
   basketItems = response.basket || [];
@@ -1943,7 +1956,8 @@ async function addScreenshotImagesToBasket(images) {
   const warningNote = response.warnings?.length
     ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
     : "";
-  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${warningNote}。`);
+  const linkNote = sourceUrl ? "，已带上输入框里的原帖链接" : "";
+  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${warningNote}${linkNote}。`);
 }
 
 async function commitStagedScreenshots(mode) {
@@ -1974,15 +1988,18 @@ async function commitStagedScreenshots(mode) {
   });
   writeStatus({ state: "working", title: "正在识别截图", detail: `共 ${stagedScreenshots.length} 张截图，正在提取帖文内容…`, percent: 15 });
   const committedIds = new Set(stagedScreenshots.map((item) => item.id));
+  // 输入框里同时留有链接时随本次截图一起提交，成功后才算消费掉
+  const givenLink = screenshotLinkFromMaterialInput();
   try {
     const images = stagedScreenshots.map((item) => item.dataUrl);
     if (isMerge) {
-      await addScreenshotImagesToBasket(images);
+      await addScreenshotImagesToBasket(images, givenLink);
     } else {
-      await summarizeScreenshotImages(images, writeStatus);
+      await summarizeScreenshotImages(images, writeStatus, givenLink);
     }
     // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
     stagedScreenshots = stagedScreenshots.filter((item) => !committedIds.has(item.id));
+    if (givenLink) elements.materialInput.value = "";
     renderStaging();
   } catch (error) {
     if (isMerge) {

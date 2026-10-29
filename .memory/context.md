@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-10-29（v0.14.8 更换默认单帖概括提示词；发布状态为 Edge 与 Chrome Web Store 双平台上架）
+> 最近更新：2026-10-29（v0.14.9 截图概括带上素材输入框里的链接；发布状态为 Edge 与 Chrome Web Store 双平台上架）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（文字模型 + 图片模型，可同用一家），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.14.8。0.14.8 之前的演进见 `git log`。
+- 当前版本：0.14.9。0.14.9 之前的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -42,13 +42,13 @@
 
 1. **单条**：面板注入采集脚本 → 内容脚本采集，同时后台并行识别图片 → 后台调用文字模型 → `renderSummary` 拼出最终文本 → 写历史、推送飞书。
 2. **合并**：清单条目的 payload 存在 `chrome.storage.session`，合并时按发帖时间排序后一次性交给文字模型，再由 `renderMergedSummary` 渲染。
-3. **截图**：图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload → 复用单条或合并管线。
+3. **截图**：图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload → 复用单条或合并管线。提交截图时面板把素材输入框里的小红书链接（含 xhslink 短链）随消息 `sourceUrl` 带入，落到 payload 的 `source.url`；微博链接不带入（截图管线只覆盖小红书）。
 4. **链接**：`XHS_AI_RESOLVE_LINK` 把链接解析为「平台 + 帖子 ID」→ 与当前页签、清单条目比对 → 命中就补链接，没命中就开新页签采集，解析失败就让用户手动选择。
 
 ## 关键约定（改代码前必读）
 
 - **程序写，模型不写**：结果里的日期、互动数、来源链接都由程序渲染，不交给模型生成。
-- **链接只写 `source.givenUrl`**，永远不改 `source.url`。`source.url` 会进入证据和缓存键，改了会触发重新调用模型。
+- **链接只写 `source.givenUrl`**，永远不改 `source.url`。`source.url` 会进入证据和缓存键，改了会触发重新调用模型。例外是截图 payload 的**创建时**：素材输入框里的链接经 `XHS_AI_SCREENSHOT_RECOGNIZE`/`_ADD` 的 `sourceUrl` 字段写入 `source.url`（先于任何模型调用，无缓存失效问题）；事后补链接仍只写 `givenUrl`。
 - **补链接不调用模型、不重推飞书**：用结果里已有的 `structured` 重新渲染，并按 `historyId` 同步历史。合并结果只有在条目集合（`itemIds`）未变时才原地重渲染。结果对象带 `renderedText`（程序最后一次渲染的干净文本），后台按 `text !== renderedText` 判断是否被手工编辑；编辑过就只替换来源后缀或旧链接，两者都找不到时保持用户文本并返回 `linkApplied: "kept"`，不整段覆盖。历史始终写干净的重渲染文本。
 - **任务进行中补链接**：面板先写槽位 `pendingGivenUrl`，任务完成后再 `XHS_AI_RELINK`；后台 `relinkResult` 遇到 `working` 或 pageSession 不一致时不改写工作流状态。
 - **合并结果找回**：`mergeSlot.result` 在切换焦点后通过清单区入口恢复；清单条目集合与 `itemIds` 不一致时入口和来源标签标为「上次合并」。

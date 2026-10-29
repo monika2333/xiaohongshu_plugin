@@ -832,6 +832,54 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(nonImageDropEvent.defaultPrevented, true);
   assert.equal(elements["#material-staging"].hidden, true);
 
+  // 截图提交时输入框里的小红书链接随消息带入 sourceUrl，成功后清空输入框
+  elements["#material-input"].value = "备份 https://xhslink.cn/o/shot-with-link 备用";
+  elements["#material-file-input"].files = [{ name: "shot-link.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  let resolveShotWithLink;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") return { ok: true, payload: shotPayload, warnings: [] };
+    if (message.type === "XHS_AI_SUMMARIZE") {
+      return new Promise((resolve) => { resolveShotWithLink = resolve; });
+    }
+    return { ok: true };
+  });
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  const shotWithLinkClick = elements["#shot-summarize-button"].listeners.click();
+  await settle();
+  const shotWithLinkCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length;
+  assert.equal(shotWithLinkCalls >= 1, true);
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE")[shotWithLinkCalls - 1].sourceUrl, "https://xhslink.cn/o/shot-with-link");
+  resolveShotWithLink({ ok: true, result: makeResult("★ 链接截图事件\n据截图整理。（小红书 https://xhslink.cn/o/shot-with-link）") });
+  await shotWithLinkClick;
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  assert.equal(elements["#material-input"].value, "");
+
+  // 输入框里是微博链接时截图提交不带 sourceUrl：截图管线只覆盖小红书
+  const weiboInInput = "微博 https://weibo.com/1257000310/RhJDvgyf3";
+  elements["#material-input"].value = weiboInInput;
+  elements["#material-file-input"].files = [{ name: "shot-weibo.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  let resolveShotWeiboLink;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") return { ok: true, payload: shotPayload, warnings: [] };
+    if (message.type === "XHS_AI_SUMMARIZE") {
+      return new Promise((resolve) => { resolveShotWeiboLink = resolve; });
+    }
+    return { ok: true };
+  });
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  const shotWeiboLinkClick = elements["#shot-summarize-button"].listeners.click();
+  await settle();
+  const shotWeiboLinkCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length;
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE")[shotWeiboLinkCalls - 1].sourceUrl, undefined);
+  resolveShotWeiboLink({ ok: true, result: makeResult("★ 微博截图事件\n据截图整理。（原帖已删除，内容据用户上传截图整理）") });
+  await shotWeiboLinkClick;
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  assert.equal(elements["#material-input"].value, weiboInInput);
+
   // —— 链接自动识别：短链命中当前页签结果，只换链接不调用模型 ——
   const shortLink7 = "https://xhslink.cn/o/note7short";
   let basketLink = "https://xhslink.cn/o/note7short";
