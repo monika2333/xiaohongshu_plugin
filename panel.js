@@ -1026,6 +1026,21 @@ function showRelinkFeedback(...linkApplied) {
   showMaterialFeedback(relinkFeedbackText(...linkApplied));
 }
 
+// 补链接后的完成态状态卡：各补链接入口共用同一文案。
+function relinkedStatus(linkApplied) {
+  return { state: "done", title: "链接已更新", detail: relinkFeedbackText(linkApplied), percent: 100 };
+}
+
+// 单条结果补了链接：同一帖子的清单条目一起同步，并尝试原地重渲染合并结果；
+// 合并正文因手工编辑未能替换时按 kept 上报。
+async function applyLinkToMatchingBasket(payload, url, verified, linkApplied) {
+  const id = payloadItemId(payload);
+  if (!id || !basketItems.some((item) => item.id === id)) return linkApplied;
+  await setBasketItemLink(id, url, verified);
+  const mergeApplied = await rerenderMergeIfPossible();
+  return mergeApplied === "kept" ? "kept" : linkApplied;
+}
+
 function hideLinkChoice() {
   pendingLinkChoice = null;
   elements.linkChoice.hidden = true;
@@ -1126,19 +1141,9 @@ async function applyLinkToTab(url, verified, { announce = true } = {}) {
     );
     slot.capture = response.payload;
     slot.result = response.result;
-    let linkApplied = response.linkApplied || "rerendered";
-    const id = payloadItemId(response.payload);
-    if (id && basketItems.some((item) => item.id === id)) {
-      await setBasketItemLink(id, targetUrl, verified);
-      const mergeApplied = await rerenderMergeIfPossible();
-      if (mergeApplied === "kept") linkApplied = "kept";
-    }
-    slot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: relinkFeedbackText(linkApplied),
-      percent: 100
-    };
+    const linkApplied = await applyLinkToMatchingBasket(
+      response.payload, targetUrl, verified, response.linkApplied || "rerendered");
+    slot.status = relinkedStatus(linkApplied);
     if (focus.kind === "tab" && !historyVisible) renderFocus();
     return { outcome: "applied", linkApplied };
   }
@@ -1179,19 +1184,9 @@ async function settlePendingLinkAfterWorkflow(tabId, usedGivenUrl) {
     });
     slot.capture = response.payload;
     slot.result = response.result;
-    let linkApplied = response.linkApplied || "rerendered";
-    const id = payloadItemId(response.payload);
-    if (id && basketItems.some((item) => item.id === id)) {
-      await setBasketItemLink(id, latest, verified);
-      const mergeApplied = await rerenderMergeIfPossible();
-      if (mergeApplied === "kept") linkApplied = "kept";
-    }
-    slot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: relinkFeedbackText(linkApplied),
-      percent: 100
-    };
+    const linkApplied = await applyLinkToMatchingBasket(
+      response.payload, latest, verified, response.linkApplied || "rerendered");
+    slot.status = relinkedStatus(linkApplied);
     slot.pendingGivenUrl = null;
     slot.pendingGivenUrlVerified = false;
     if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
@@ -1241,22 +1236,12 @@ async function relinkCurrentResultOnly(url, verified) {
   if (focus.kind === "shot") {
     shotSlot.capture = response.payload;
     shotSlot.result = response.result;
-    shotSlot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: relinkFeedbackText(linkApplied),
-      percent: 100
-    };
+    shotSlot.status = relinkedStatus(linkApplied);
   } else {
     if (!slot) return { outcome: "none", linkApplied: null };
     slot.capture = response.payload;
     slot.result = response.result;
-    slot.status = {
-      state: "done",
-      title: "链接已更新",
-      detail: relinkFeedbackText(linkApplied),
-      percent: 100
-    };
+    slot.status = relinkedStatus(linkApplied);
   }
   return { outcome: "applied", linkApplied };
 }
@@ -1300,34 +1285,30 @@ async function rerenderMergeIfPossible() {
   }
 }
 
-// 保存结果卡片上的链接：解析只用于校验，不调用模型。
-async function saveResultLink() {
-  const payload = focusedPayload();
-  if (!payload) return;
-  elements.resultLinkHint.hidden = true;
-  pendingResultLinkConfirm = null;
-  const raw = String(elements.resultLinkInput.value || "").trim();
+// 两个行内链接编辑器（结果卡与清单条目）共用的保存流程：
+// 清空 / 截图特判 / 域名校验 → 后台解析校验 → 指向不符时两步确认 → 应用并收起编辑框。
+async function saveLinkEditor({ raw, isScreenshot, targetNoteId, apply, close, showHint, showConfirm, rememberPending }) {
   if (!raw) {
     try {
-      await applyGivenLinkToResult("", false);
-      closeResultLinkEditor();
+      await apply("", false);
+      close();
     } catch (error) {
-      showResultLinkHint(error?.message || "链接更新失败。");
+      showHint(error?.message || "链接更新失败。");
     }
     return;
   }
-  if (payload.source?.origin === "user_screenshot") {
+  if (isScreenshot) {
     try {
       const normalized = validateScreenshotLink(raw);
-      await applyGivenLinkToResult(normalized, false);
-      closeResultLinkEditor();
+      await apply(normalized, false);
+      close();
     } catch (error) {
-      showResultLinkHint(error?.message || "链接更新失败。");
+      showHint(error?.message || "链接更新失败。");
     }
     return;
   }
   if (!isSupportedGivenLink(raw)) {
-    showResultLinkHint("请填写小红书或微博帖文链接。");
+    showHint("请填写小红书或微博帖文链接。");
     return;
   }
   let resolved = null;
@@ -1336,20 +1317,37 @@ async function saveResultLink() {
   } catch {
     resolved = null;
   }
-  const targetNoteId = payload.source?.noteId || null;
   const mismatch = Boolean(resolved?.noteId && targetNoteId && resolved.noteId !== targetNoteId);
   if (mismatch) {
-    pendingResultLinkConfirm = { url: raw };
-    showResultLinkConfirm("这条链接指向另一条帖文");
+    rememberPending(raw);
+    showConfirm("这条链接指向另一条帖文");
     return;
   }
   const verified = Boolean(resolved?.noteId && targetNoteId && resolved.noteId === targetNoteId);
   try {
-    await applyGivenLinkToResult(raw, verified);
-    closeResultLinkEditor();
+    await apply(raw, verified);
+    close();
   } catch (error) {
-    showResultLinkHint(error?.message || "链接更新失败。");
+    showHint(error?.message || "链接更新失败。");
   }
+}
+
+// 保存结果卡片上的链接：解析只用于校验，不调用模型。
+async function saveResultLink() {
+  const payload = focusedPayload();
+  if (!payload) return;
+  elements.resultLinkHint.hidden = true;
+  pendingResultLinkConfirm = null;
+  await saveLinkEditor({
+    raw: String(elements.resultLinkInput.value || "").trim(),
+    isScreenshot: payload.source?.origin === "user_screenshot",
+    targetNoteId: payload.source?.noteId || null,
+    apply: applyGivenLinkToResult,
+    close: closeResultLinkEditor,
+    showHint: showResultLinkHint,
+    showConfirm: showResultLinkConfirm,
+    rememberPending: (url) => { pendingResultLinkConfirm = { url }; }
+  });
 }
 
 async function applyGivenLinkToResult(url, verified) {
@@ -1371,14 +1369,8 @@ async function applyGivenLinkToResult(url, verified) {
     renderFocus();
     return;
   }
-  let linkApplied = applied.linkApplied;
-  const payload = focusedPayload();
-  const id = payloadItemId(payload);
-  if (id && basketItems.some((item) => item.id === id)) {
-    await setBasketItemLink(id, url, verified);
-    const mergeApplied = await rerenderMergeIfPossible();
-    if (mergeApplied === "kept") linkApplied = "kept";
-  }
+  const linkApplied = await applyLinkToMatchingBasket(
+    focusedPayload(), url, verified, applied.linkApplied);
   if (focus.kind === "shot") renderFocus();
   if (linkApplied) showRelinkFeedback(linkApplied);
 }
@@ -1393,71 +1385,28 @@ async function saveBasketLink() {
     closeBasketLinkEditor();
     return;
   }
-  const raw = String(elements.basketLinkInput.value || "").trim();
-  if (!raw) {
-    try {
-      await applyGivenLinkToBasket(id, "", false);
-      closeBasketLinkEditor();
-    } catch (error) {
-      showBasketLinkHint(error?.message || "链接更新失败。");
-    }
-    return;
-  }
-  if (item.kind === "user_screenshot") {
-    try {
-      const normalized = validateScreenshotLink(raw);
-      await applyGivenLinkToBasket(id, normalized, false);
-      closeBasketLinkEditor();
-    } catch (error) {
-      showBasketLinkHint(error?.message || "链接更新失败。");
-    }
-    return;
-  }
-  if (!isSupportedGivenLink(raw)) {
-    showBasketLinkHint("请填写小红书或微博帖文链接。");
-    return;
-  }
-  let resolved = null;
-  try {
-    resolved = await resolveLinkViaBackend(raw);
-  } catch {
-    resolved = null;
-  }
-  const targetNoteId = id.replace(/^(?:note|wbnote):/, "");
-  const mismatch = Boolean(resolved?.noteId && resolved.noteId !== targetNoteId);
-  if (mismatch) {
-    pendingBasketLinkConfirm = { id, url: raw };
-    showBasketLinkConfirm("这条链接指向另一条帖文");
-    return;
-  }
-  const verified = Boolean(resolved?.noteId && resolved.noteId === targetNoteId);
-  try {
-    await applyGivenLinkToBasket(id, raw, verified);
-    closeBasketLinkEditor();
-  } catch (error) {
-    showBasketLinkHint(error?.message || "链接更新失败。");
-  }
+  await saveLinkEditor({
+    raw: String(elements.basketLinkInput.value || "").trim(),
+    isScreenshot: item.kind === "user_screenshot",
+    targetNoteId: id.replace(/^(?:note|wbnote):/, ""),
+    apply: (url, verified) => applyGivenLinkToBasket(id, url, verified),
+    close: closeBasketLinkEditor,
+    showHint: showBasketLinkHint,
+    showConfirm: showBasketLinkConfirm,
+    rememberPending: (url) => { pendingBasketLinkConfirm = { id, url }; }
+  });
 }
 
 async function applyGivenLinkToBasket(id, url, verified) {
   await setBasketItemLink(id, url, verified);
-  const payload = focusedPayload();
-  let relinkOutcome = "none";
-  let linkApplied = null;
-  if (payload && payloadItemId(payload) === id && currentResult()) {
-    const applied = await relinkCurrentResultOnly(url, verified);
-    relinkOutcome = applied.outcome;
-    linkApplied = applied.linkApplied;
-  }
-  const mergeApplied = await rerenderMergeIfPossible();
-  if (mergeApplied === "kept") linkApplied = "kept";
+  const { outcome: relinkOutcome, linkApplied } = await syncResultAndMergeForBasketItem(id, url, verified);
   renderFocus();
   if (relinkOutcome === "blocked") {
     showMaterialFeedback("任务进行中，完成后才能清空链接。", "error");
   } else if (relinkOutcome === "task-pending") {
     showMaterialFeedback("任务完成后自动补上链接。");
   } else {
-    showRelinkFeedback(linkApplied || mergeApplied || "rerendered");
+    showRelinkFeedback(linkApplied || "rerendered");
   }
 }
 
@@ -1556,17 +1505,26 @@ async function handleMaterialLink() {
   renderFocus();
 }
 
-// 从「添加素材」匹配到清单条目时的入口：不切换焦点
-async function applyLinkToBasketItemByMatch(id, url, verified) {
-  await setBasketItemLink(id, url, verified);
+// 清单条目换了链接：焦点结果若是同一条帖子就一起补链接，再尝试重渲染合并结果。
+// outcome 为结果卡的补链接情况（applied/blocked/task-pending），未涉及结果卡时为 null。
+async function syncResultAndMergeForBasketItem(id, url, verified) {
+  let outcome = null;
   let linkApplied = null;
   const payload = focusedPayload();
   if (payload && payloadItemId(payload) === id && currentResult()) {
     const applied = await relinkCurrentResultOnly(url, verified);
+    outcome = applied.outcome;
     if (applied.outcome === "applied") linkApplied = applied.linkApplied;
   }
   const mergeApplied = await rerenderMergeIfPossible();
   if (mergeApplied === "kept") linkApplied = "kept";
+  return { outcome, linkApplied, mergeApplied };
+}
+
+// 从「添加素材」匹配到清单条目时的入口：不切换焦点
+async function applyLinkToBasketItemByMatch(id, url, verified) {
+  await setBasketItemLink(id, url, verified);
+  const { linkApplied, mergeApplied } = await syncResultAndMergeForBasketItem(id, url, verified);
   return { linkApplied: linkApplied || mergeApplied };
 }
 
@@ -2084,29 +2042,22 @@ function closeResultLinkEditor() {
   renderResultLink();
 }
 
-function showResultLinkHint(text) {
-  elements.resultLinkHint.textContent = text;
-  elements.resultLinkHint.hidden = false;
+function showLinkHint(hintElement, text) {
+  hintElement.textContent = text;
+  hintElement.hidden = false;
 }
 
-function showResultLinkConfirm(text) {
-  elements.resultLinkHint.hidden = false;
-  elements.resultLinkHint.innerHTML = `${escapeHtml(text)} ` +
+function showLinkConfirm(hintElement, text) {
+  hintElement.hidden = false;
+  hintElement.innerHTML = `${escapeHtml(text)} ` +
     `<button type="button" data-link-choice="use">仍然使用</button>` +
     `<button type="button" data-link-choice="cancel">取消</button>`;
 }
 
-function showBasketLinkHint(text) {
-  elements.basketLinkHint.textContent = text;
-  elements.basketLinkHint.hidden = false;
-}
-
-function showBasketLinkConfirm(text) {
-  elements.basketLinkHint.hidden = false;
-  elements.basketLinkHint.innerHTML = `${escapeHtml(text)} ` +
-    `<button type="button" data-link-choice="use">仍然使用</button>` +
-    `<button type="button" data-link-choice="cancel">取消</button>`;
-}
+const showResultLinkHint = (text) => showLinkHint(elements.resultLinkHint, text);
+const showResultLinkConfirm = (text) => showLinkConfirm(elements.resultLinkHint, text);
+const showBasketLinkHint = (text) => showLinkHint(elements.basketLinkHint, text);
+const showBasketLinkConfirm = (text) => showLinkConfirm(elements.basketLinkHint, text);
 
 function openBasketLinkEditor(id) {
   const item = basketItems.find((entry) => entry.id === id);

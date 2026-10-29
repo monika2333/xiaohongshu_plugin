@@ -1063,9 +1063,7 @@
     prepareVision,
     summarize,
     testProvider,
-    hashText,
     parseEngagementCount,
-    normalizeScreenshotExtraction,
     buildScreenshotPayload,
     analyzeScreenshots,
     visionCacheKey,
@@ -1073,7 +1071,6 @@
     mergedTextCacheKey,
     sortPayloadsChronologically,
     buildEvidence,
-    buildMergedEvidence,
     renderMergedSummary,
     renderMergedSourceSuffix,
     summarizeMerged

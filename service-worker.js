@@ -60,10 +60,6 @@ function cleanText(value) {
   return String(value ?? "").replace(/\r?\n/g, " ").trim();
 }
 
-function isXhsPageUrl(value) {
-  return postPagePlatform(value) === "xiaohongshu";
-}
-
 // 内容脚本消息的来源校验：小红书与微博帖文页均放行。
 function isPostPageUrl(value) {
   return postPagePlatform(value) !== null;
