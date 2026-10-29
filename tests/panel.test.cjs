@@ -674,13 +674,6 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
       this.onload();
     }
   };
-  context.Image = class {
-    set src(value) {
-      this.naturalWidth = 100;
-      this.naturalHeight = 100;
-      this.onload();
-    }
-  };
   function makeDataTransferEvent(clipboard) {
     return {
       clipboardData: clipboard,
@@ -706,7 +699,11 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
 
   let resolveShotSummarize;
   setRuntime(async (message) => {
-    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") return { ok: true, payload: shotPayload, warnings: [] };
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") {
+      // 截图原样上传：data URL 与暂存的文件内容逐字一致，不再缩放转码
+      assert.equal(message.images.join(","), "data:image/png;base64,QUJD");
+      return { ok: true, payload: shotPayload, warnings: [], dateNotice: "发帖日期按上传当天换算为 10月26日" };
+    }
     if (message.type === "XHS_AI_SUMMARIZE") {
       assert.equal(message.payload.source.origin, "user_screenshot");
       return new Promise((resolve) => { resolveShotSummarize = resolve; });
@@ -732,6 +729,8 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await shotClick;
   await settle();
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
+  // 相对时间换算提示出现在状态区
+  assert.match(elements["#status-detail"].textContent, /发帖日期按上传当天换算为 10月26日/);
   assert.match(elements["#result-text"].value, /截图帖文事件/);
   assert.equal(elements["#result-source-label"].textContent, "截图");
   assert.equal(elements["#material-staging"].hidden, true);
@@ -879,6 +878,48 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await settle();
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
   assert.equal(elements["#material-input"].value, weiboInInput);
+
+  // 图片模型拒收大图时：接口原始报错透出，并提示把长截图拆开重传
+  elements["#material-file-input"].files = [{ name: "reject.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") {
+      return { ok: false, error: "模型请求失败：image width/height ratio out of range" };
+    }
+    return { ok: true };
+  });
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  const rejectClick = elements["#shot-summarize-button"].listeners.click();
+  await rejectClick;
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "截图识别失败");
+  assert.match(elements["#status-detail"].textContent, /模型请求失败：image width\/height ratio out of range/);
+  assert.match(elements["#status-detail"].textContent, /可把长截图拆成几张再上传/);
+  // 失败的截图保留在暂存区，不静默丢弃
+  assert.equal(elements["#material-staging"].hidden, false);
+
+  // 本批 data URL 总长超过扩展消息安全上限（32 MB）时，发送前直接拦下
+  const recognizeCallsBefore = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length;
+  const oversizedDataUrl = `data:image/png;base64,${"A".repeat(33 * 1024 * 1024)}`;
+  elements["#material-file-input"].files = [{ name: "big.png", type: "image/png", size: 1000, dataUrl: oversizedDataUrl }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  const oversizedClick = elements["#shot-summarize-button"].listeners.click();
+  await oversizedClick;
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "截图识别失败");
+  assert.match(elements["#status-detail"].textContent, /截图总体积过大，请分批识别/);
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length, recognizeCallsBefore);
+
+  // 清理暂存区里两批失败遗留的截图，恢复到空暂存状态
+  const stagedIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(stagedIds.length, 2);
+  for (const id of stagedIds) {
+    elements["#material-staging"].listeners.click({
+      target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id } } : null }
+    });
+  }
+  assert.equal(elements["#material-staging"].hidden, true);
 
   // —— 链接自动识别：短链命中当前页签结果，只换链接不调用模型 ——
   const shortLink7 = "https://xhslink.cn/o/note7short";

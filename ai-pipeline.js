@@ -452,10 +452,12 @@
     }
 
     const uncertainties = [...(extraction.uncertainties || [])];
-    let publishedDisplay = extraction.publishedDisplay;
-    if (publishedDisplay && !/^(?:\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}|\d{1,2}[月\-/.]\d{1,2})/.test(publishedDisplay)) {
-      uncertainties.push(`发帖时间为相对表述（原文“${publishedDisplay}”），截图拍摄时间未知，无法换算为日期。`);
-      publishedDisplay = "";
+    const exportedAt = context.exportedAt instanceof Date ? context.exportedAt : new Date();
+    // 截图上的相对时间（“3天前”等）不再丢弃：payload.exportedAt 就是识别时刻（上传当天），
+    // 直接复用网页帖的 resolvePublishedDate 换算；换算失败的格式保持 uncertainties 兜底。
+    const publishedDisplay = extraction.publishedDisplay;
+    if (publishedDisplay && !resolvePublishedDate({ exportedAt: exportedAt.toISOString(), note: { publishedDisplay } })) {
+      uncertainties.push(`发帖时间为相对表述（原文“${publishedDisplay}”），无法换算为日期。`);
     }
 
     const likes = { raw: extraction.likesRaw || null, value: parseEngagementCount(extraction.likesRaw) };
@@ -473,7 +475,7 @@
 
     return {
       schemaVersion: 1,
-      exportedAt: (context.exportedAt instanceof Date ? context.exportedAt : new Date()).toISOString(),
+      exportedAt: exportedAt.toISOString(),
       source: {
         platform: "xiaohongshu",
         url: cleanText(context.sourceUrl) || null,
@@ -526,6 +528,15 @@
     };
   }
 
+  // 截图相对时间换算成功时给状态区的提示；绝对日期（month_day/absolute_date）与换算失败时不提示，
+  // 失败已由 buildScreenshotPayload 写入 uncertainties 兜底。
+  function screenshotDateNotice(payload) {
+    if (!cleanText(payload?.note?.publishedDisplay, 100)) return "";
+    const resolved = resolvePublishedDate(payload);
+    if (!resolved || ["absolute_date", "month_day"].includes(resolved.source)) return "";
+    return `发帖日期按上传当天换算为 ${resolved.display}`;
+  }
+
   async function analyzeScreenshots(dataUrls, config, apiKey) {
     if (!Array.isArray(dataUrls) || !dataUrls.length) throw new Error("没有可识别的截图。");
     const prompts = resolvePrompts(config);
@@ -566,6 +577,18 @@
     const publishedDate = resolvePublishedDate(payload);
     const video = payload?.media?.video || null;
     const isVideoNote = Boolean(video) || payload?.note?.type === "video";
+    // 截图帖文的配图文字并入 imageEvidence：写作提示词里的图片规则只作用于 imageEvidence，
+    // 放在 imageText 会被裸原文照搬。合成条目只在证据内部出现，不写进图片识别缓存。
+    const imageEvidence = selectVisionEvidence(vision);
+    if (payload?.source?.origin === "user_screenshot" && payload.note?.imageText) {
+      imageEvidence.push(normalizeVisionItem({
+        image_index: 1,
+        has_text: true,
+        visible_text: payload.note.imageText,
+        summary_value: "supporting",
+        include_reason: "截图中的帖文配图文字"
+      }, 1));
+    }
     return {
       source: {
         platform: platformLabel(payload?.source),
@@ -581,8 +604,6 @@
         publishedDateIso: publishedDate?.iso || null,
         content: cleanText(payload.note?.content, 10000),
         hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100)),
-        // 截图来源帖文的配图文字；普通帖文配图走 imageEvidence，字段按需出现以保持既有证据哈希稳定。
-        ...(payload.note?.imageText ? { imageText: cleanText(payload.note.imageText, 4000) } : {}),
         uncertainties: stringArray(payload?.uncertainties || [])
       },
       video: video ? {
@@ -593,7 +614,7 @@
       comments: (payload.commentExport?.comments || [])
         .slice(0, COMMENT_LIMIT)
         .map((comment) => compactComment(comment)),
-      imageEvidence: selectVisionEvidence(vision)
+      imageEvidence
     };
   }
 
@@ -621,7 +642,7 @@
       headline: cleanText(parsed.headline, 160).replace(/^★\s*/, ""),
       eventSummary: cleanText(parsed.event_summary, 1800),
       opinionPoints: (Array.isArray(parsed.opinion_points) ? parsed.opinion_points : [])
-        .slice(0, 3)
+        .slice(0, 4)
         .map((item) => cleanText(item, 500))
         .filter(Boolean)
     };
@@ -1065,6 +1086,7 @@
     testProvider,
     parseEngagementCount,
     buildScreenshotPayload,
+    screenshotDateNotice,
     analyzeScreenshots,
     visionCacheKey,
     textCacheKey,

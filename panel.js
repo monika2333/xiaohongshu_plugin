@@ -1851,29 +1851,13 @@ function readImageFile(file) {
   });
 }
 
-function loadImageElement(dataUrl) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("图片无法解析，请确认文件未损坏。"));
-    image.src = dataUrl;
-  });
-}
-
-// 控制发往后台的消息体积：长边超过 1600px 的截图等比缩小后转 JPEG。
-async function downscaleDataUrl(dataUrl, maxEdge = 1600) {
-  const image = await loadImageElement(dataUrl);
-  const longest = Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
-  if (!longest || longest <= maxEdge) return dataUrl;
-  const scale = maxEdge / longest;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.9);
-}
-
 const ACCEPTED_SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
+// 截图不再缩放或转码，原始文件直接转 data URL 上传，保住长截图的文字清晰度。
+// 但单条 chrome.runtime 消息没有官方文档的大小上限，走 Mojo IPC 序列化，实践中约 64 MB 处会直接失败
+// （Chromium issue 420956735；Tampermonkey #2285 同类问题靠分块规避）。本批 data URL 总长超过
+// 32 MB（留足 JSON 序列化余量）时提前拦下，提示分批识别，避免静默失败。
+const SCREENSHOT_MESSAGE_MAX_CHARS = 32 * 1024 * 1024;
 
 // 点击拖放区、Ctrl+V 粘贴或拖入的图片都进同一份暂存列表，凑齐后由按钮统一提交。
 async function stageScreenshotFiles(files) {
@@ -1893,7 +1877,7 @@ async function stageScreenshotFiles(files) {
       stagedScreenshots.push({
         id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         name: label,
-        dataUrl: await downscaleDataUrl(await readImageFile(file))
+        dataUrl: await readImageFile(file)
       });
     } catch (error) {
       failures.push(error?.message || `读取 ${label} 失败。`);
@@ -1917,13 +1901,19 @@ function renderStaging() {
   elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入清单` : "识别这张截图并加入清单";
 }
 
+// 图片模型因图片过大、尺寸或长宽比超限拒收时，接口的原始报错原样透出，并附拆分建议；其余错误不加工。
+function screenshotRecognitionError(recognized) {
+  const message = recognized?.error || "截图识别失败。";
+  return message.includes("模型请求失败") ? `${message}。可把长截图拆成几张再上传。` : message;
+}
+
 async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
   const recognized = await chrome.runtime.sendMessage({
     type: "XHS_AI_SCREENSHOT_RECOGNIZE",
     images,
     ...(sourceUrl ? { sourceUrl } : {})
   });
-  if (!recognized?.ok || !recognized.payload) throw new Error(recognized?.error || "截图识别失败。");
+  if (!recognized?.ok || !recognized.payload) throw new Error(screenshotRecognitionError(recognized));
   shotSlot.capture = recognized.payload;
   writeStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
   const response = await chrome.runtime.sendMessage({
@@ -1933,13 +1923,14 @@ async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
   });
   if (!response?.ok) throw new Error(response?.error || "概括未完成。");
   shotSlot.result = response.result;
+  const dateNote = recognized.dateNotice ? `；${recognized.dateNotice}` : "";
   const warningNote = recognized.warnings?.length
     ? `；${recognized.warnings.length} 项信息未能完全识别（如时间、互动数）`
     : "";
   writeStatus({
     state: "done",
     title: "截图概括完成",
-    detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + warningNote,
+    detail: completionDetail(response.result, "已按固定格式生成，可直接复制。") + dateNote + warningNote,
     percent: 100
   });
 }
@@ -1950,14 +1941,15 @@ async function addScreenshotImagesToBasket(images, sourceUrl) {
     images,
     ...(sourceUrl ? { sourceUrl } : {})
   });
-  if (!response?.ok) throw new Error(response?.error || "截图识别失败。");
+  if (!response?.ok) throw new Error(screenshotRecognitionError(response));
   basketItems = response.basket || [];
   renderBasket();
+  const dateNote = response.dateNotice ? `；${response.dateNotice}` : "";
   const warningNote = response.warnings?.length
     ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
     : "";
   const linkNote = sourceUrl ? "，已带上输入框里的原帖链接" : "";
-  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${warningNote}${linkNote}。`);
+  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${dateNote}${warningNote}${linkNote}。`);
 }
 
 async function commitStagedScreenshots(mode) {
@@ -1992,6 +1984,9 @@ async function commitStagedScreenshots(mode) {
   const givenLink = screenshotLinkFromMaterialInput();
   try {
     const images = stagedScreenshots.map((item) => item.dataUrl);
+    // 超过扩展消息的安全体积时提前拦下，不让后台静默失败
+    const totalChars = images.reduce((sum, url) => sum + String(url).length, 0);
+    if (totalChars > SCREENSHOT_MESSAGE_MAX_CHARS) throw new Error("截图总体积过大，请分批识别。");
     if (isMerge) {
       await addScreenshotImagesToBasket(images, givenLink);
     } else {

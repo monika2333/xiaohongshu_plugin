@@ -958,13 +958,18 @@ async function recognizeScreenshots(message) {
     sourceUrl,
     screenshotId: crypto.randomUUID?.() || `shot-${Date.now()}-${Math.random().toString(16).slice(2)}`
   });
-  return { ok: true, payload, warnings: payload.uncertainties || [] };
+  return {
+    ok: true,
+    payload,
+    warnings: payload.uncertainties || [],
+    dateNotice: XhsAi.screenshotDateNotice(payload)
+  };
 }
 
 async function addScreenshotToBasket(message) {
   const recognized = await recognizeScreenshots(message);
   const added = await addToMergeBasket(recognized.payload);
-  return { ...added, warnings: recognized.warnings };
+  return { ...added, warnings: recognized.warnings, dateNotice: recognized.dateNotice };
 }
 
 async function summarizeMergeBasket(message) {

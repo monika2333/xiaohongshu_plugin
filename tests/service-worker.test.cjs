@@ -75,11 +75,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.14.9");
+assert.equal(manifest.version, "0.15.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.14.9");
+assert.equal(packageJson.version, "0.15.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -168,6 +168,22 @@ const payload = {
   assert.match(context.XhsPrompts.visionSystem, /summary_value/);
   assert.match(context.XhsPrompts.textSystem, /event_summary/);
   assert.match(context.XhsPrompts.textSystem, /video\.transcript/);
+  // v0.15.0 写作提示词：发帖人写法带中文引号；补充说明与转述标准收紧
+  assert.match(context.XhsPrompts.textSystem, /用中文引号括起的 @昵称/);
+  assert.match(context.XhsPrompts.mergeSystem, /用中文引号括起的 @昵称/);
+  assert.doesNotMatch(context.XhsPrompts.textSystem, /以平台用户“@用户名”引出/);
+  assert.doesNotMatch(context.XhsPrompts.textSystem, /叙事中相应写作/);
+  assert.doesNotMatch(context.XhsPrompts.mergeSystem, /及其“@用户名”/);
+  assert.match(context.XhsPrompts.textSystem, /提炼要点后用规范书面语转述/);
+  assert.match(context.XhsPrompts.mergeSystem, /提炼要点后用规范书面语转述/);
+  assert.match(context.XhsPrompts.textSystem, /重复正文或表达情绪的补充直接略过/);
+  assert.match(context.XhsPrompts.mergeSystem, /发帖人的补充说明只在带来新事实/);
+  // 补充委托：合并正文点名发帖人，评论只进观点区，观点条要求与单帖对齐
+  assert.match(context.XhsPrompts.mergeSystem, /以首帖发帖人引出（写法同上）/);
+  assert.match(context.XhsPrompts.mergeSystem, /后续帖文提供新信息、事件新进展或不同说法时同样写明其发帖人/);
+  assert.match(context.XhsPrompts.mergeSystem, /评论区内容全部归纳到 opinion_points，不在正文里写“评论中……”/);
+  assert.match(context.XhsPrompts.mergeSystem, /一句话写完，不超过50字/);
+  assert.match(context.XhsPrompts.mergeSystem, /不照搬口语化表达/);
 
   const structured = {
     headline: "高校教师称被移出工作群",
@@ -250,6 +266,61 @@ const payload = {
     context.XhsAi.selectVisionEvidence([ignoredImage, usefulImage]).map((item) => item.image_index).join(","),
     "2"
   );
+
+  // —— 网页帖证据逐字锁定：配图文字规则只属于截图帖，网页帖证据结构不得漂移 ——
+  const webVision = [
+    context.XhsAi.normalizeVisionItem({
+      image_index: 1,
+      has_text: true,
+      visible_text: "工作群通知",
+      factual_description: "聊天记录截图",
+      summary_value: "essential"
+    }, 1)
+  ];
+  // buildEvidence 对象产自 vm realm，跨 realm 原型不同，先 JSON 往返再逐字比较
+  assert.deepEqual(JSON.parse(JSON.stringify(context.XhsAi.buildEvidence(payload, webVision, null))), {
+    source: {
+      platform: "小红书",
+      url: "https://www.xiaohongshu.com/explore/6a76029300000000250070c1?xsec_token=test-token&xsec_source=pc_feed",
+      noteId: "6a76029300000000250070c1",
+      origin: "live_page"
+    },
+    note: {
+      title: "测试/帖文",
+      author: "测试用户",
+      noteType: "normal",
+      publishedDate: "8月8日",
+      publishedDateIso: "2026-08-08",
+      content: "正文",
+      hashtags: [],
+      uncertainties: []
+    },
+    video: null,
+    comments: [
+      {
+        content: "包含,逗号与\"引号\"",
+        likes: 2,
+        isAuthor: false,
+        isPinned: false,
+        visibleReplies: [{ content: "回复内容", likes: "赞", isAuthor: false }]
+      }
+    ],
+    imageEvidence: [
+      {
+        image_index: 1,
+        has_text: true,
+        visible_text: "工作群通知",
+        factual_description: "聊天记录截图",
+        summary_value: "essential",
+        include_reason: "",
+        people: [],
+        organizations: [],
+        dates: [],
+        claims: [],
+        uncertainties: []
+      }
+    ]
+  });
 
   assert.deepEqual(
     JSON.parse(JSON.stringify(context.XhsAi.parseJsonResponse("```json\n{\"ok\":true}\n```"))),
@@ -417,7 +488,13 @@ const payload = {
             content: JSON.stringify({
               headline: "用户反映测试事件",
               event_summary: "小红书用户发帖反映测试事件",
-              opinion_points: ["部分网民关注事件进展"]
+              opinion_points: [
+                "部分网民关注事件进展",
+                "部分网民质疑管理方式",
+                "部分网民猜测事件原因",
+                "部分网民担心后续影响",
+                "部分网民呼吁彻查"
+              ]
             })
           }
         }]
@@ -433,6 +510,8 @@ const payload = {
     cache
   );
   assert.match(firstSummary.text, /用户反映测试事件/);
+  // v0.15.0 单帖概括与合并对齐：评论观点最多保留 4 条
+  assert.equal(firstSummary.structured.opinionPoints.length, 4);
   assert.equal(textCalls, 1);
   const textEvidence = lastTextRequest.messages[1].content;
   assert.match(textEvidence, /"publishedDate":"8月8日"/);
@@ -554,12 +633,86 @@ const payload = {
   }, { sourceUrl: "", screenshotId: "shot-test-1" });
   assert.equal(screenshotPayload.source.origin, "user_screenshot");
   assert.equal(screenshotPayload.source.url, null);
-  assert.equal(screenshotPayload.note.publishedDisplay, null);
-  assert.ok(screenshotPayload.uncertainties.some((item) => /3天前/.test(item)));
+  // v0.15.0 相对时间不再清空：保留原文，交由 resolvePublishedDate 以识别时刻（上传当天）换算
+  assert.equal(screenshotPayload.note.publishedDisplay, "3天前");
+  assert.ok(!screenshotPayload.uncertainties.some((item) => /3天前|无法换算/.test(item)));
   assert.equal(screenshotPayload.interactions.likes.value, 55);
   assert.equal(screenshotPayload.interactions.comments.value, 998);
   assert.equal(screenshotPayload.commentExport.extractedTopLevelCount, 1);
   assert.equal(screenshotPayload.commentExport.comments[0].likes.value, 2);
+
+  // —— 截图相对时间按上传当天换算：exportedAt 即识别时刻 ——
+  const fixedNow = new Date("2026-10-29T08:00:00.000Z");
+  const relativeShotPayload = context.XhsAi.buildScreenshotPayload({
+    author: "073.",
+    publishedDisplay: "3天前",
+    title: "北中医东院天桥",
+    contentText: "正文",
+    hashtags: [],
+    imageText: "北中医东院天桥 建好了再通人 可以吗？",
+    visibleComments: [],
+    uncertainties: [],
+    imageCount: 1
+  }, { exportedAt: fixedNow, screenshotId: "shot-date-1" });
+  assert.equal(relativeShotPayload.note.publishedDisplay, "3天前");
+  assert.equal(context.XhsAi.resolvePublishedDate(relativeShotPayload).iso, "2026-10-26");
+  assert.equal(context.XhsAi.screenshotDateNotice(relativeShotPayload), "发帖日期按上传当天换算为 10月26日");
+  const relativeShotRender = context.XhsAi.renderSummary({
+    headline: "网民反映某学院天桥摇晃存安全隐患",
+    eventSummary: "小红书平台用户“@073.”发帖反映天桥摇晃。",
+    opinionPoints: []
+  }, relativeShotPayload);
+  assert.match(relativeShotRender, /\n10月26日，小红书平台用户“@073\.”发帖反映天桥摇晃。/);
+
+  // 截图上的绝对日期照常使用，不显示换算提示
+  const absoluteShotPayload = context.XhsAi.buildScreenshotPayload({
+    author: "073.",
+    publishedDisplay: "09-26",
+    title: "绝对日期帖",
+    contentText: "正文",
+    hashtags: [],
+    visibleComments: [],
+    uncertainties: [],
+    imageCount: 1
+  }, { exportedAt: fixedNow, screenshotId: "shot-date-2" });
+  assert.equal(absoluteShotPayload.note.publishedDisplay, "09-26");
+  assert.equal(context.XhsAi.resolvePublishedDate(absoluteShotPayload).display, "9月26日");
+  assert.equal(context.XhsAi.screenshotDateNotice(absoluteShotPayload), "");
+
+  // 仍无法解析的时间格式保持兜底：不写日期、进 warnings、不给换算提示
+  const unparseableShotPayload = context.XhsAi.buildScreenshotPayload({
+    author: "073.",
+    publishedDisplay: "前些天",
+    title: "无法解析时间",
+    contentText: "正文",
+    hashtags: [],
+    visibleComments: [],
+    uncertainties: [],
+    imageCount: 1
+  }, { exportedAt: fixedNow, screenshotId: "shot-date-3" });
+  assert.equal(context.XhsAi.resolvePublishedDate(unparseableShotPayload), null);
+  assert.ok(unparseableShotPayload.uncertainties.some((item) => /前些天/.test(item)));
+  assert.equal(context.XhsAi.screenshotDateNotice(unparseableShotPayload), "");
+
+  // —— 截图配图文字并入 imageEvidence，走与网页帖相同的写作规则；证据里不再有裸 imageText ——
+  const shotEvidence = context.XhsAi.buildEvidence(relativeShotPayload, [], null);
+  assert.equal(shotEvidence.note.imageText, undefined);
+  assert.equal(shotEvidence.imageEvidence.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(shotEvidence.imageEvidence[0])), {
+    image_index: 1,
+    has_text: true,
+    visible_text: "北中医东院天桥 建好了再通人 可以吗？",
+    factual_description: "",
+    summary_value: "supporting",
+    include_reason: "截图中的帖文配图文字",
+    people: [],
+    organizations: [],
+    dates: [],
+    claims: [],
+    uncertainties: []
+  });
+  assert.doesNotMatch(JSON.stringify(shotEvidence), /imageText/);
+  assert.equal(context.XhsAi.buildEvidence(absoluteShotPayload, [], null).imageEvidence.length, 0);
 
   const mergedRender = context.XhsAi.renderMergedSummary({
     headline: "网传某校学生发表不当言论引争议",
@@ -638,7 +791,7 @@ const payload = {
           message: {
             content: JSON.stringify({
               headline: "网传某校学生婚姻选择言论引争议",
-              event_summary: "小红书平台账号“@溜溜球”发布帖文询问某校“闪婚姐”是怎么回事；当日账号“@难道你就一点猪也没有嘛”也就该话题发表帖文，发表个人意见。",
+              event_summary: "小红书平台用户“@测试用户”发帖反映测试事件；当日小红书平台用户“@溜溜球”发帖询问某校“闪婚姐”是怎么回事。",
               opinion_points: ["部分网民好奇事件全貌", "部分网民分享校园墙相关截图"]
             })
           }
@@ -688,7 +841,14 @@ const payload = {
   assert.match(mergedEvidence, /"postCount":2/);
   assert.match(mergedEvidence, /"origin":"live_page"/);
   assert.match(mergedEvidence, /"origin":"user_screenshot"/);
-  assert.match(mergedResponse.result.text, /^★ 网传某校学生婚姻选择言论引争议\n8月8日，/);
+  // 补充委托验收：证据带发帖人，正文以首帖发帖人引出并点名后续发帖人，评论只出现在“部分网民”部分
+  assert.match(mergedEvidence, /"author":"测试用户"/);
+  assert.match(mergedEvidence, /"author":"溜溜球"/);
+  assert.match(
+    mergedResponse.result.text,
+    /^★ 网传某校学生婚姻选择言论引争议\n8月8日，小红书平台用户“@测试用户”发帖反映测试事件；当日小红书平台用户“@溜溜球”/
+  );
+  assert.doesNotMatch(mergedResponse.result.text, /评论中/);
   assert.match(mergedResponse.result.text, /上述帖文共获1212次点赞、333条评论。/);
   assert.match(
     mergedResponse.result.text,
