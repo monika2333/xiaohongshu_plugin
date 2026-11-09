@@ -14,6 +14,9 @@ const MAX_SCREENSHOT_IMAGES = 8;
 const MAX_HISTORY_ENTRIES = 100;
 const FEISHU_API_ORIGIN = "https://open.feishu.cn";
 const FEISHU_REQUEST_TIMEOUT_MS = 15000;
+// 推送前向面板询问「这个任务有没有更新的待补链接」的超时；无响应按没有处理，照旧立即推送。
+const PANEL_PENDING_LINK_TIMEOUT_MS = 1500;
+const MAX_FEISHU_TEXT_CHARS = 20000;
 const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_GET_CONFIG",
   "XHS_AI_SAVE_CONFIG",
@@ -22,6 +25,7 @@ const EXTENSION_PAGE_MESSAGES = new Set([
   "XHS_AI_TEST_FEISHU",
   "XHS_AI_GET_FEISHU_STATUS",
   "XHS_AI_SEND_FEISHU",
+  "XHS_AI_NOTIFY_FEISHU_RESULT",
   "XHS_AI_SUMMARIZE",
   "XHS_AI_GET_WORKFLOW",
   "XHS_AI_LIST_WORKFLOWS",
@@ -542,13 +546,106 @@ async function pushFeishuNotification(text, config, secrets) {
   if (!hasFeishuSettings(config, secrets)) return null;
   try {
     const delivered = await sendFeishuMessage(text, config, secrets);
-    return { status: "sent", channel: delivered.channel, sentAt: Date.now() };
+    return {
+      status: "sent",
+      channel: delivered.channel,
+      sentAt: Date.now(),
+      // 实际发送的文本：结果后来被补链接/编辑后，面板靠它判断飞书里是不是旧版本
+      sentText: String(text ?? "").trim()
+    };
   } catch (error) {
     return {
       status: "failed",
       error: cleanText(error?.message || "飞书推送失败。").slice(0, 180)
     };
   }
+}
+
+// 后台在推送前问面板：本次生成使用的 givenUrl 之外，是否还有一个更新的待补链接。
+// 面板只在自己拥有该页签/合并任务时同步响应；无响应、超时或异常一律按“没有”处理。
+async function panelHasPendingLink(target) {
+  if (typeof chrome.runtime.sendMessage !== "function") return false;
+  let timer = null;
+  try {
+    const response = await Promise.race([
+      chrome.runtime.sendMessage({ type: "XHS_AI_QUERY_PENDING_LINK", ...target }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), PANEL_PENDING_LINK_TIMEOUT_MS);
+      })
+    ]);
+    return Boolean(response?.pending);
+  } catch {
+    return false;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+function normalizeFeishuText(value) {
+  return String(value ?? "").replace(/\u0000/g, "").trim();
+}
+
+function assertFeishuText(text) {
+  if (!text) throw new Error("没有可推送的概括内容。");
+  if (text.length > MAX_FEISHU_TEXT_CHARS) throw new Error("内容过长，飞书消息最多 20000 字。");
+}
+
+// 历史条目里的 result.notification 反映最后一次实际发送的文本。
+async function updateHistoryNotification(historyId, notification) {
+  const id = cleanText(historyId);
+  if (!id) return null;
+  const entries = await getHistoryEntries();
+  const index = entries.findIndex((entry) => entry.id === id);
+  if (index < 0) return null;
+  entries[index] = {
+    ...entries[index],
+    result: { ...entries[index].result, notification }
+  };
+  await chrome.storage.local.set({ [HISTORY_KEY]: entries });
+  return entries[index];
+}
+
+// 只改工作流快照里的 result.notification，不广播：手动发送时结果框里的文本可能已被编辑，
+// 广播 XHS_AI_WORKFLOW_STATE 会把面板当前结果按快照覆盖回去。
+function updateWorkflowNotification(tabId, pageSessionId, historyId, notification) {
+  const numericTabId = Number(tabId);
+  const sessionId = cleanText(pageSessionId);
+  if (!Number.isInteger(numericTabId) || !sessionId) return Promise.resolve();
+  const operation = workflowStateWrite.then(async () => {
+    const stored = await chrome.storage.session.get(WORKFLOW_STATES_KEY);
+    const states = stored[WORKFLOW_STATES_KEY] || {};
+    const key = workflowKey(numericTabId);
+    const workflow = states[key];
+    if (!workflow || workflow.pageSessionId !== sessionId || !workflow.result) return;
+    const id = cleanText(historyId);
+    if (id && workflow.result.historyId && workflow.result.historyId !== id) return;
+    states[key] = { ...workflow, result: { ...workflow.result, notification } };
+    await chrome.storage.session.set({ [WORKFLOW_STATES_KEY]: states });
+  });
+  workflowStateWrite = operation.catch(() => {});
+  return operation;
+}
+
+async function syncNotificationSnapshots(message, notification) {
+  if (!notification) return;
+  await updateHistoryNotification(message?.historyId, notification).catch(() => {});
+  await updateWorkflowNotification(
+    message?.tabId,
+    message?.pageSessionId,
+    message?.historyId,
+    notification
+  ).catch(() => {});
+}
+
+// 面板延迟推送补偿：结果文本是面板里最终（补完链接）的文本，后台只负责发送和写回状态。
+async function notifyFeishuResult(message) {
+  const text = normalizeFeishuText(message?.text);
+  assertFeishuText(text);
+  const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  if (!hasFeishuSettings(config, secrets)) return { ok: true, notification: null };
+  const notification = await pushFeishuNotification(text, config, secrets);
+  await syncNotificationSnapshots(message, notification);
+  return { ok: true, notification };
 }
 
 async function testFeishuSettings(rawConfig, secrets) {
@@ -576,15 +673,23 @@ async function getFeishuStatus() {
 
 // 手动发送结果框里的文本：保留换行，避免 cleanText 把编辑后的格式压平。
 async function sendManualFeishu(message) {
-  const text = String(message?.text ?? "").replace(/\u0000/g, "").trim();
+  const text = normalizeFeishuText(message?.text);
   if (!text) throw new Error("没有可发送的内容。");
-  if (text.length > 20000) throw new Error("内容过长，飞书消息最多 20000 字。");
+  if (text.length > MAX_FEISHU_TEXT_CHARS) throw new Error("内容过长，飞书消息最多 20000 字。");
   const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
   if (!validateFeishuSettings(config, secrets)) {
     throw new Error("尚未配置飞书推送，请先在设置中填写。");
   }
   const delivered = await sendFeishuMessage(text, config, secrets);
-  return { ok: true, channel: delivered.channel };
+  const notification = {
+    status: "sent",
+    channel: delivered.channel,
+    sentAt: Date.now(),
+    sentText: text
+  };
+  // 带上下文（historyId / tabId + pageSessionId）时同步历史与工作流快照里的发送状态
+  await syncNotificationSnapshots(message, notification);
+  return { ok: true, channel: delivered.channel, notification };
 }
 
 async function prepareVisionPayload(message, sender) {
@@ -623,7 +728,7 @@ async function prepareVisionPayload(message, sender) {
   };
 }
 
-async function summarizePayload(payload, force, progressListener = () => {}, preparedVision = null) {
+async function summarizePayload(payload, force, progressListener = () => {}, preparedVision = null, options = {}) {
   const isScreenshot = payload?.source?.origin === "user_screenshot";
   if (!payload?.commentExport || !payload?.media || (!payload?.source?.noteId && !isScreenshot)) {
     throw new Error("页面采集数据不完整，请重新打开帖文后再试。");
@@ -644,10 +749,24 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
     preparedVision
   );
   const { cache: updatedCache, ...publicResult } = result;
+  let notification = null;
   if (hasFeishuSettings(config, secrets)) {
-    progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+    let deferNotify = false;
+    if (typeof options?.shouldDeferNotify === "function") {
+      try {
+        deferNotify = Boolean(await options.shouldDeferNotify());
+      } catch {
+        deferNotify = false;
+      }
+    }
+    if (deferNotify) {
+      // 链接还没归位：先不推送，等面板补完链接后用最终文本调 XHS_AI_NOTIFY_FEISHU_RESULT。
+      notification = { status: "deferred" };
+    } else {
+      progressListener({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+      notification = await pushFeishuNotification(publicResult.text, config, secrets);
+    }
   }
-  const notification = await pushFeishuNotification(publicResult.text, config, secrets);
   const historyId = newHistoryId();
   const storedResult = {
     ...publicResult,
@@ -713,15 +832,28 @@ async function summarizePagePayload(message, sender) {
   };
 
   try {
-    const response = await summarizePayload(payload, message.force, onProgress, message.preparedVision);
+    const response = await summarizePayload(payload, message.force, onProgress, message.preparedVision, {
+      // 本次生成实际用的 givenUrl 之外若还有更新的待补链接，先不推送，等面板补完链接再来。
+      // 截图帖文的链接在创建时已确定，不参与延迟推送。
+      shouldDeferNotify: () => payload?.source?.origin === "user_screenshot"
+        ? false
+        : panelHasPendingLink({
+          kind: "page",
+          tabId,
+          pageSessionId,
+          givenUrl: cleanText(payload?.source?.givenUrl)
+        })
+    });
     const notification = response.result.notification;
     const completionDetail = notification?.status === "sent"
       ? "概括已生成，并已推送到飞书。"
-      : notification?.status === "failed"
-        ? `概括已生成；飞书推送失败：${notification.error}`
-        : message.force
-          ? "新版本已替换原概括。"
-          : "已按固定格式生成，可直接复制。";
+      : notification?.status === "deferred"
+        ? "概括已生成，链接更新后会自动推送到飞书。"
+        : notification?.status === "failed"
+          ? `概括已生成；飞书推送失败：${notification.error}`
+          : message.force
+            ? "新版本已替换原概括。"
+            : "已按固定格式生成，可直接复制。";
     await updateWorkflowState(tabId, pageSessionId, {
       pageUrl,
       noteId: payload?.source?.noteId || null,
@@ -989,10 +1121,16 @@ async function summarizeMergeBasket(message) {
 
   const result = await XhsAi.summarizeMerged(payloads, config, secrets, cache, onProgress, Boolean(message?.force));
   const { cache: updatedCache, ...publicResult } = result;
+  let notification = null;
   if (hasFeishuSettings(config, secrets)) {
-    onProgress({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+    // 合并运行期间面板若改过清单条目的链接，先不推送，等面板用当前清单重渲染后再发最终文本
+    if (await panelHasPendingLink({ kind: "merge" })) {
+      notification = { status: "deferred" };
+    } else {
+      onProgress({ stage: "notification", percent: 96, detail: "概括已生成，正在推送到飞书" });
+      notification = await pushFeishuNotification(publicResult.text, config, secrets);
+    }
   }
-  const notification = await pushFeishuNotification(publicResult.text, config, secrets);
   const historyId = newHistoryId();
   const mergeResult = {
     ...publicResult,
@@ -1045,7 +1183,7 @@ function payloadWithGivenUrl(payload, rawGivenUrl, verified) {
   return { ...payload, source };
 }
 
-const RELINK_UPDATED_HINT = "链接已更新（未重新推送飞书）。";
+const RELINK_UPDATED_HINT = "链接已更新。";
 const RELINK_KEPT_HINT = "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。";
 
 function relinkHint(linkApplied) {
@@ -1236,6 +1374,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "XHS_AI_SEND_FEISHU":
       task = sendManualFeishu(message);
+      break;
+    case "XHS_AI_NOTIFY_FEISHU_RESULT":
+      task = notifyFeishuResult(message);
       break;
     case "XHS_AI_SUMMARIZE":
       task = summarizePayload(message.payload, message.force);

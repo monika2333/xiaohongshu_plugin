@@ -5,7 +5,7 @@ const WEIBO_LOGIN_REQUIRED_MESSAGE = "检测到当前微博页面尚未登录。
 const LINK_OPEN_TIMEOUT_MS = 25000;
 const LINK_POLL_INTERVAL_MS = 600;
 // 补链接后给用户的反馈：编辑过的结果无法自动替换时，链接仍已保存，不能当错误提示
-const RELINK_UPDATED_HINT = "链接已更新（未重新推送飞书）。";
+const RELINK_UPDATED_HINT = "链接已更新。";
 const RELINK_KEPT_HINT = "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,6 +68,7 @@ const elements = {
   regenerateButton: document.querySelector("#regenerate-button"),
   sendFeishuButton: document.querySelector("#send-feishu-button"),
   feishuFeedback: document.querySelector("#feishu-feedback"),
+  feishuStaleHint: document.querySelector("#feishu-stale-hint"),
   historyButton: document.querySelector("#history-button"),
   historyBackButton: document.querySelector("#history-back-button"),
   viewHistory: document.querySelector("#view-history"),
@@ -97,6 +98,11 @@ let linkResolveToken = 0;
 let historyClearResetTimer = null;
 let historyHintResetTimer = null;
 let lastMergeLinkChange = null;
+// 合并任务运行期间清单条目链接被改过：后台会把本次合并的飞书推送标为 deferred，
+// 面板收到结果后先按当前清单重渲染，再推送最终文本（只发一条）。
+let mergeLinkDirty = false;
+// 正在延迟补发飞书的结果（按 historyId），期间禁止再手动点图标发第二条。
+const feishuNotifyInFlight = new Set();
 const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超出自动淘汰最旧），可随时回看与复制。";
 
 // —— 并行任务模型 ——
@@ -523,6 +529,7 @@ function captureLabel(capture) {
 
 function completionDetail(result, fallback) {
   if (result?.notification?.status === "sent") return "概括已生成，并已推送到飞书。";
+  if (result?.notification?.status === "deferred") return "概括已生成，链接更新后会自动推送到飞书。";
   if (result?.notification?.status === "failed") {
     return `概括已生成；飞书推送失败：${result.notification.error || "请检查设置。"}`;
   }
@@ -846,8 +853,21 @@ function applyWorkflowState(workflow) {
   if (slot && sameContext) {
     if (workflow.noteId && !slot.context.noteId) slot.context.noteId = workflow.noteId;
     if (workflow.capture) slot.capture = workflow.capture;
-    if (workflow.status === "done" && workflow.result) slot.result = workflow.result;
-    slot.status = statusFromWorkflow(workflow);
+    let keepLocalSent = false;
+    if (workflow.status === "done" && workflow.result) {
+      // relink 的工作流广播可能晚于面板的延迟补发：同一条结果的本地已发送状态优先，
+      // 避免把刚推送成功的 deferred 又冲回未发送。
+      const nextResult = workflow.result;
+      const previous = slot.result;
+      keepLocalSent = nextResult.notification?.status === "deferred" &&
+        Boolean(previous?.historyId) && previous.historyId === nextResult.historyId &&
+        previous.notification?.status === "sent";
+      slot.result = keepLocalSent
+        ? { ...nextResult, notification: previous.notification }
+        : nextResult;
+    }
+    // 保留本地已发送状态时也保留对应的状态文案（“链接已更新，并已推送到飞书”）
+    if (!keepLocalSent) slot.status = statusFromWorkflow(workflow);
     if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
   }
   const progress = workflow.progress || {};
@@ -912,7 +932,9 @@ async function runFullWorkflow() {
       percent: 100
     });
     // 提取期间用户可能又贴了链接：以完成那一刻槽位里的暂存链接为准
-    await settlePendingLinkAfterWorkflow(page.tabId, pendingGivenUrl);
+    const relinked = await settlePendingLinkAfterWorkflow(page.tabId, pendingGivenUrl);
+    // 后台在链接归位前把推送标记为 deferred：现在用最终文本补发一次（只发这一条）
+    await finalizeDeferredFeishu("tab", { tabId: page.tabId, relinked, title: "概括完成" });
   } catch (error) {
     writePageStatus(page.tabId, {
       state: "error",
@@ -990,7 +1012,8 @@ async function regenerateActiveTab() {
       percent: 100
     });
     // 重新生成期间贴入的链接以完成那一刻的暂存值为准
-    await settlePendingLinkAfterWorkflow(page.tabId, null);
+    const relinked = await settlePendingLinkAfterWorkflow(page.tabId, null);
+    await finalizeDeferredFeishu("tab", { tabId: page.tabId, relinked, title: "重新生成完成" });
   } catch (error) {
     writePageStatus(tabId, {
       state: "error",
@@ -1037,8 +1060,8 @@ async function applyLinkToMatchingBasket(payload, url, verified, linkApplied) {
   const id = payloadItemId(payload);
   if (!id || !basketItems.some((item) => item.id === id)) return linkApplied;
   await setBasketItemLink(id, url, verified);
-  const mergeApplied = await rerenderMergeIfPossible();
-  return mergeApplied === "kept" ? "kept" : linkApplied;
+  const merge = await rerenderMergeIfPossible();
+  return merge.linkApplied === "kept" ? "kept" : linkApplied;
 }
 
 function hideLinkChoice() {
@@ -1166,27 +1189,30 @@ async function applyLinkToTab(url, verified, { announce = true } = {}) {
     noteIdFromUrlForPlatform(platform, slot.context?.pageUrl || activeTabUrl);
   const itemId = noteId ? `${platform === "weibo" ? "wbnote" : "note"}:${noteId}` : null;
   let mergeApplied = null;
+  let basketUpdated = false;
   if (itemId && basketItems.some((item) => item.id === itemId)) {
+    basketUpdated = true;
     await setBasketItemLink(itemId, targetUrl, verified);
-    mergeApplied = await rerenderMergeIfPossible();
+    mergeApplied = (await rerenderMergeIfPossible()).linkApplied;
   }
   if (focus.kind === "tab" && !historyVisible) renderCurrentPost();
   if (!slot.pendingGivenUrl) return { outcome: "none", linkApplied: null };
-  return { outcome: "pending", linkApplied: mergeApplied };
+  return { outcome: "pending", linkApplied: mergeApplied, basketUpdated };
 }
 
-// 任务跑完后补上运行期间贴入的链接；只换链接，不调用模型、不重推飞书。
+// 任务跑完后补上运行期间贴入的链接；只换链接，不调用模型。
+// 返回本次是否真的发生了 relink，调用方据此选择延迟推送后的状态文案。
 async function settlePendingLinkAfterWorkflow(tabId, usedGivenUrl) {
   const slot = pageSlots.get(tabId);
-  if (!slot) return;
+  if (!slot) return false;
   const latest = String(slot.pendingGivenUrl || "").trim();
-  if (!latest) return;
+  if (!latest) return false;
   if (latest === String(usedGivenUrl || "").trim()) {
     slot.pendingGivenUrl = null;
     slot.pendingGivenUrlVerified = false;
-    return;
+    return false;
   }
-  if (!slot.result || !slot.capture) return;
+  if (!slot.result || !slot.capture) return false;
   const verified = Boolean(slot.pendingGivenUrlVerified);
   try {
     const response = await requestRelink(slot.capture, slot.result, latest, verified, {
@@ -1202,9 +1228,11 @@ async function settlePendingLinkAfterWorkflow(tabId, usedGivenUrl) {
     slot.pendingGivenUrlVerified = false;
     if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderFocus();
     showMaterialFeedback(relinkFeedbackText(linkApplied));
+    return true;
   } catch (error) {
     // 补链接失败时保留 pending，下一次提取或加入清单还会再试
     showMaterialFeedback(error?.message || "链接更新失败。", "error");
+    return false;
   }
 }
 
@@ -1258,6 +1286,8 @@ async function relinkCurrentResultOnly(url, verified) {
 }
 
 async function setBasketItemLink(id, url, verified) {
+  // 合并任务运行中改条目链接：同步置脏标记，后台推送前查询到它就会推迟到重渲染之后
+  if (tasks.has("merge")) mergeLinkDirty = true;
   const response = await chrome.runtime.sendMessage({
     type: "XHS_AI_MERGE_SET_LINK",
     id,
@@ -1274,7 +1304,7 @@ async function setBasketItemLink(id, url, verified) {
 async function rerenderMergeIfPossible() {
   if (!mergeSlot.result) {
     lastMergeLinkChange = null;
-    return null;
+    return { linkApplied: null, unchanged: false };
   }
   const linkChange = lastMergeLinkChange;
   lastMergeLinkChange = null;
@@ -1287,12 +1317,13 @@ async function rerenderMergeIfPossible() {
     if (response?.ok && response.result) {
       mergeSlot.result = response.result;
       if (focus.kind === "merge" && !historyVisible) renderResult(mergeSlot.result);
-      return response.linkApplied || null;
+      return { linkApplied: response.linkApplied || null, unchanged: false };
     }
-    return null;
+    // unchanged：清单条目集合变了，后台拒绝原地重渲染
+    return { linkApplied: null, unchanged: Boolean(response?.unchanged) };
   } catch {
     // 合并结果留在原样，不影响单条链接已经保存
-    return null;
+    return { linkApplied: null, unchanged: false };
   }
 }
 
@@ -1482,22 +1513,28 @@ async function handleMaterialLink() {
     (resolved.platform === tabCandidate.platform && resolved.noteId === tabCandidate.noteId)
     ? `${resolved.platform === "weibo" ? "wbnote" : "note"}:${resolved.noteId}`
     : null;
-  const labels = [];
   let taskPending = false;
+  let pendingOnly = false;
+  let appliedAny = false;
   let kept = false;
   try {
     for (const match of matches) {
       if (match.kind === "tab") {
         const applied = await applyLinkToTab(url, true, { announce: false });
-        if (applied.outcome === "task-pending") taskPending = true;
-        else if (applied.outcome === "applied" || applied.outcome === "pending") {
-          labels.push(match.label);
+        if (applied.outcome === "task-pending") {
+          taskPending = true;
+        } else if (applied.outcome === "applied") {
+          appliedAny = true;
           if (applied.linkApplied === "kept") kept = true;
+        } else if (applied.outcome === "pending") {
+          // 还没提取：链接只记在页签上，提取时再带入；同一次操作也更新了清单条目时按“链接已更新”提示
+          if (applied.basketUpdated) appliedAny = true;
+          else pendingOnly = true;
         }
       } else if (match.id !== tabMatchedItemId) {
         // 命中当前页签时 applyLinkToTab 已经同步了同一帖子的清单条目
         const applied = await applyLinkToBasketItemByMatch(match.id, url, true);
-        labels.push(match.label);
+        appliedAny = true;
         if (applied.linkApplied === "kept") kept = true;
       }
     }
@@ -1510,8 +1547,12 @@ async function handleMaterialLink() {
     showMaterialFeedback("任务完成后自动补上链接。");
   } else if (kept) {
     showRelinkFeedback("kept");
+  } else if (appliedAny) {
+    showRelinkFeedback("rerendered");
+  } else if (pendingOnly) {
+    showMaterialFeedback("已记下链接，提取时会带入。");
   } else {
-    showRelinkFeedback(labels.length ? "rerendered" : null);
+    showRelinkFeedback(null);
   }
   renderFocus();
 }
@@ -1527,9 +1568,9 @@ async function syncResultAndMergeForBasketItem(id, url, verified) {
     outcome = applied.outcome;
     if (applied.outcome === "applied") linkApplied = applied.linkApplied;
   }
-  const mergeApplied = await rerenderMergeIfPossible();
-  if (mergeApplied === "kept") linkApplied = "kept";
-  return { outcome, linkApplied, mergeApplied };
+  const merge = await rerenderMergeIfPossible();
+  if (merge.linkApplied === "kept") linkApplied = "kept";
+  return { outcome, linkApplied, mergeApplied: merge.linkApplied };
 }
 
 // 从「添加素材」匹配到清单条目时的入口：不切换焦点
@@ -1555,6 +1596,8 @@ async function chooseLinkTarget(choice) {
       const applied = await applyLinkToTab(url, false, { announce: false });
       if (applied.outcome === "task-pending") {
         showMaterialFeedback("任务完成后自动补上链接。");
+      } else if (applied.outcome === "pending") {
+        showMaterialFeedback(applied.basketUpdated ? "链接已更新。" : "已记下链接，提取时会带入。");
       } else {
         showRelinkFeedback(applied.linkApplied || "rerendered");
       }
@@ -1808,6 +1851,8 @@ async function runMergeSummarize(force = false) {
     historyVisible = false;
     applyViewVisibility();
   }
+  // 本次合并刚开始：之前积累的链接改动不算数，只记录运行期间的改动
+  mergeLinkDirty = false;
   setTask("merge", {
     kind: "merge",
     title: "合并概括",
@@ -1821,20 +1866,45 @@ async function runMergeSummarize(force = false) {
     percent: 8
   };
   renderFocus();
+  let relinked = false;
+  let failed = false;
   try {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
     if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
     mergeSlot.result = response.result;
+    if (mergeSlot.result?.notification?.status === "deferred") {
+      // 合并期间改过条目链接：先用当前清单原地重渲染，再推送最终文本（只发一条）
+      let rerender = null;
+      if (mergeLinkDirty) {
+        rerender = await rerenderMergeIfPossible();
+        relinked = Boolean(rerender.linkApplied);
+      }
+      await finalizeDeferredFeishu("merge", { relinked, title: force ? "重新生成完成" : "合并概括完成" });
+      if (rerender?.unchanged) {
+        showMaterialFeedback("合并条目已变化，本次合并结果未包含新的链接。");
+      }
+    } else if (mergeLinkDirty) {
+      // 查询窗口后的极小竞态：已经发过就不再自动发第二条，只重渲染显示并让旧版本标记生效
+      const rerender = await rerenderMergeIfPossible();
+      if (rerender.unchanged) {
+        showMaterialFeedback("合并条目已变化，本次合并结果未包含新的链接。");
+      }
+    }
+  } catch (error) {
+    failed = true;
+    mergeSlot.status = { state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 };
+  } finally {
+    mergeLinkDirty = false;
+    removeTask("merge");
+  }
+  if (!failed && mergeSlot.result) {
     mergeSlot.status = {
       state: "done",
       title: force ? "重新生成完成" : "合并概括完成",
-      detail: completionDetail(response.result, `已合并 ${response.result.postCount || basketItems.length} 条帖文，可直接复制。`),
+      detail: deferredPushDetail(mergeSlot.result, relinked) ||
+        completionDetail(mergeSlot.result, `已合并 ${mergeSlot.result.postCount || basketItems.length} 条帖文，可直接复制。`),
       percent: 100
     };
-  } catch (error) {
-    mergeSlot.status = { state: "error", title: "合并概括失败", detail: error?.message || "发生未知错误。", percent: 0 };
-  } finally {
-    removeTask("merge");
   }
   if (focus.kind === "merge") renderFocus();
   else refreshButtons();
@@ -2091,7 +2161,13 @@ function closeBasketLinkEditor() {
   renderBasket();
 }
 
-// —— 手动发送到飞书 ——
+// —— 手动发送 / 延迟推送飞书 ——
+
+const FEISHU_SEND_LABEL = "发送到飞书";
+const FEISHU_STALE_OLD_HINT = "飞书里仍是旧版本，点飞书图标重发当前内容。";
+const FEISHU_STALE_DEFERRED_HINT = "这条概括还没有推送到飞书，点飞书图标发送当前内容。";
+const FEISHU_STALE_OLD_LABEL = "飞书里仍是旧版本，点击重发";
+const FEISHU_STALE_DEFERRED_LABEL = "还没有推送到飞书，点击发送";
 
 async function refreshFeishuStatus() {
   try {
@@ -2103,8 +2179,140 @@ async function refreshFeishuStatus() {
   refreshFeishuButton();
 }
 
+// 历史屏查看的也是结果卡，旧版本提示同样适用
+function feishuDisplayedResult() {
+  if (historyVisible) return historyEntry?.result || null;
+  return currentResult();
+}
+
+// 飞书里是否还是旧版本：deferred 表示从未推送；sent 时比较最后一次实际发送的文本。
+// 旧数据没有 sentText，无法判断，按不标记处理，不报错。
+function feishuStaleState(result) {
+  const notification = result?.notification;
+  if (!notification) return null;
+  if (notification.status === "deferred") return "deferred";
+  if (notification.status !== "sent") return null;
+  if (typeof notification.sentText !== "string") return null;
+  return String(result.text ?? "").trim() === notification.sentText.trim() ? null : "stale";
+}
+
+function setFeishuButtonLabel(label) {
+  elements.sendFeishuButton.title = label;
+  elements.sendFeishuButton.setAttribute?.("title", label);
+  elements.sendFeishuButton.setAttribute?.("aria-label", label);
+}
+
+function refreshFeishuStaleHint() {
+  const stale = feishuConfigured && !elements.resultCard.hidden ? feishuStaleState(feishuDisplayedResult()) : null;
+  if (!stale) {
+    elements.feishuStaleHint.hidden = true;
+    elements.feishuStaleHint.textContent = "";
+    return;
+  }
+  elements.feishuStaleHint.textContent = stale === "deferred" ? FEISHU_STALE_DEFERRED_HINT : FEISHU_STALE_OLD_HINT;
+  elements.feishuStaleHint.hidden = false;
+}
+
 function refreshFeishuButton() {
-  elements.sendFeishuButton.hidden = !(feishuConfigured && !elements.resultCard.hidden);
+  const visible = Boolean(feishuConfigured && !elements.resultCard.hidden);
+  elements.sendFeishuButton.hidden = !visible;
+  const stale = visible ? feishuStaleState(feishuDisplayedResult()) : null;
+  if (stale) {
+    elements.sendFeishuButton.dataset.stale = "true";
+    setFeishuButtonLabel(stale === "deferred" ? FEISHU_STALE_DEFERRED_LABEL : FEISHU_STALE_OLD_LABEL);
+  } else {
+    delete elements.sendFeishuButton.dataset.stale;
+    setFeishuButtonLabel(FEISHU_SEND_LABEL);
+  }
+  refreshFeishuStaleHint();
+}
+
+// 延迟推送完成后的状态文案；链接确实归位时才说明“链接已更新”
+function deferredPushDetail(result, relinked) {
+  const notification = result?.notification;
+  if (notification?.status === "sent") {
+    return relinked ? "链接已更新，并已推送到飞书。" : "概括已生成，并已推送到飞书。";
+  }
+  if (notification?.status === "failed") {
+    return `概括已生成；飞书推送失败：${notification.error || "请检查设置。"}`;
+  }
+  return null;
+}
+
+function feishuResultKey(result) {
+  return result?.historyId || result;
+}
+
+function currentResultForTarget(target, tabId) {
+  if (target === "merge") return mergeSlot.result;
+  return Number.isInteger(tabId) ? pageSlots.get(tabId)?.result || null : null;
+}
+
+// await 期间槽位结果可能被迟到的 XHS_AI_WORKFLOW_STATE 广播换掉：
+// 补发完成后要按 historyId 找当前对象再写，否则 sent 会写到旧对象上、界面仍显示 deferred。
+function latestResultForTarget(target, tabId, historyId) {
+  const current = currentResultForTarget(target, tabId);
+  if (!current) return null;
+  if (historyId && current.historyId !== historyId) return null;
+  return current;
+}
+
+// 后台把推送标成 deferred 后，面板补完链接用最终文本补发一次；结果卡与历史里的状态随之更新。
+async function finalizeDeferredFeishu(target, { tabId = activeTabId, relinked = false, title = null } = {}) {
+  const slot = target === "merge" ? mergeSlot : (Number.isInteger(tabId) ? pageSlots.get(tabId) : null);
+  const result = slot?.result || null;
+  if (!result || result.notification?.status !== "deferred") return null;
+  const historyId = result.historyId || null;
+  const statusTitle = title || (target === "merge" ? "合并概括完成" : "概括完成");
+  const text = String(result.text ?? "").trim();
+  feishuNotifyInFlight.add(historyId || result);
+  try {
+    let notification;
+    if (!text) {
+      notification = { status: "failed", error: "没有可推送的概括内容。" };
+    } else {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "XHS_AI_NOTIFY_FEISHU_RESULT",
+          text,
+          kind: target === "merge" ? "merge" : "single",
+          ...(historyId ? { historyId } : {}),
+          ...(target === "tab" && Number.isInteger(tabId) ? { tabId } : {}),
+          ...(target === "tab" && slot?.context?.pageSessionId ? { pageSessionId: slot.context.pageSessionId } : {})
+        });
+        if (!response?.ok) throw new Error(response?.error || "飞书推送失败。");
+        notification = response.notification || null;
+      } catch (error) {
+        notification = { status: "failed", error: String(error?.message || "飞书推送失败。").slice(0, 180) };
+      }
+    }
+    // 慢请求期间结果对象可能已被广播替换：当前对象优先，历史 ID 对不上（新一代替换）时不覆盖新结果
+    const latest = latestResultForTarget(target, tabId, historyId);
+    const written = latest || result;
+    if (notification) written.notification = notification;
+    else delete written.notification;
+    if (latest) {
+      const status = {
+        state: "done",
+        title: statusTitle,
+        detail: deferredPushDetail(latest, relinked) || "概括已生成，可直接复制。",
+        percent: 100
+      };
+      if (target === "merge") {
+        mergeSlot.status = status;
+        if (focus.kind === "merge" && !historyVisible) {
+          renderStatus(status);
+          renderResult(latest);
+        }
+      } else {
+        writePageStatus(tabId, status);
+        if (focus.kind === "tab" && activeTabId === tabId && !historyVisible) renderResult(latest);
+      }
+    }
+    return notification;
+  } finally {
+    feishuNotifyInFlight.delete(historyId || result);
+  }
 }
 
 function hideFeishuFeedback() {
@@ -2119,22 +2327,91 @@ function showFeishuFeedback(text, state = "done") {
   elements.feishuFeedback.hidden = false;
 }
 
+// 手动发送要带上结果上下文，后台才能把 sentText 写回历史与工作流快照。
+function feishuSendContext() {
+  if (historyVisible && historyEntry) {
+    return {
+      kind: historyEntry.kind === "merge" ? "merge" : historyEntry.kind === "screenshot" ? "screenshot" : "single",
+      historyId: historyEntry.id
+    };
+  }
+  const result = currentResult();
+  const context = {
+    kind: focus.kind === "merge" ? "merge" : focus.kind === "shot" ? "screenshot" : "single",
+    ...(result?.historyId ? { historyId: result.historyId } : {})
+  };
+  if (focus.kind === "tab" && Number.isInteger(activeTabId)) {
+    context.tabId = activeTabId;
+    const pageSessionId = currentSlot()?.context?.pageSessionId;
+    if (pageSessionId) context.pageSessionId = pageSessionId;
+  }
+  return context;
+}
+
+// 手动发送成功后，若结果仍在当前焦点显示，状态行改为“已推送到飞书。”，标题保持原样。
+function markFeishuResultPushed(result) {
+  if (!result || historyVisible) return;
+  const detail = "已推送到飞书。";
+  if (focus.kind === "tab" && Number.isInteger(activeTabId)) {
+    const slot = pageSlots.get(activeTabId);
+    if (slot?.result === result && slot.status?.state === "done") {
+      writePageStatus(activeTabId, { ...slot.status, detail });
+    }
+    return;
+  }
+  if (focus.kind === "merge") {
+    if (mergeSlot.result !== result || mergeSlot.status?.state !== "done") return;
+    mergeSlot.status = { ...mergeSlot.status, detail };
+    renderStatus(mergeSlot.status);
+    return;
+  }
+  if (focus.kind === "shot") {
+    if (shotSlot.result !== result || shotSlot.status?.state !== "done") return;
+    shotSlot.status = { ...shotSlot.status, detail };
+    renderStatus(shotSlot.status);
+  }
+}
+
 async function sendResultToFeishu() {
   const text = elements.resultText.value.trim();
   if (!text) {
     showFeishuFeedback("没有可发送的内容。", "error");
     return;
   }
+  const result = feishuDisplayedResult();
+  // 延迟补发还在路上：此时再点图标会发出第二条，先挡住
+  if (result && feishuNotifyInFlight.has(feishuResultKey(result))) {
+    showFeishuFeedback("正在推送飞书，请稍候。");
+    return;
+  }
   elements.sendFeishuButton.disabled = true;
   hideFeishuFeedback();
   try {
-    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SEND_FEISHU", text });
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_SEND_FEISHU",
+      text,
+      ...feishuSendContext()
+    });
     if (!response?.ok) throw new Error(response?.error || "发送到飞书失败。");
+    const notification = response.notification || {
+      status: "sent",
+      channel: response.channel || null,
+      sentAt: Date.now(),
+      sentText: text
+    };
+    if (result) {
+      // await 期间结果对象可能被广播替换：优先写到当前显示的对象上
+      const current = feishuDisplayedResult();
+      const written = current && feishuResultKey(current) === feishuResultKey(result) ? current : result;
+      written.notification = notification;
+      markFeishuResultPushed(written);
+    }
     showFeishuFeedback("已发送到飞书。");
   } catch (error) {
     showFeishuFeedback(error?.message || "发送到飞书失败。", "error");
   } finally {
     elements.sendFeishuButton.disabled = false;
+    refreshFeishuButton();
   }
 }
 
@@ -2285,7 +2562,36 @@ async function clearHistoryRecords() {
 
 // —— 消息与事件 ——
 
-chrome.runtime.onMessage.addListener((message) => {
+// 后台推送飞书前同步询问：这个页签/本次合并是否还有更新的待补链接。
+// 有 pending 就答 true，即便本窗口已经切到别的页签（pending 仍在槽位里）；
+// 没有 pending 时只有当前活动页签就是这个页签的面板才答 false，
+// 其它窗口的侧边栏不响应，避免它们抢先答 false 让后台立即推送旧链接。
+// 没有合并任务时不响应。
+function answerPendingLinkQuery(message, sendResponse) {
+  if (typeof sendResponse !== "function") return false;
+  if (message.kind === "merge") {
+    if (!tasks.has("merge")) return false;
+    sendResponse({ pending: Boolean(mergeLinkDirty) });
+    return false;
+  }
+  if (message.kind !== "page") return false;
+  const tabId = Number(message.tabId);
+  if (!Number.isInteger(tabId)) return false;
+  const slot = pageSlots.get(tabId);
+  if (!slot?.context || slot.context.pageSessionId !== message.pageSessionId) return false;
+  const pending = Boolean(
+    slot.pendingGivenUrl &&
+    String(slot.pendingGivenUrl).trim() !== String(message.givenUrl || "").trim()
+  );
+  if (!pending && activeTabId !== tabId) return false;
+  sendResponse({ pending });
+  return false;
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "XHS_AI_QUERY_PENDING_LINK") {
+    return answerPendingLinkQuery(message, sendResponse);
+  }
   if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
   if (message?.type === "XHS_AI_MERGE_PROGRESS" && tasks.has("merge")) {
     const progress = message.progress || {};
@@ -2530,10 +2836,12 @@ elements.resultText.addEventListener("input", () => {
   hideFeishuFeedback();
   if (historyVisible) {
     if (historyEntry?.result) historyEntry.result.text = elements.resultText.value;
+    refreshFeishuButton();
     return;
   }
   const result = currentResult();
   if (result) result.text = elements.resultText.value;
+  refreshFeishuButton();
 });
 
 elements.sendFeishuButton.addEventListener("click", () => { void sendResultToFeishu(); });

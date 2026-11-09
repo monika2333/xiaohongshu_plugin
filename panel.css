@@ -327,10 +327,12 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .icon-button { display: grid; flex: 0 0 40px; width: 40px; padding: 0; place-items: center; color: var(--ink); background: transparent; border: 1px solid var(--ink); }
 .icon-button svg { width: 24px; height: 24px; }
 .icon-button:hover { background: var(--paper-deep); }
-.feishu-button { color: #3370ff; border-color: rgba(51, 112, 255, .55); }
+.feishu-button { position: relative; color: #3370ff; border-color: rgba(51, 112, 255, .55); }
 .feishu-button:hover { background: rgba(51, 112, 255, .1); }
+.feishu-button[data-stale="true"]::after { content: ""; position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; background: var(--red); border: 1px solid var(--paper); border-radius: 50%; }
 .feishu-feedback { margin: 7px 0 0; color: var(--green); font-size: 10px; line-height: 1.5; }
 .feishu-feedback[data-state="error"] { color: var(--red-dark); font-weight: 700; }
+.feishu-stale-hint { margin: 7px 0 0; color: var(--red-dark); font-size: 10px; font-weight: 700; line-height: 1.5; }
 .copy-button { color: var(--paper); background: var(--red); border: 1px solid var(--red-dark); }
 .secondary-button { color: var(--ink); background: transparent; border: 1px solid var(--ink); }
 .result-actions button:disabled { cursor: wait; opacity: .55; }

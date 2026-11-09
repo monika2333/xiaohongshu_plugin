@@ -8,6 +8,8 @@ const storageState = { local: {}, session: {} };
 const accessLevels = [];
 const runtimeMessages = [];
 const panelBehaviors = [];
+// 后台推送飞书前会向面板查询待补链接；测试按需切换回复内容或模拟无面板
+let panelPendingLinkReply = { pending: false };
 
 function storageArea(name) {
   return {
@@ -39,6 +41,10 @@ context = {
       getURL: (value = "") => `chrome-extension://test/${value}`,
       sendMessage: async (message) => {
         runtimeMessages.push(message);
+        if (message?.type === "XHS_AI_QUERY_PENDING_LINK") {
+          if (panelPendingLinkReply === null) throw new Error("Could not establish connection");
+          return { ok: true, ...panelPendingLinkReply };
+        }
         return { ok: true };
       }
     },
@@ -51,6 +57,7 @@ context = {
   encodeURIComponent,
   Promise,
   URL,
+  Date,
   Uint8Array,
   AbortController,
   TextEncoder,
@@ -75,11 +82,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.15.0");
+assert.equal(manifest.version, "0.16.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.15.0");
+assert.equal(packageJson.version, "0.16.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -1454,6 +1461,265 @@ const payload = {
   assert.equal(manualFeishuBody.body.msg_type, "text");
   assert.equal(manualFeishuBody.body.content.text, editedSummary);
   await assert.rejects(context.sendManualFeishu({ text: "   " }), /没有可发送的内容/);
+
+  // —— 0.16.0：生成期间补入链接时延迟推送，链接归位后用最终文本只发一条 ——
+  const notifyConfig = { ...context.XhsAi.DEFAULT_CONFIG, rememberApiKeys: true, feishu: { mode: "webhook", appId: "", recipientId: "" } };
+  await context.saveAiSettings(notifyConfig, {
+    textApiKey: "test-deepseek-key",
+    visionApiKey: "",
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/notify-test"
+  });
+  const feishuRequests = [];
+  context.fetch = async (url, options) => {
+    if (url.startsWith("https://open.feishu.cn/")) {
+      feishuRequests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, msg: "success" }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "延迟推送测试",
+              event_summary: "小红书用户发帖反映延迟推送测试事件。",
+              opinion_points: ["部分网民关注事件进展"]
+            })
+          }
+        }]
+      })
+    };
+  };
+  const queriesSeen = () => runtimeMessages.filter((message) => message.type === "XHS_AI_QUERY_PENDING_LINK").length;
+
+  panelPendingLinkReply = { pending: true };
+  const queriesBeforeDefer = queriesSeen();
+  const deferPayload = {
+    ...textOnlyPayload,
+    source: { ...textOnlyPayload.source, pageSessionId: "page-session-defer", givenUrl: "https://xhslink.cn/o/old-long" }
+  };
+  const pageDeferred = await context.summarizePagePayload({
+    payload: deferPayload,
+    force: true,
+    pageSessionId: "page-session-defer"
+  }, { tab: { id: 60 }, url: textOnlyPayload.source.url });
+  assert.equal(pageDeferred.result.notification.status, "deferred");
+  assert.equal(feishuRequests.length, 0, "deferred 时不应请求飞书");
+  assert.equal(queriesSeen(), queriesBeforeDefer + 1, "带飞书配置时应查询一次面板待补链接");
+  const deferQuery = runtimeMessages.filter((message) => message.type === "XHS_AI_QUERY_PENDING_LINK")[queriesBeforeDefer];
+  assert.equal(deferQuery.kind, "page");
+  assert.equal(deferQuery.tabId, 60);
+  assert.equal(deferQuery.pageSessionId, "page-session-defer");
+  assert.equal(deferQuery.givenUrl, "https://xhslink.cn/o/old-long");
+  const deferredWorkflow = await context.getWorkflowState(60, "page-session-defer", textOnlyPayload.source.url);
+  assert.equal(deferredWorkflow.status, "done");
+  assert.equal(deferredWorkflow.result.notification.status, "deferred");
+  assert.match(deferredWorkflow.progress.detail, /链接更新后会自动推送到飞书/);
+  const deferredHistory = (await context.listHistory()).items.find((entry) => entry.id === pageDeferred.result.historyId);
+  assert.equal(deferredHistory.result.notification.status, "deferred");
+
+  // 补链接本身仍不推送：结果保持 deferred，只是文本换成短链
+  const relinkedDeferred = await context.relinkResult({
+    payload: deferPayload,
+    result: pageDeferred.result,
+    givenUrl: "https://xhslink.cn/o/deferred-short",
+    verified: true,
+    tabId: 60,
+    pageSessionId: "page-session-defer"
+  });
+  assert.equal(relinkedDeferred.result.notification.status, "deferred");
+  assert.match(relinkedDeferred.result.text, /deferred-short/);
+  assert.equal(feishuRequests.length, 0, "补链接不应触发飞书请求");
+
+  // 面板用最终文本调 XHS_AI_NOTIFY_FEISHU_RESULT：发送一次，历史与工作流都记录 sentText
+  const finalText = relinkedDeferred.result.text;
+  const broadcastsBeforeNotify = runtimeMessages.filter((message) => message.type === "XHS_AI_WORKFLOW_STATE").length;
+  const notified = await context.notifyFeishuResult({
+    text: ` ${finalText} `,
+    historyId: pageDeferred.result.historyId,
+    tabId: 60,
+    pageSessionId: "page-session-defer",
+    kind: "single"
+  });
+  assert.equal(notified.ok, true);
+  assert.equal(notified.notification.status, "sent");
+  assert.equal(notified.notification.channel, "webhook");
+  assert.equal(notified.notification.sentText, finalText.trim());
+  assert.equal(feishuRequests.length, 1);
+  assert.equal(feishuRequests[0].body.content.text, finalText.trim());
+  assert.equal(
+    runtimeMessages.filter((message) => message.type === "XHS_AI_WORKFLOW_STATE").length,
+    broadcastsBeforeNotify,
+    "延迟推送更新工作流快照时不应广播，避免覆盖面板编辑"
+  );
+  const notifiedWorkflow = await context.getWorkflowState(60, "page-session-defer", textOnlyPayload.source.url);
+  assert.equal(notifiedWorkflow.result.notification.status, "sent");
+  assert.equal(notifiedWorkflow.result.notification.sentText, finalText.trim());
+  assert.equal(notifiedWorkflow.result.text, finalText);
+  const notifiedHistory = (await context.listHistory()).items.find((entry) => entry.id === pageDeferred.result.historyId);
+  assert.equal(notifiedHistory.result.notification.status, "sent");
+  assert.equal(notifiedHistory.result.notification.sentText, finalText.trim());
+
+  // 没有待补链接：照旧立即推送，sentText 就是实际发送文本
+  panelPendingLinkReply = { pending: false };
+  const immediatePayload = {
+    ...textOnlyPayload,
+    source: { ...textOnlyPayload.source, givenUrl: "https://xhslink.cn/o/immediate-short" }
+  };
+  const immediate = await context.summarizePayload(immediatePayload, true, () => {}, null, {
+    shouldDeferNotify: () => context.panelHasPendingLink({
+      kind: "page",
+      tabId: 61,
+      pageSessionId: "page-session-immediate",
+      givenUrl: immediatePayload.source.givenUrl
+    })
+  });
+  assert.equal(immediate.result.notification.status, "sent");
+  assert.equal(immediate.result.notification.sentText, immediate.result.text.trim());
+  assert.equal(feishuRequests.length, 2);
+  assert.equal(feishuRequests[1].body.content.text, immediate.result.text);
+
+  // 面板没响应（没打开）：按没有待补链接处理，照旧立即推送
+  panelPendingLinkReply = null;
+  const noPanel = await context.summarizePayload(
+    { ...textOnlyPayload, source: { ...textOnlyPayload.source, givenUrl: "https://xhslink.cn/o/no-panel" } },
+    true,
+    () => {},
+    null,
+    { shouldDeferNotify: () => context.panelHasPendingLink({ kind: "page", tabId: 62, pageSessionId: "page-session-none" }) }
+  );
+  assert.equal(noPanel.result.notification.status, "sent");
+  assert.equal(feishuRequests.length, 3);
+
+  // 截图单条（XHS_AI_SUMMARIZE）不查询、立即推送
+  panelPendingLinkReply = { pending: true };
+  const queriesBeforeShot = queriesSeen();
+  const shotImmediate = await context.summarizePayload(
+    { ...screenshotPayload, source: { ...screenshotPayload.source, screenshotId: "shot-notify" } },
+    true
+  );
+  assert.equal(shotImmediate.result.notification.status, "sent");
+  assert.equal(queriesSeen(), queriesBeforeShot, "截图单条不应查询面板待补链接");
+  assert.equal(feishuRequests.length, 4);
+
+  // 截图帖文即使走页签管线（重新生成截图结果）也不延迟推送
+  const queriesBeforeShotPage = queriesSeen();
+  const feishuBeforeShotPage = feishuRequests.length;
+  const shotViaPage = await context.summarizePagePayload({
+    payload: context.XhsAi.buildScreenshotPayload({
+      author: "截图作者",
+      publishedDisplay: "3天前",
+      title: "截图帖",
+      contentText: "正文",
+      hashtags: [],
+      visibleComments: [],
+      uncertainties: [],
+      imageCount: 1
+    }, { sourceUrl: textOnlyPayload.source.url, screenshotId: "shot-page" }),
+    force: true,
+    pageSessionId: "page-session-shot"
+  }, { tab: { id: 63 }, url: textOnlyPayload.source.url });
+  assert.equal(shotViaPage.result.notification.status, "sent");
+  assert.equal(queriesSeen(), queriesBeforeShotPage, "截图帖文不应查询待补链接");
+  assert.equal(feishuRequests.length, feishuBeforeShotPage + 1);
+
+  // 延迟推送失败：返回 failed，不抛成任务失败，历史也记录失败状态
+  context.fetch = async (url) => {
+    if (url.startsWith("https://open.feishu.cn/")) {
+      return { ok: false, status: 400, text: async () => JSON.stringify({ code: 19001, msg: "invalid webhook" }) };
+    }
+    throw new Error("unexpected fetch");
+  };
+  const failedNotify = await context.notifyFeishuResult({
+    text: "失败推送测试",
+    historyId: pageDeferred.result.historyId,
+    tabId: 60,
+    pageSessionId: "page-session-defer"
+  });
+  assert.equal(failedNotify.ok, true);
+  assert.equal(failedNotify.notification.status, "failed");
+  assert.match(failedNotify.notification.error, /invalid webhook/);
+  const failedHistory = (await context.listHistory()).items.find((entry) => entry.id === pageDeferred.result.historyId);
+  assert.equal(failedHistory.result.notification.status, "failed");
+  await assert.rejects(context.notifyFeishuResult({ text: "   " }), /没有可推送的概括内容/);
+  await assert.rejects(context.notifyFeishuResult({ text: "x".repeat(20001) }), /20000/);
+
+  // —— 合并：运行中改条目链接 → 查询到 pending，deferred；notify 后一条消息、历史更新 ——
+  context.fetch = async (url, options) => {
+    if (url.startsWith("https://open.feishu.cn/")) {
+      feishuRequests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, msg: "success" }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "合并延迟推送测试",
+              event_summary: "两条帖文合并后延迟推送。",
+              opinion_points: []
+            })
+          }
+        }]
+      })
+    };
+  };
+  panelPendingLinkReply = { pending: true };
+  const queriesBeforeMerge = queriesSeen();
+  const feishuBeforeMerge = feishuRequests.length;
+  const mergedDeferred = await context.summarizeMergeBasket({ force: true });
+  assert.equal(mergedDeferred.result.notification.status, "deferred");
+  assert.equal(feishuRequests.length, feishuBeforeMerge, "合并 deferred 时不应请求飞书");
+  assert.equal(queriesSeen(), queriesBeforeMerge + 1);
+  const mergeQuery = runtimeMessages.filter((message) => message.type === "XHS_AI_QUERY_PENDING_LINK")[queriesBeforeMerge];
+  assert.equal(mergeQuery.kind, "merge");
+  const mergeNotified = await context.notifyFeishuResult({
+    text: mergedDeferred.result.text,
+    historyId: mergedDeferred.result.historyId,
+    kind: "merge"
+  });
+  assert.equal(mergeNotified.notification.status, "sent");
+  assert.equal(mergeNotified.notification.sentText, mergedDeferred.result.text);
+  assert.equal(feishuRequests.length, feishuBeforeMerge + 1);
+  const mergedHistory = (await context.listHistory()).items.find((entry) => entry.id === mergedDeferred.result.historyId);
+  assert.equal(mergedHistory.result.notification.status, "sent");
+  assert.equal(mergedHistory.result.notification.sentText, mergedDeferred.result.text);
+
+  // —— 手动发送带 historyId：发送成功后写回历史 notification.sentText ——
+  context.fetch = async (url, options) => {
+    if (url.startsWith("https://open.feishu.cn/")) {
+      feishuRequests.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, msg: "success" }) };
+    }
+    throw new Error("unexpected fetch");
+  };
+  const manualCtxText = "★ 手动发送测试\n第二行内容";
+  const manualCtxResult = {
+    text: manualCtxText,
+    renderedText: manualCtxText,
+    structured: relinkStructured,
+    historyId: "hist-manual-ctx",
+    notification: null,
+    createdAt: 500
+  };
+  await context.recordHistory(
+    { ...textOnlyPayload, source: { ...textOnlyPayload.source, givenUrl: "https://xhslink.cn/o/manual-ctx" } },
+    manualCtxResult,
+    "hist-manual-ctx"
+  );
+  const manualCtxSent = await context.sendManualFeishu({
+    text: manualCtxText,
+    historyId: "hist-manual-ctx",
+    kind: "single"
+  });
+  assert.equal(manualCtxSent.ok, true);
+  assert.equal(manualCtxSent.notification.status, "sent");
+  assert.equal(manualCtxSent.notification.sentText, manualCtxText);
+  const manualCtxHistory = (await context.listHistory()).items.find((entry) => entry.id === "hist-manual-ctx");
+  assert.equal(manualCtxHistory.result.notification.sentText, manualCtxText);
 
   process.stdout.write("service-worker and AI pipeline smoke tests passed\n");
 })().catch((error) => {

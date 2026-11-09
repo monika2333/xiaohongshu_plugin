@@ -14,9 +14,12 @@ function createElement() {
     innerHTML: "",
     files: null,
     dataset: {},
+    attributes: {},
     style: {},
     listeners: {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    removeAttribute(name) { delete this.attributes[name]; },
     select() {},
     focus() {},
     contains() { return false; }
@@ -82,6 +85,7 @@ const selectors = [
   "#regenerate-button",
   "#send-feishu-button",
   "#feishu-feedback",
+  "#feishu-stale-hint",
   "#evidence-summary",
   "#history-button",
   "#history-back-button",
@@ -97,6 +101,7 @@ const XHS_NOTE_8 = "6a76029300000000250070c2";
 const XHS_NOTE_10 = "6a76029300000000250070ca";
 const XHS_NOTE_11 = "6a76029300000000250070cb";
 const XHS_NOTE_12 = "6a76029300000000250070cc";
+const XHS_NOTE_13 = "6a76029300000000250070cd";
 const XHS_NOTE_99 = "6ab3c400000000000200d10e";
 const WEIBO_ID_9 = "RhJDvgyf3";
 const pageUrlById = {
@@ -106,6 +111,7 @@ const pageUrlById = {
   10: `https://www.xiaohongshu.com/explore/${XHS_NOTE_10}?xsec_token=test-token-10`,
   11: `https://www.xiaohongshu.com/explore/${XHS_NOTE_11}?xsec_token=test-token-11`,
   12: `https://www.xiaohongshu.com/explore/${XHS_NOTE_12}?xsec_token=test-token-12`,
+  13: `https://www.xiaohongshu.com/explore/${XHS_NOTE_13}?xsec_token=test-token-13`,
   99: `https://www.xiaohongshu.com/explore/${XHS_NOTE_99}?xsec_token=tok&xsec_source=app_share`
 };
 const noteIdById = {
@@ -115,6 +121,7 @@ const noteIdById = {
   10: XHS_NOTE_10,
   11: XHS_NOTE_11,
   12: XHS_NOTE_12,
+  13: XHS_NOTE_13,
   99: XHS_NOTE_99
 };
 const sessionById = {
@@ -124,6 +131,7 @@ const sessionById = {
   10: "page-session-10",
   11: "page-session-11",
   12: "page-session-12",
+  13: "page-session-13",
   99: "page-session-99"
 };
 let activeTabIdMock = 7;
@@ -263,7 +271,8 @@ for (const id of [
   "material-staging",
   "shot-summarize-button",
   "shot-basket-button",
-  "merge-view-result-button"
+  "merge-view-result-button",
+  "feishu-stale-hint"
 ]) {
   assert.match(panelHtml, new RegExp(`id="${id}"`), `panel.html 缺少 #${id}`);
 }
@@ -959,7 +968,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK").length >= 1, true);
   assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK")[0].id, `note:${XHS_NOTE_7}`);
   assert.match(elements["#result-text"].value, /xhslink\.cn\/o\/note7short/);
-  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
+  assert.equal(elements["#material-feedback"].textContent, "链接已更新。");
   assert.equal(findRuntime("XHS_AI_MERGE_SUMMARIZE").length, 0);
   assert.equal(elements["#material-input"].value, "");
 
@@ -1040,7 +1049,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = "https://xhslink.cn/o/note10short";
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
+  assert.equal(elements["#material-feedback"].textContent, "已记下链接，提取时会带入。");
   assert.equal(elements["#material-input"].value, "");
   assert.equal(elements["#material-staging"].hidden, true);
   await elements["#extract-button"].listeners.click();
@@ -1280,7 +1289,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   elements["#material-input"].value = shortLink11;
   await elements["#material-link-button"].listeners.click();
   await settle(10);
-  assert.equal(elements["#material-feedback"].textContent, "链接已更新（未重新推送飞书）。");
+  assert.equal(elements["#material-feedback"].textContent, "已记下链接，提取时会带入。");
   resolveElevenCapture();
   await elevenAddClick;
   await settle(10);
@@ -1303,10 +1312,14 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await switchChromeTab(8);
   await switchChromeTab(7);
 
-  // —— 修复项 1：提取进行中贴入的链接，完成后立即补到新结果 ——
+  // —— 0.16.0 修复项 1：提取进行中贴入链接，等结果与链接都归位后只推送一条飞书 ——
   const shortLink12 = "https://xhslink.cn/o/note12short";
   let resolveTwelveCapture;
+  const twelveHistoryId = "hist-twelve";
+  const twelveDeferredText = `★ 帖文十二概括\n正文。（小红书 ${pageUrlById[12]}）`;
+  let deferredHintSnapshot = null;
   setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: true };
     if (message.type === "XHS_AI_RESOLVE_LINK") {
       return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_12, resolvedUrl: pageUrlById[12] };
     }
@@ -1317,6 +1330,21 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
         payload: { ...message.payload, source },
         result: { ...message.result, text: `★ 帖文十二概括\n正文。（小红书 ${message.givenUrl}）` }
       };
+    }
+    if (message.type === "XHS_AI_NOTIFY_FEISHU_RESULT") {
+      // 补发前结果仍是 deferred：此时应显示“还没有推送”的提示与图标红点
+      deferredHintSnapshot = {
+        hidden: elements["#feishu-stale-hint"].hidden,
+        text: elements["#feishu-stale-hint"].textContent,
+        stale: elements["#send-feishu-button"].dataset.stale,
+        label: elements["#send-feishu-button"].attributes["aria-label"]
+      };
+      const sentText = String(message.text || "").trim();
+      return { ok: true, notification: { status: "sent", channel: "webhook", sentAt: 1000, sentText } };
+    }
+    if (message.type === "XHS_AI_SEND_FEISHU") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, channel: "webhook", notification: { status: "sent", channel: "webhook", sentAt: 2000, sentText } };
     }
     if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
     if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
@@ -1329,7 +1357,10 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
       return new Promise((resolve) => {
         resolveTwelveCapture = () => resolve({
           ok: true,
-          result: makeResult(`★ 帖文十二概括\n正文。（小红书 ${pageUrlById[12]}）`),
+          result: makeResult(twelveDeferredText, {
+            notification: { status: "deferred" },
+            historyId: twelveHistoryId
+          }),
           capture: makeCapture(12, "帖文十二", "己")
         });
       });
@@ -1337,6 +1368,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     throw new Error(`Unexpected tab message: ${message.type}`);
   });
   await switchChromeTab(12);
+  await context.refreshFeishuStatus();
   const twelveExtractClick = elements["#extract-button"].listeners.click();
   await settle();
   assert.equal(taskCount(), 1);
@@ -1346,15 +1378,469 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.match(elements["#material-feedback"].textContent, /任务完成后自动补上链接/);
   assert.equal(findRuntime("XHS_AI_RELINK").length, 0);
   assert.equal(taskCount(), 1);
+
+  // 面板同步回答后台的待补链接查询：自己的页签答 true；别的页签/会话不响应
+  let twelveQueryReply = null;
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 12,
+    pageSessionId: "page-session-12",
+    givenUrl: ""
+  }, {}, (response) => { twelveQueryReply = response; });
+  assert.equal(twelveQueryReply.pending, true);
+  let foreignQueryReply = null;
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 12,
+    pageSessionId: "page-session-other",
+    givenUrl: ""
+  }, {}, (response) => { foreignQueryReply = response; });
+  assert.equal(foreignQueryReply, null);
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 9999,
+    pageSessionId: "page-session-9999",
+    givenUrl: ""
+  }, {}, (response) => { foreignQueryReply = response; });
+  assert.equal(foreignQueryReply, null);
+
+  // 非属主窗口：槽位存在、没有 pending、也不是自己当前活动页签 → 不响应，避免抢先答 false
+  await switchChromeTab(8);
+  assert.equal(elements["#result-card"].hidden, false, "页签 8 应有槽位与结果");
+  await switchChromeTab(12);
+  let nonOwnerReply = null;
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 8,
+    pageSessionId: "page-session-8",
+    givenUrl: ""
+  }, {}, (response) => { nonOwnerReply = response; });
+  assert.equal(nonOwnerReply, null);
+
+  // 属主已切到别的页签，但 pending 还在：仍要答 true
+  await switchChromeTab(8);
+  let awayReply = null;
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 12,
+    pageSessionId: "page-session-12",
+    givenUrl: ""
+  }, {}, (response) => { awayReply = response; });
+  assert.equal(awayReply.pending, true);
+  await switchChromeTab(12);
+
+  // 没有合并任务时不响应合并查询
+  let mergeQueryReply = null;
+  runtimeListener({ type: "XHS_AI_QUERY_PENDING_LINK", kind: "merge" }, {}, (response) => { mergeQueryReply = response; });
+  assert.equal(mergeQueryReply, null);
+
   resolveTwelveCapture();
   await twelveExtractClick;
-  await settle(12);
+  await settle(14);
   assert.equal(findRuntime("XHS_AI_RELINK").length, 1);
   assert.equal(findRuntime("XHS_AI_RELINK")[0].givenUrl, shortLink12);
   assert.match(elements["#result-text"].value, /note12short/);
-  assert.equal(elements["#status-title"].textContent, "链接已更新");
+  const twelveNotifies = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT");
+  assert.equal(twelveNotifies.length, 1, "延迟推送只应补发一条飞书消息");
+  assert.match(twelveNotifies[0].text, /note12short/);
+  assert.equal(twelveNotifies[0].historyId, twelveHistoryId);
+  assert.equal(twelveNotifies[0].tabId, 12);
+  assert.equal(twelveNotifies[0].pageSessionId, "page-session-12");
+  assert.equal(twelveNotifies[0].kind, "single");
+  assert.equal(deferredHintSnapshot.hidden, false);
+  assert.equal(deferredHintSnapshot.text, "这条概括还没有推送到飞书，点飞书图标发送当前内容。");
+  assert.equal(deferredHintSnapshot.stale, "true");
+  assert.equal(deferredHintSnapshot.label, "还没有推送到飞书，点击发送");
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, 0);
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+  assert.equal(elements["#status-detail"].textContent, "链接已更新，并已推送到飞书。");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+  assert.equal(elements["#send-feishu-button"].dataset.stale, undefined);
   assert.equal(taskCount(), 0);
   assert.equal(findRuntime("XHS_AI_SUMMARIZE").length, 0);
+  // 链接已经归位：同一个页签再查询时回答 false
+  twelveQueryReply = null;
+  runtimeListener({
+    type: "XHS_AI_QUERY_PENDING_LINK",
+    kind: "page",
+    tabId: 12,
+    pageSessionId: "page-session-12",
+    givenUrl: shortLink12
+  }, {}, (response) => { twelveQueryReply = response; });
+  assert.equal(twelveQueryReply.pending, false);
+
+  // relink 的工作流广播晚到：不能把刚补发成功的 sent 状态冲回 deferred
+  runtimeListener({
+    type: "XHS_AI_WORKFLOW_STATE",
+    workflow: workflowMessage(12, {
+      status: "done",
+      capture: makeCapture(12, "帖文十二", "己"),
+      result: makeResult(`★ 帖文十二概括\n正文。（小红书 ${shortLink12}）`, {
+        notification: { status: "deferred" },
+        historyId: twelveHistoryId
+      }),
+      progress: { state: "done", title: "链接已更新", detail: "链接已更新。", percent: 100 }
+    })
+  });
+  await settle(4);
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+  assert.equal(elements["#status-detail"].textContent, "链接已更新，并已推送到飞书。");
+
+  // —— 已发送后再补链接：不自动重发，结果卡出现旧版本提示与图标红点 ——
+  const twelveRerenderCount = findRuntime("XHS_AI_RELINK").length;
+  elements["#material-input"].value = "https://xhslink.cn/o/note12short2";
+  await elements["#material-link-button"].listeners.click();
+  await settle(10);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, twelveRerenderCount + 1);
+  assert.equal(findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length, 1, "已发送后补链接不应自动重发");
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, 0);
+  assert.equal(elements["#feishu-stale-hint"].hidden, false);
+  assert.equal(elements["#feishu-stale-hint"].textContent, "飞书里仍是旧版本，点飞书图标重发当前内容。");
+  assert.equal(elements["#send-feishu-button"].dataset.stale, "true");
+  assert.equal(elements["#send-feishu-button"].attributes.title, "飞书里仍是旧版本，点击重发");
+  assert.equal(elements["#send-feishu-button"].attributes["aria-label"], "飞书里仍是旧版本，点击重发");
+
+  // 点图标重发当前文本：notification.sentText 更新，提示与红点消失
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(10);
+  const twelveSends = findRuntime("XHS_AI_SEND_FEISHU");
+  assert.equal(twelveSends.length, 1);
+  assert.match(twelveSends[0].text, /note12short2/);
+  assert.equal(twelveSends[0].historyId, twelveHistoryId);
+  assert.equal(twelveSends[0].tabId, 12);
+  assert.equal(twelveSends[0].pageSessionId, "page-session-12");
+  assert.equal(twelveSends[0].kind, "single");
+  assert.equal(elements["#feishu-feedback"].hidden, false);
+  assert.equal(elements["#feishu-feedback"].textContent, "已发送到飞书。");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+  assert.equal(elements["#send-feishu-button"].dataset.stale, undefined);
+
+  // 手工编辑：旧版本提示随输入实时出现；改回已发送文本即消失；重发后 sentText 正确
+  const twelveSentText = elements["#result-text"].value;
+  elements["#result-text"].value = `${twelveSentText}\n手工补充`;
+  elements["#result-text"].listeners.input();
+  assert.equal(elements["#feishu-stale-hint"].hidden, false);
+  assert.equal(elements["#feishu-stale-hint"].textContent, "飞书里仍是旧版本，点飞书图标重发当前内容。");
+  elements["#result-text"].value = twelveSentText;
+  elements["#result-text"].listeners.input();
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+  elements["#result-text"].value = `${twelveSentText}\n再补一句`;
+  elements["#result-text"].listeners.input();
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(10);
+  const twelveSecondSend = findRuntime("XHS_AI_SEND_FEISHU")[1];
+  assert.equal(twelveSecondSend.text, `${twelveSentText}\n再补一句`.trim());
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+
+  // 后台返回 deferred 但面板没有待补链接：直接用最终结果文本补发，状态为已推送
+  let resolveDeferredNoPending;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: true };
+    if (message.type === "XHS_AI_NOTIFY_FEISHU_RESULT") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, notification: { status: "sent", channel: "webhook", sentAt: 4000, sentText } };
+    }
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    return { ok: true };
+  });
+  setTabHandler(async (tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContextFor(tabId);
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      assert.equal(message.force, true);
+      return new Promise((resolve) => {
+        resolveDeferredNoPending = () => resolve({
+          ok: true,
+          result: makeResult(twelveDeferredText, {
+            notification: { status: "deferred" },
+            historyId: "hist-twelve-deferred"
+          }),
+          capture: makeCapture(12, "帖文十二", "己")
+        });
+      });
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  });
+  const twelveRegenerateClick = elements["#regenerate-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "正在重新生成");
+  resolveDeferredNoPending();
+  await twelveRegenerateClick;
+  await settle(14);
+  assert.equal(findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length, 1);
+  assert.equal(findRuntime("XHS_AI_RELINK").length, 0);
+  assert.equal(elements["#status-title"].textContent, "重新生成完成");
+  assert.equal(elements["#status-detail"].textContent, "概括已生成，并已推送到飞书。");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+
+  // —— 0.16.0 延迟补发慢请求：期间迟到的 relink 广播换掉结果对象，sent 仍要写到当前对象 ——
+  const slowShortLink = "https://xhslink.cn/o/note13short";
+  const slowDeferredText = `★ 帖文十三概括\n正文。（小红书 ${pageUrlById[13]}）`;
+  const slowRelinkedText = `★ 帖文十三概括\n正文。（小红书 ${slowShortLink}）`;
+  let resolveSlowNotify = null;
+  let slowNotifyText = null;
+  let resolveSlowCapture = null;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: true };
+    if (message.type === "XHS_AI_RESOLVE_LINK") {
+      return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_13, resolvedUrl: pageUrlById[13] };
+    }
+    if (message.type === "XHS_AI_RELINK") {
+      const source = { ...message.payload.source, givenUrl: message.givenUrl, givenUrlVerified: message.verified };
+      return {
+        ok: true,
+        payload: { ...message.payload, source },
+        result: { ...message.result, text: slowRelinkedText }
+      };
+    }
+    if (message.type === "XHS_AI_NOTIFY_FEISHU_RESULT") {
+      slowNotifyText = String(message.text || "").trim();
+      return new Promise((resolve) => {
+        resolveSlowNotify = () => resolve({
+          ok: true,
+          notification: { status: "sent", channel: "webhook", sentAt: 7000, sentText: slowNotifyText }
+        });
+      });
+    }
+    if (message.type === "XHS_AI_SEND_FEISHU") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, channel: "webhook", notification: { status: "sent", channel: "webhook", sentAt: 7001, sentText } };
+    }
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    return { ok: true };
+  });
+  setTabHandler(async (tabId, message) => {
+    if (message.type === "XHS_PAGE_CONTEXT") return pageContextFor(tabId);
+    if (message.type === "XHS_CAPTURE_AND_SUMMARIZE") {
+      assert.equal(message.givenUrl, null);
+      return new Promise((resolve) => {
+        resolveSlowCapture = () => resolve({
+          ok: true,
+          result: makeResult(slowDeferredText, {
+            notification: { status: "deferred" },
+            historyId: "hist-thirteen"
+          }),
+          capture: makeCapture(13, "帖文十三", "庚")
+        });
+      });
+    }
+    throw new Error(`Unexpected tab message: ${message.type}`);
+  });
+  // setRuntime 会清空已收集的消息，计数放在它之后
+  const slowNotifyBefore = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length;
+  const slowSendBefore = findRuntime("XHS_AI_SEND_FEISHU").length;
+  await switchChromeTab(13);
+  await context.refreshFeishuStatus();
+  const slowExtractClick = elements["#extract-button"].listeners.click();
+  await settle();
+  assert.equal(taskCount(), 1);
+  elements["#material-input"].value = slowShortLink;
+  await elements["#material-link-button"].listeners.click();
+  await settle(10);
+  assert.match(elements["#material-feedback"].textContent, /任务完成后自动补上链接/);
+  resolveSlowCapture();
+  await settle(16);
+  assert.equal(findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length, slowNotifyBefore + 1);
+  assert.equal(typeof resolveSlowNotify, "function");
+  // 补发在等待后台响应：结果卡仍是“还没有推送”，此时点图标不应发出第二条
+  assert.equal(elements["#feishu-stale-hint"].hidden, false);
+  assert.equal(elements["#feishu-stale-hint"].textContent, "这条概括还没有推送到飞书，点飞书图标发送当前内容。");
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(4);
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, slowSendBefore);
+  assert.equal(elements["#feishu-feedback"].textContent, "正在推送飞书，请稍候。");
+  // 迟到的 relink 广播把槽位结果换成一个新的 deferred 对象
+  runtimeListener({
+    type: "XHS_AI_WORKFLOW_STATE",
+    workflow: workflowMessage(13, {
+      status: "done",
+      capture: makeCapture(13, "帖文十三", "庚"),
+      result: makeResult(slowRelinkedText, {
+        notification: { status: "deferred" },
+        historyId: "hist-thirteen"
+      }),
+      progress: { state: "done", title: "链接已更新", detail: "链接已更新。", percent: 100 }
+    })
+  });
+  await settle(4);
+  assert.match(elements["#result-text"].value, /note13short/);
+  // resolve 补发：sent 写到广播换上的当前对象，提示消失、状态一致
+  resolveSlowNotify();
+  await slowExtractClick;
+  await settle(16);
+  assert.equal(slowNotifyText, slowRelinkedText);
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+  assert.equal(elements["#send-feishu-button"].dataset.stale, undefined);
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+  assert.equal(elements["#status-detail"].textContent, "链接已更新，并已推送到飞书。");
+  assert.equal(findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length, slowNotifyBefore + 1);
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, slowSendBefore);
+  // 补发结束后图标恢复可用
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(8);
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, slowSendBefore + 1);
+
+  // 面板重开后看到 deferred 结果（模拟新的历史 ID）：手动点图标发送后状态行同步为“已推送到飞书。”
+  runtimeListener({
+    type: "XHS_AI_WORKFLOW_STATE",
+    workflow: workflowMessage(13, {
+      status: "done",
+      capture: makeCapture(13, "帖文十三", "庚"),
+      result: makeResult(slowRelinkedText, {
+        notification: { status: "deferred" },
+        historyId: "hist-thirteen-reopen"
+      }),
+      progress: { state: "done", title: "概括完成", detail: "概括已生成，链接更新后会自动推送到飞书。", percent: 100 }
+    })
+  });
+  await settle(4);
+  assert.equal(elements["#feishu-stale-hint"].hidden, false);
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(10);
+  assert.equal(findRuntime("XHS_AI_SEND_FEISHU").length, slowSendBefore + 2);
+  assert.equal(elements["#status-title"].textContent, "概括完成");
+  assert.equal(elements["#status-detail"].textContent, "已推送到飞书。");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+
+  // —— 0.16.0 合并：运行中改条目链接 → 重渲染后只推送一条最终文本 ——
+  const mergeDeferredText = "★ 合并延迟\n合并正文。（小红书 https://xhslink.cn/o/merge-deferred-new）";
+  let resolveDeferredMerge;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: true };
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_SUMMARIZE") {
+      return new Promise((resolve) => { resolveDeferredMerge = resolve; });
+    }
+    if (message.type === "XHS_AI_MERGE_SET_LINK") {
+      basket = basket.map((item) => item.id === message.id
+        ? { ...item, link: message.givenUrl, linkVerified: message.verified }
+        : item);
+      return { ok: true, basket };
+    }
+    if (message.type === "XHS_AI_MERGE_RERENDER") {
+      return {
+        ok: true,
+        result: { ...message.result, text: mergeDeferredText, renderedText: mergeDeferredText },
+        linkApplied: "rerendered"
+      };
+    }
+    if (message.type === "XHS_AI_NOTIFY_FEISHU_RESULT") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, notification: { status: "sent", channel: "webhook", sentAt: 5000, sentText } };
+    }
+    if (message.type === "XHS_AI_SEND_FEISHU") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, channel: "webhook", notification: { status: "sent", channel: "webhook", sentAt: 5001, sentText } };
+    }
+    return { ok: true };
+  });
+  await context.refreshFeishuStatus();
+  await switchChromeTab(7);
+  const mergeNotifyBefore = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length;
+  const mergeRerenderBefore = findRuntime("XHS_AI_MERGE_RERENDER").length;
+  const mergeClickDeferred = elements["#merge-summarize-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#status-title"].textContent, "正在合并概括");
+  let mergePendingReply = null;
+  runtimeListener({ type: "XHS_AI_QUERY_PENDING_LINK", kind: "merge" }, {}, (response) => { mergePendingReply = response; });
+  assert.equal(mergePendingReply.pending, false);
+  await context.setBasketItemLink(basket[0].id, "https://xhslink.cn/o/merge-dirty", true);
+  await settle(4);
+  mergePendingReply = null;
+  runtimeListener({ type: "XHS_AI_QUERY_PENDING_LINK", kind: "merge" }, {}, (response) => { mergePendingReply = response; });
+  assert.equal(mergePendingReply.pending, true);
+  resolveDeferredMerge({
+    ok: true,
+    result: makeResult("★ 旧合并文本\n旧正文。", {
+      postCount: basket.length,
+      merged: true,
+      itemIds: basket.map((item) => item.id),
+      notification: { status: "deferred" },
+      historyId: "hist-merge-deferred"
+    })
+  });
+  await mergeClickDeferred;
+  await settle(16);
+  assert.equal(findRuntime("XHS_AI_MERGE_RERENDER").length, mergeRerenderBefore + 1);
+  assert.equal(findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length, mergeNotifyBefore + 1);
+  const mergeNotifies = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT");
+  const mergeNotify = mergeNotifies[mergeNotifies.length - 1];
+  assert.equal(mergeNotify.text, mergeDeferredText);
+  assert.equal(mergeNotify.kind, "merge");
+  assert.equal(mergeNotify.historyId, "hist-merge-deferred");
+  assert.equal(elements["#result-text"].value, mergeDeferredText);
+  assert.equal(elements["#status-detail"].textContent, "链接已更新，并已推送到飞书。");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+
+  // 合并结果编辑后同样出现旧版本提示，点图标重发当前文本
+  elements["#result-text"].value = `${mergeDeferredText}\n合并后补充`;
+  elements["#result-text"].listeners.input();
+  assert.equal(elements["#feishu-stale-hint"].hidden, false);
+  assert.equal(elements["#feishu-stale-hint"].textContent, "飞书里仍是旧版本，点飞书图标重发当前内容。");
+  assert.equal(elements["#send-feishu-button"].dataset.stale, "true");
+  const mergeSendBefore = findRuntime("XHS_AI_SEND_FEISHU").length;
+  await elements["#send-feishu-button"].listeners.click();
+  await settle(10);
+  const mergeSends = findRuntime("XHS_AI_SEND_FEISHU");
+  assert.equal(mergeSends.length, mergeSendBefore + 1);
+  assert.equal(mergeSends[mergeSends.length - 1].kind, "merge");
+  assert.equal(mergeSends[mergeSends.length - 1].historyId, "hist-merge-deferred");
+  assert.equal(elements["#feishu-stale-hint"].hidden, true);
+
+  // 合并期间条目集合变化（重渲染 unchanged）：保留原结果推送原文本，并提示
+  let resolveMergeUnchanged;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_GET_FEISHU_STATUS") return { ok: true, configured: true };
+    if (message.type === "XHS_AI_MERGE_LIST") return { ok: true, basket };
+    if (message.type === "XHS_AI_MERGE_SUMMARIZE") {
+      return new Promise((resolve) => { resolveMergeUnchanged = resolve; });
+    }
+    if (message.type === "XHS_AI_MERGE_SET_LINK") {
+      basket = basket.map((item) => item.id === message.id
+        ? { ...item, link: message.givenUrl, linkVerified: message.verified }
+        : item);
+      return { ok: true, basket };
+    }
+    if (message.type === "XHS_AI_MERGE_RERENDER") return { ok: true, unchanged: true };
+    if (message.type === "XHS_AI_NOTIFY_FEISHU_RESULT") {
+      const sentText = String(message.text || "").trim();
+      return { ok: true, notification: { status: "sent", channel: "webhook", sentAt: 5002, sentText } };
+    }
+    return { ok: true };
+  });
+  const mergeNotifyBeforeUnchanged = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT").length;
+  const mergeClickUnchanged = elements["#merge-summarize-button"].listeners.click();
+  await settle();
+  await context.setBasketItemLink(basket[0].id, "https://xhslink.cn/o/merge-unchanged", false);
+  await settle(4);
+  const mergeUnchangedText = "★ 合并原文本\n原正文。";
+  resolveMergeUnchanged({
+    ok: true,
+    result: makeResult(mergeUnchangedText, {
+      postCount: basket.length,
+      merged: true,
+      itemIds: basket.map((item) => item.id),
+      notification: { status: "deferred" },
+      historyId: "hist-merge-unchanged"
+    })
+  });
+  await mergeClickUnchanged;
+  await settle(16);
+  assert.equal(elements["#material-feedback"].textContent, "合并条目已变化，本次合并结果未包含新的链接。");
+  const unchangedNotifies = findRuntime("XHS_AI_NOTIFY_FEISHU_RESULT");
+  assert.equal(unchangedNotifies.length, mergeNotifyBeforeUnchanged + 1);
+  assert.equal(unchangedNotifies[unchangedNotifies.length - 1].text, mergeUnchangedText);
+  assert.equal(elements["#status-detail"].textContent, "概括已生成，并已推送到飞书。");
+
+  // 合并焦点切回页签 7，后续页签级重新生成走 tab 流程
+  await switchChromeTab(8);
+  await switchChromeTab(7);
 
   // —— 修复项 3：重新生成进行中补链接，任务不提前消失，完成后应用 ——
   await switchChromeTab(7);
@@ -1501,7 +1987,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
 
   // —— 补链接：编辑过的结果无法自动替换时，用提示态显示 kept 文案 ——
   assert.equal(context.relinkFeedbackText("kept"), "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。");
-  assert.equal(context.relinkFeedbackText("rerendered"), "链接已更新（未重新推送飞书）。");
+  assert.equal(context.relinkFeedbackText("rerendered"), "链接已更新。");
   await elements["#history-back-button"].listeners.click();
   await switchChromeTab(7);
   assert.equal(elements["#result-card"].hidden, false);
