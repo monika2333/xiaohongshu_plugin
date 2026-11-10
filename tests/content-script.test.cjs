@@ -67,6 +67,8 @@ async function captureFromPage(rootSelector, detailRoot = createDetailRoot()) {
   };
   const context = {
     chrome,
+    // mock 里没有评论区：缩短「等待评论区挂载」的上限，避免用例空等真实时长
+    __XHS_CAPTURE_TIMING__: { readyPollMs: 20, commentAreaWaitMs: 300 },
     crypto: { randomUUID: () => "page-session" },
     document,
     Event,
@@ -122,6 +124,8 @@ async function pageContextFromPage(rootSelector, detailRoot = createDetailRoot()
   };
   const context = {
     chrome,
+    // mock 里没有评论区：缩短「等待评论区挂载」的上限，避免用例空等真实时长
+    __XHS_CAPTURE_TIMING__: { readyPollMs: 20, commentAreaWaitMs: 300 },
     crypto: { randomUUID: () => "page-session" },
     document,
     Event,
@@ -387,6 +391,119 @@ async function captureForMergeWithOverlappingVision() {
   assert.equal(runtimeMessages.some((message) => message.type === "XHS_AI_SUMMARIZE_PAGE"), false);
 }
 
+// 模拟「链接概括流新开页签」的页面：帖文标题一直可用（detailReady 为真），
+// 互动条/评论区/评论数据按各自延迟陆续挂载，模拟 SPA 的渐进渲染与评论接口返回。
+function createDelayedDetailRoot({
+  countsDelayMs = 0,
+  scrollerDelayMs = 0,
+  commentsDelayMs = 0,
+  countsTexts = ["1.2万", "345", "67"],
+  totalCountText = "共 67 条评论",
+  commentCount = 1
+} = {}) {
+  const startedAt = Date.now();
+  const elapsed = () => Date.now() - startedAt;
+  const commentItem = { id: "comment-delayed", querySelector: () => null };
+  const commentParent = { querySelector: () => commentItem, querySelectorAll: () => [] };
+  const scroller = {
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 500,
+    dispatchEvent() {}
+  };
+  const title = textNode("清华听涛园食堂异物");
+  const baseNodes = new Map([
+    ["#detail-title, #detail-desc, .comments-container", title],
+    ["#detail-title, .title", title],
+    ["#detail-desc .note-text, #detail-desc, .desc .note-text", textNode("帖文正文")],
+    [".bottom-container .date", textNode("08-17 北京")]
+  ]);
+  // 互动数与评论总数按单段选择器做键：getInteraction/textOf 逐段查询
+  const readyNodes = new Map([
+    ...baseNodes,
+    [".interact-container .like-wrapper .count", textNode(countsTexts[0])],
+    [".interact-container .collect-wrapper .count", textNode(countsTexts[1])],
+    [".interact-container .chat-wrapper .count", textNode(countsTexts[2])],
+    [".comments-container .total", textNode(totalCountText)]
+  ]);
+  const activeNodes = () => (elapsed() >= countsDelayMs ? readyNodes : baseNodes);
+  return {
+    querySelector(selector) {
+      if (selector === ".note-scroller") return elapsed() >= scrollerDelayMs ? scroller : null;
+      return selector
+        .split(",")
+        .map((item) => item.trim())
+        .map((item) => activeNodes().get(item))
+        .find(Boolean) || activeNodes().get(selector) || null;
+    },
+    querySelectorAll(selector) {
+      if (selector === ".parent-comment") {
+        return elapsed() >= commentsDelayMs && commentCount > 0 ? [commentParent] : [];
+      }
+      return [];
+    }
+  };
+}
+
+// 与 captureFromPage 同构，但使用延迟挂载的详情根，并记录采集进度与耗时
+function captureFromDelayedPage(detailRoot, timing = {}) {
+  let messageListener;
+  const progressMessages = [];
+  const document = {
+    title: "清华听涛园食堂异物 - 小红书",
+    querySelector: (selector) => selector === "#noteContainer" ? detailRoot : null
+  };
+  const chrome = {
+    runtime: {
+      onMessage: { addListener(listener) { messageListener = listener; } },
+      sendMessage: async (message) => {
+        if (message.type === "XHS_EXPORT_PROGRESS") progressMessages.push(message);
+        return { ok: true };
+      }
+    },
+    storage: { local: { set: async () => {} } }
+  };
+  const context = {
+    chrome,
+    __XHS_CAPTURE_TIMING__: { readyPollMs: 20, interactionReadyWaitMs: 2000, commentAreaWaitMs: 900, ...timing },
+    crypto: { randomUUID: () => "delayed-page-session" },
+    document,
+    Event,
+    globalThis: null,
+    location: {
+      href: `https://www.xiaohongshu.com/explore/${NOTE_ID}`,
+      pathname: `/explore/${NOTE_ID}`
+    },
+    setTimeout,
+    clearTimeout,
+    URL
+  };
+  context.globalThis = context;
+  vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "capture-common.js"), "utf8") + "\n" +
+    fs.readFileSync(path.join(__dirname, "..", "content-script.js"), "utf8"),
+    context,
+    { filename: "content-script.js" }
+  );
+  return {
+    run(options) {
+      const startedAt = Date.now();
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("delayed capture response timed out")), 8000);
+        const keepChannelOpen = messageListener(
+          { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: options?.limit ?? 1 } },
+          {},
+          (response) => {
+            clearTimeout(timeout);
+            resolve({ response, progressMessages, elapsedMs: Date.now() - startedAt });
+          }
+        );
+        assert.equal(keepChannelOpen, true);
+      });
+    }
+  };
+}
+
 (async () => {
   const directPage = await captureFromPage("#noteContainer");
   assert.equal(directPage.ok, true);
@@ -395,10 +512,14 @@ async function captureForMergeWithOverlappingVision() {
   assert.equal(directPage.payload.interactions.likes.value, 12000);
   assert.equal(directPage.payload.interactions.collects.value, 345);
   assert.equal(directPage.payload.interactions.comments.value, 67);
+  // mock 里评论区从未挂载：应如实注明评论缺失，而不是静默按 0 条处理
+  assert.equal(directPage.payload.commentExport.stopReason, "comment_scroller_missing");
+  assert.ok(directPage.payload.uncertainties.some((item) => item.includes("评论未能读取")));
 
   const modalPage = await captureFromPage(".note-detail-mask", createDetailRoot(false));
   assert.equal(modalPage.ok, true);
   assert.equal(modalPage.payload.note.content, "帖文正文");
+  assert.equal(modalPage.payload.commentExport.stopReason, "comment_scroller_missing");
 
   // XHS_PAGE_CONTEXT 带 detailReady：链接概括流据此判断详情 DOM 是否已渲染
   const readyContext = await pageContextFromPage("#noteContainer");
@@ -415,6 +536,52 @@ async function captureForMergeWithOverlappingVision() {
 
   await captureAndSummarizeWithOverlappingVision();
   await captureForMergeWithOverlappingVision();
+
+  // 1) 新页签场景：标题先渲染（detailReady 为真），互动条与评论数据 250ms 后才挂载。
+  //    采集应等待就绪，读到互动数与评论，而不是把「还没加载出来」当成「没有」。
+  const delayed = captureFromDelayedPage(createDelayedDetailRoot({ countsDelayMs: 250, scrollerDelayMs: 250, commentsDelayMs: 250 }));
+  const delayedRun = await delayed.run();
+  assert.equal(delayedRun.response.ok, true);
+  assert.equal(delayedRun.response.payload.interactions.likes.value, 12000);
+  assert.equal(delayedRun.response.payload.commentExport.extractedTopLevelCount, 1);
+  assert.equal(delayedRun.response.payload.uncertainties, undefined);
+  assert.ok(delayedRun.progressMessages.some((message) => message.title === "正在等待页面就绪"), "应上报等待页面就绪的进度");
+
+  // 2) 评论区始终未挂载：等待有上限，结束时应如实注明评论缺失
+  const neverMounted = captureFromDelayedPage(createDelayedDetailRoot({
+    scrollerDelayMs: Number.MAX_SAFE_INTEGER,
+    commentsDelayMs: Number.MAX_SAFE_INTEGER,
+    commentCount: 0
+  }), { commentAreaWaitMs: 300 });
+  const neverRun = await neverMounted.run();
+  assert.equal(neverRun.response.ok, true);
+  assert.equal(neverRun.response.payload.commentExport.stopReason, "comment_scroller_missing");
+  assert.equal(neverRun.response.payload.commentExport.extractedTopLevelCount, 0);
+  assert.ok(neverRun.response.payload.uncertainties.some((item) => item.includes("评论未能读取")));
+  assert.ok(neverRun.progressMessages.some((message) => message.detail === "等待评论区加载"));
+
+  // 3) 评论总数明确为 0（「共 0 条评论」）：接口已答复，立即结束，不算评论缺失
+  const zeroComments = captureFromDelayedPage(createDelayedDetailRoot({
+    totalCountText: "共 0 条评论",
+    commentCount: 0
+  }));
+  const zeroRunStart = Date.now();
+  const zeroRun = await zeroComments.run({ limit: 50 });
+  assert.equal(zeroRun.response.ok, true);
+  assert.equal(zeroRun.response.payload.commentExport.stopReason, "page_exhausted");
+  assert.equal(zeroRun.response.payload.uncertainties, undefined);
+  assert.ok(zeroRun.progressMessages.some((message) => message.detail === "该帖没有评论"));
+  assert.ok(Date.now() - zeroRunStart < 3000, "确认没有评论后应立即结束，不再空等");
+
+  // 4) 评论接口慢：滚动到底但一条评论都没出现时，在宽限上限内继续等而不是判「到底」
+  const slowComments = captureFromDelayedPage(createDelayedDetailRoot({ commentsDelayMs: 600 }), { scrollWaitMs: 30 });
+  const slowRun = await slowComments.run();
+  assert.equal(slowRun.response.ok, true);
+  assert.equal(slowRun.response.payload.commentExport.extractedTopLevelCount, 1);
+  assert.equal(slowRun.response.payload.commentExport.stopReason, "limit_reached");
+  assert.equal(slowRun.response.payload.uncertainties, undefined);
+  assert.ok(slowRun.progressMessages.some((message) => message.detail === "已加载 0 条一级评论"), "等待期间应如实上报 0 条");
+  assert.ok(slowRun.progressMessages.some((message) => message.detail === "已加载 1 条一级评论"));
 
   console.log("content-script tests passed");
 })().catch((error) => {

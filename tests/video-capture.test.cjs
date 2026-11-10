@@ -231,6 +231,8 @@ async function runVideoCapture({
 
   const context = {
     chrome: chromeStub,
+    // mock 里没有评论区：缩短「等待评论区挂载」的上限，避免用例空等真实时长
+    __XHS_CAPTURE_TIMING__: { readyPollMs: 20, commentAreaWaitMs: 200 },
     crypto: { randomUUID: () => "video-page-session" },
     CustomEvent: class { constructor(type, params) { this.type = type; this.detail = params?.detail; } },
     document: documentStub,
@@ -288,7 +290,11 @@ async function runVideoCapture({
   assert.deepEqual([...payload.media.video.frameTimestamps], [3, 8, 13, 19, 24, 29]);
   assert.equal(bridged.config.videoSrc, "https://sns-video-v3.xhscdn.com/stream/master_258.mp4?sign=abc", "视频流地址应升级为 https");
   assert.ok(bridged.fetchCalls.some((url) => url.includes("zh.srt")), "应优先抓取中文字幕");
-  assert.equal(payload.uncertainties, undefined, "字幕与画面都成功时不应有警告");
+  // mock 里评论区从未挂载，唯一的警告应是评论缺失；字幕与画面都成功时不应有视频相关警告
+  assert.ok(
+    payload.uncertainties.every((item) => item.includes("评论")),
+    "字幕与画面都成功时不应有视频相关警告"
+  );
   assert.ok(bridged.progressMessages.some((message) => message.title === "正在读取视频"));
 
   // 2) 桥接缺失：退回解析 SSR 内联脚本

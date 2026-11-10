@@ -17,6 +17,23 @@
   const MAX_SCROLL_ROUNDS = 80;
   const SCROLL_WAIT_MS = 650;
 
+  // 链接概括会在新页签刚落地、详情刚渲染时就开始采集，此时互动条与评论区可能
+  // 还没挂载、评论接口还没返回。以下上限控制「等待页面就绪」的容忍度，避免把
+  // “还没加载出来”当成“没有”。测试可通过 __XHS_CAPTURE_TIMING__ 缩短。
+  function resolveTiming(overrides) {
+    const pick = (value, fallback) => {
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : fallback;
+    };
+    return {
+      readyPollMs: pick(overrides?.readyPollMs, 300),
+      interactionReadyWaitMs: pick(overrides?.interactionReadyWaitMs, 6000),
+      commentAreaWaitMs: pick(overrides?.commentAreaWaitMs, 10000),
+      scrollWaitMs: pick(overrides?.scrollWaitMs, SCROLL_WAIT_MS)
+    };
+  }
+  const TIMING = resolveTiming(globalThis.__XHS_CAPTURE_TIMING__);
+
   // 视频帖证据：自动字幕 + 按时长比例截帧。截帧位置避开片头片尾，长边压到 720px。
   const STATE_REQUEST_TIMEOUT_MS = 1500;
   const VIDEO_TRANSCRIPT_LIMIT = 6000;
@@ -491,11 +508,52 @@
     }).filter(Boolean);
   }
 
+  // 互动计数或评论总数任一出现即视为页面证据就绪：零赞帖文没有点赞数字可等，
+  // 评论头部「共 N 条评论」会随评论接口返回而出现。
+  function hasInteractionSignal(root) {
+    if (getInteraction(root, ".interact-container .like-wrapper, .interactions .like-wrapper").raw) return true;
+    if (getInteraction(root, ".interact-container .collect-wrapper, .interactions .collect-wrapper").raw) return true;
+    if (getInteraction(root, ".interact-container .chat-wrapper, .interactions .chat-wrapper").raw) return true;
+    return Boolean(textOf(root, ".comments-container .total"));
+  }
+
+  async function waitForInteractionEvidence(root, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let announced = false;
+    while (!hasInteractionSignal(root)) {
+      if (Date.now() >= deadline) return false;
+      if (!announced) {
+        announced = true;
+        await sendProgress("正在等待页面就绪", "等待互动数与评论区渲染", 0);
+      }
+      await sleep(TIMING.readyPollMs);
+    }
+    return true;
+  }
+
+  // 评论区尚未挂载时先等待（有上限），挂载后返回滚动容器
+  async function waitForCommentScroller(root, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let announced = false;
+    let scroller = root.querySelector(".note-scroller");
+    while (!scroller && Date.now() < deadline) {
+      if (!announced) {
+        announced = true;
+        await sendProgress("正在读取评论", "等待评论区加载", 0);
+      }
+      await sleep(TIMING.readyPollMs);
+      scroller = root.querySelector(".note-scroller");
+    }
+    return scroller;
+  }
+
   async function loadTopLevelComments(root, limit) {
-    const scroller = root.querySelector(".note-scroller");
+    const scroller = await waitForCommentScroller(root, TIMING.commentAreaWaitMs);
     if (!scroller) return { loaded: 0, reason: "comment_scroller_missing" };
 
     const originalScrollTop = scroller.scrollTop;
+    // 一条评论都没出现过时不急着判「到底了」：新开的页签里评论接口可能还没返回
+    const zeroCommentDeadline = Date.now() + TIMING.commentAreaWaitMs;
     let stableRounds = 0;
     let lastCount = 0;
     let reason = "limit_reached";
@@ -503,9 +561,15 @@
     try {
       for (let round = 0; round < MAX_SCROLL_ROUNDS; round += 1) {
         const count = root.querySelectorAll(".parent-comment").length;
-        await sendProgress("正在读取评论", `已加载 ${Math.min(count, limit)} 条一级评论`, Math.min(count, limit));
+        // 评论总数明确写 0（「共 0 条评论」）时不必再等：接口已答复，确实没有评论
+        const totalSaysZero = count === 0 && normalizeCount(textOf(root, ".comments-container .total")) === 0;
+        await sendProgress("正在读取评论", totalSaysZero ? "该帖没有评论" : `已加载 ${Math.min(count, limit)} 条一级评论`, Math.min(count, limit));
 
         if (count >= limit) break;
+        if (totalSaysZero) {
+          reason = "page_exhausted";
+          break;
+        }
 
         stableRounds = count === lastCount ? stableRounds + 1 : 0;
         lastCount = count;
@@ -514,11 +578,12 @@
         const nextScrollTop = Math.min(maxScrollTop, scroller.scrollTop + Math.max(320, scroller.clientHeight * 0.82));
         scroller.scrollTop = nextScrollTop;
         scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
-        await sleep(SCROLL_WAIT_MS + (stableRounds > 1 ? 450 : 0));
+        await sleep(TIMING.scrollWaitMs + (stableRounds > 1 ? 450 : 0));
 
         const atBottom = maxScrollTop - scroller.scrollTop < 8;
         if (atBottom && stableRounds >= 4) {
-          reason = "page_exhausted";
+          if (lastCount === 0 && Date.now() < zeroCommentDeadline) continue;
+          reason = lastCount === 0 ? "comment_load_timeout" : "page_exhausted";
           break;
         }
       }
@@ -543,6 +608,12 @@
       textOf(root, ".chat-wrapper .count");
     const comments = collectTopLevelComments(root, options.limit);
     const frameImages = collectNoteMedia(root, videoEvidence);
+    // 「应该有评论但没读到」时如实注明；评论总数确认为 0（page_exhausted）不算缺失
+    const uncertainties = [...(videoEvidence?.warnings || [])];
+    if (!comments.length &&
+        ["comment_scroller_missing", "comment_load_timeout"].includes(loadingResult.reason)) {
+      uncertainties.push("评论未能读取，评论内容缺失。");
+    }
 
     return {
       schemaVersion: 1,
@@ -596,7 +667,7 @@
         } : null,
         note: "页面当前可访问的图片版本，不保证为创作者上传的未压缩原文件。"
       },
-      uncertainties: videoEvidence?.warnings?.length ? videoEvidence.warnings : undefined
+      uncertainties: uncertainties.length ? uncertainties : undefined
     };
   }
 
@@ -614,6 +685,9 @@
     const videoEvidence = await buildVideoEvidence(root, getNoteId(), (detail) => {
       return sendProgress("正在读取视频", detail, 0);
     });
+    // 链接概括流会在详情刚渲染时开采集：先等互动条与评论区就绪（有上限），
+    // 再分发图片识别与滚动读评论，避免把「还没加载出来」当成「没有」。
+    await waitForInteractionEvidence(root, TIMING.interactionReadyWaitMs);
     if (typeof onVisionSeed === "function") onVisionSeed(buildVisionSeed(root, videoEvidence));
     const loadingResult = await loadTopLevelComments(root, options.limit);
     await sendProgress("正在整理证据", "汇总正文、互动数据、媒体和评论", Math.min(options.limit, loadingResult.loaded));
