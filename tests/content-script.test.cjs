@@ -516,6 +516,21 @@ function captureFromDelayedPage(detailRoot, timing = {}) {
   assert.equal(directPage.payload.commentExport.stopReason, "comment_scroller_missing");
   assert.ok(directPage.payload.uncertainties.some((item) => item.includes("评论未能读取")));
 
+  assert.equal(directPage.payload.note.publishedDisplay, "08-17");
+  assert.equal(directPage.payload.note.location, "北京");
+
+  // 页面不显示 IP 属地时日期行只有「编辑于 10-13」：末尾是日期本身，不能当属地拆走
+  for (const [raw, display] of [["编辑于 10-13 ", "编辑于 10-13"], ["昨天 14:20", "昨天 14:20"], ["编辑于 3天前", "编辑于 3天前"]]) {
+    const noLocationRoot = createDetailRoot();
+    const baseNoLocationQuery = noLocationRoot.querySelector.bind(noLocationRoot);
+    noLocationRoot.querySelector = (selector) => (
+      selector === ".bottom-container .date" ? textNode(raw) : baseNoLocationQuery(selector)
+    );
+    const noLocationPage = await captureFromPage("#noteContainer", noLocationRoot);
+    assert.equal(noLocationPage.payload.note.publishedDisplay, display);
+    assert.equal(noLocationPage.payload.note.location, null);
+  }
+
   const modalPage = await captureFromPage(".note-detail-mask", createDetailRoot(false));
   assert.equal(modalPage.ok, true);
   assert.equal(modalPage.payload.note.content, "帖文正文");

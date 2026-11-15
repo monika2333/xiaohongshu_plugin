@@ -377,10 +377,14 @@
     return milliseconds >= lowerBound && milliseconds <= upperBound ? date.toISOString() : null;
   }
 
+  // 日期行形如「08-17 北京」「编辑于 10小时前 北京」，末尾是 IP 属地；页面不显示属地时
+  // 末尾就是日期本身（「编辑于 10-13」「昨天 14:20」），属地不含数字，带数字或相对时间的末段不能拆走。
   function splitPublishedAndLocation(raw) {
     const text = cleanText(raw);
     const match = text.match(/^(.*?)(?:\s+)([^\s]+)$/);
-    if (!match) return { publishedDisplay: text || null, location: null };
+    if (!match || /\d|前$|^(?:刚刚|今天|昨天|前天)$/.test(match[2])) {
+      return { publishedDisplay: text || null, location: null };
+    }
     return { publishedDisplay: cleanText(match[1]) || null, location: cleanText(match[2]) || null };
   }
 

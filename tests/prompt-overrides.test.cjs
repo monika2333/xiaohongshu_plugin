@@ -99,6 +99,7 @@ for (const key of ["textSystem", "mergeSystem"]) {
   assert.match(prompt, /发帖人在评论区确认/, `${key} 应要求简要交代确认依据`);
   assert.match(prompt, /具体名称的全称/, `${key} 应要求简称换成全称`);
   assert.match(prompt, /发帖人没有否认，都算足以认定/, `${key} 应给出线索足以认定的标准`);
+  assert.match(prompt, /简称或话题标签本身就能确定全称时直接写全称，不交代依据/, `${key} 简称或标签可定时不应多写依据句`);
   assert.match(prompt, /不能写成发帖人确认/, `${key} 线索认定不应写成发帖人确认`);
   assert.match(prompt, /网民对它的猜测不再单列一项/, `${key} 观点区不应重复已认定的猜测`);
   assert.match(prompt, /在 opinion_points 中写明网民猜测的具体名称/, `${key} 应保留未确认猜测的写法`);
