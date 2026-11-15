@@ -104,6 +104,12 @@ for (const key of ["textSystem", "mergeSystem"]) {
   assert.match(prompt, /在 opinion_points 中写明网民猜测的具体名称/, `${key} 应保留未确认猜测的写法`);
 }
 
+// —— 正文不写话题标签、缺失交代与其他网民评论（单帖与合并一致）——
+for (const key of ["textSystem", "mergeSystem"]) {
+  assert.match(XhsPrompts[key], /event_summary 里不写三类内容：话题标签；证据里缺了什么/, `${key} 应单列正文不写的内容`);
+  assert.match(XhsPrompts[key], /证据里没有的要素直接略过/, `${key} 谁何时何地不应变成缺失清单`);
+}
+
 // —— 推断所需证据：发帖人的简短回复挂在被回复的评论下，并带作者标识 ——
 const threadEvidence = XhsAi.buildEvidence({
   source: { platform: "xiaohongshu", noteId: "note-thread" },

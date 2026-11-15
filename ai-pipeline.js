@@ -436,6 +436,7 @@
       contentText: cleanText(source?.content_text ?? source?.contentText, 10000),
       hashtags: stringArray(source?.hashtags),
       imageText: cleanText(source?.image_text ?? source?.imageText, 4000),
+      imageDescription: cleanText(source?.image_description ?? source?.imageDescription, 1000),
       likesRaw: cleanText(source?.likes_raw ?? source?.likesRaw, 40),
       collectsRaw: cleanText(source?.collects_raw ?? source?.collectsRaw, 40),
       commentsRaw: cleanText(source?.comments_raw ?? source?.commentsRaw, 40),
@@ -491,6 +492,7 @@
         content: extraction.contentText || null,
         hashtags: extraction.hashtags,
         imageText: extraction.imageText || null,
+        imageDescription: extraction.imageDescription || null,
         publishedDisplay: publishedDisplay || null,
         location: null,
         publishedAtInferred: null,
@@ -577,16 +579,21 @@
     const publishedDate = resolvePublishedDate(payload);
     const video = payload?.media?.video || null;
     const isVideoNote = Boolean(video) || payload?.note?.type === "video";
-    // 截图帖文的配图文字并入 imageEvidence：写作提示词里的图片规则只作用于 imageEvidence，
+    // 截图帖文的配图文字与画面描述并入 imageEvidence：写作提示词里的图片规则只作用于 imageEvidence，
     // 放在 imageText 会被裸原文照搬。合成条目只在证据内部出现，不写进图片识别缓存。
+    // 画面描述对齐网页帖图片模型的 factual_description：只有标题的视频帖没有它时，文字模型会拿
+    // 「正文未说明……」「带有话题标签」凑正文。
     const imageEvidence = selectVisionEvidence(vision);
-    if (payload?.source?.origin === "user_screenshot" && payload.note?.imageText) {
+    const shotImageText = payload?.source?.origin === "user_screenshot" ? cleanText(payload.note?.imageText) : "";
+    const shotImageDescription = payload?.source?.origin === "user_screenshot" ? cleanText(payload.note?.imageDescription) : "";
+    if (shotImageText || shotImageDescription) {
       imageEvidence.push(normalizeVisionItem({
         image_index: 1,
-        has_text: true,
-        visible_text: payload.note.imageText,
+        has_text: Boolean(shotImageText),
+        visible_text: shotImageText,
+        factual_description: shotImageDescription,
         summary_value: "supporting",
-        include_reason: "截图中的帖文配图文字"
+        include_reason: shotImageDescription ? "截图中的帖文配图或视频画面" : "截图中的帖文配图文字"
       }, 1));
     }
     return {
@@ -603,7 +610,7 @@
         publishedDate: publishedDate?.display || null,
         publishedDateIso: publishedDate?.iso || null,
         content: cleanText(payload.note?.content, 10000),
-        hashtags: (payload.note?.hashtags || []).slice(0, 30).map((item) => cleanText(item, 100)),
+        ...topicTagsEvidence(payload.note?.hashtags),
         uncertainties: stringArray(payload?.uncertainties || [])
       },
       video: video ? {
@@ -611,11 +618,24 @@
         transcript: cleanText(video.transcript, 6000) || null,
         transcriptSource: cleanText(video.transcriptSource, 60) || null
       } : null,
-      comments: (payload.commentExport?.comments || [])
-        .slice(0, COMMENT_LIMIT)
-        .map((comment) => compactComment(comment)),
+      ...commentsEvidence(payload.commentExport?.comments),
       imageEvidence
     };
+  }
+
+  // 话题标签与评论在证据里都带用途说明：帖文只有一句标题时，文字模型会拿单独的 hashtags 字段
+  // 和评论区提问凑 event_summary，提示词里的禁令压不住；用途写在数据旁边才稳定。
+  // 评论保持原位（挪到证据末尾会让模型把线索认定误写成“发帖人确认”）。
+  function topicTagsEvidence(hashtags) {
+    const tags = (hashtags || []).slice(0, 30).map((item) => cleanText(item, 100).replace(/^#/, "")).filter(Boolean);
+    return tags.length ? { topicTags: { usage: XhsPrompts.topicTagsUsage, tags } } : {};
+  }
+
+  function commentsEvidence(comments) {
+    const compacted = (comments || []).slice(0, COMMENT_LIMIT).map((comment) => compactComment(comment));
+    return compacted.length
+      ? { commentsUsage: XhsPrompts.commentsUsage, comments: compacted }
+      : { comments: [] };
   }
 
   async function createTextSummary(payload, vision, config, apiKey) {

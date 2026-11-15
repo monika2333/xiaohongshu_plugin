@@ -82,11 +82,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.16.5");
+assert.equal(manifest.version, "0.16.6");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.16.5");
+assert.equal(packageJson.version, "0.16.6");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -183,7 +183,9 @@ const payload = {
   assert.doesNotMatch(context.XhsPrompts.mergeSystem, /及其“@用户名”/);
   assert.match(context.XhsPrompts.textSystem, /提炼要点后用规范书面语转述/);
   assert.match(context.XhsPrompts.mergeSystem, /提炼要点后用规范书面语转述/);
-  assert.match(context.XhsPrompts.textSystem, /重复正文或表达情绪的补充直接略过/);
+  // v0.16.6：发帖人评论区回复只在带来新事实时写入，没有就不提；其他网民评论不进单帖正文
+  assert.match(context.XhsPrompts.textSystem, /发帖人在评论区的回复只在带来正文没有的新事实、事件进展、处理结果或更正时写入，没有就不提/);
+  assert.match(context.XhsPrompts.textSystem, /其他网民的评论和提问不写进正文/);
   assert.match(context.XhsPrompts.mergeSystem, /发帖人的补充说明只在带来新事实/);
   // 补充委托：合并正文点名发帖人，评论只进观点区，观点条要求与单帖对齐
   assert.match(context.XhsPrompts.mergeSystem, /以首帖发帖人引出（写法同上）/);
@@ -299,10 +301,10 @@ const payload = {
       publishedDate: "8月8日",
       publishedDateIso: "2026-08-08",
       content: "正文",
-      hashtags: [],
       uncertainties: []
     },
     video: null,
+    commentsUsage: context.XhsPrompts.commentsUsage,
     comments: [
       {
         content: "包含,逗号与\"引号\"",
@@ -617,6 +619,7 @@ const payload = {
 
   // —— 截图识别与多帖合并 ——
   assert.match(context.XhsPrompts.screenshotSystem, /visible_comments/);
+  assert.match(context.XhsPrompts.screenshotSystem, /image_description/);
   assert.match(context.XhsPrompts.mergeSystem, /posts 数组/);
   assert.equal(context.XhsAi.parseEngagementCount("1,255"), 1255);
   assert.equal(context.XhsAi.parseEngagementCount("1.2万"), 12000);
@@ -721,6 +724,42 @@ const payload = {
   assert.doesNotMatch(JSON.stringify(shotEvidence), /imageText/);
   assert.equal(context.XhsAi.buildEvidence(absoluteShotPayload, [], null).imageEvidence.length, 0);
 
+  // —— 截图里的视频画面描述同样并入 imageEvidence 的 factual_description ——
+  const sceneShotPayload = context.XhsAi.buildScreenshotPayload({
+    author: "某用户",
+    publishedDisplay: "42分钟前",
+    title: "某校12号宿舍楼着火了",
+    contentText: "",
+    hashtags: ["火灾"],
+    imageDescription: "视频画面中宿舍楼旁冒出大量白色浓烟。",
+    visibleComments: [],
+    uncertainties: [],
+    imageCount: 1
+  }, { exportedAt: fixedNow, screenshotId: "shot-scene" });
+  const sceneEvidence = JSON.parse(JSON.stringify(context.XhsAi.buildEvidence(sceneShotPayload, [], null)));
+  assert.equal(sceneEvidence.imageEvidence.length, 1);
+  assert.equal(sceneEvidence.imageEvidence[0].has_text, false);
+  assert.equal(sceneEvidence.imageEvidence[0].visible_text, "");
+  assert.equal(sceneEvidence.imageEvidence[0].factual_description, "视频画面中宿舍楼旁冒出大量白色浓烟。");
+  assert.equal(sceneEvidence.imageEvidence[0].include_reason, "截图中的帖文配图或视频画面");
+  assert.doesNotMatch(JSON.stringify(sceneEvidence), /imageDescription/);
+
+  // —— v0.16.6：话题标签与评论在证据里带用途说明；评论保持原位，紧跟在说明之后 ——
+  const tagEvidence = JSON.parse(JSON.stringify(context.XhsAi.buildEvidence({
+    source: { platform: "xiaohongshu", noteId: "tag-note" },
+    note: { title: "标题", content: "", hashtags: ["#火灾", "bjut", " "] },
+    media: { images: [] },
+    commentExport: { comments: [{ content: "后面咋处理的呀", likes: { value: 2 } }] }
+  }, [], null)));
+  assert.equal(tagEvidence.note.hashtags, undefined);
+  assert.deepEqual(tagEvidence.note.topicTags, { usage: context.XhsPrompts.topicTagsUsage, tags: ["火灾", "bjut"] });
+  assert.match(context.XhsPrompts.topicTagsUsage, /不写进概括/);
+  assert.match(context.XhsPrompts.commentsUsage, /只用于归纳 opinion_points，不写进 event_summary/);
+  const tagEvidenceKeys = Object.keys(tagEvidence);
+  assert.equal(tagEvidenceKeys.indexOf("commentsUsage") + 1, tagEvidenceKeys.indexOf("comments"));
+  assert.equal(sceneEvidence.note.topicTags.tags[0], "火灾");
+  assert.equal(sceneEvidence.commentsUsage, undefined, "没有评论时不附用途说明");
+
   const mergedRender = context.XhsAi.renderMergedSummary({
     headline: "网传某校学生发表不当言论引争议",
     eventSummary: "账号“@溜溜球”发帖询问某校“闪婚姐”是怎么回事；当日另一账号也就该话题发表意见。",
@@ -776,6 +815,7 @@ const payload = {
                 title: "闪婚姐是怎么回事",
                 content_text: "询问某校闪婚姐事件。",
                 hashtags: [],
+                image_description: "配图为校园墙投稿截图。",
                 likes_raw: "1200",
                 collects_raw: "10",
                 comments_raw: "233",
@@ -848,6 +888,7 @@ const payload = {
   assert.match(mergedEvidence, /"postCount":2/);
   assert.match(mergedEvidence, /"origin":"live_page"/);
   assert.match(mergedEvidence, /"origin":"user_screenshot"/);
+  assert.match(mergedEvidence, /"factual_description":"配图为校园墙投稿截图。"/);
   // 补充委托验收：证据带发帖人，正文以首帖发帖人引出并点名后续发帖人，评论只出现在“部分网民”部分
   assert.match(mergedEvidence, /"author":"测试用户"/);
   assert.match(mergedEvidence, /"author":"溜溜球"/);
