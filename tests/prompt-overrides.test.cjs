@@ -90,4 +90,30 @@ assert.notEqual(
   XhsAi.mergedTextCacheKey([payload], mergeCustomConfig, [[]])
 );
 
+// —— 涉事主体推断：单帖与合并提示词都要求从评论区线索查明全称 ——
+for (const key of ["textSystem", "mergeSystem"]) {
+  const prompt = XhsPrompts[key];
+  assert.match(prompt, /要尽量查明具体名称/, `${key} 应要求查明涉事主体`);
+  assert.match(prompt, /结合它所回复的那条评论理解/, `${key} 应要求结合上下文理解发帖人的简短回复`);
+  assert.match(prompt, /一律使用全称/, `${key} 应要求简称换成全称`);
+  assert.match(prompt, /在 opinion_points 中写明网民猜测的具体名称/, `${key} 应保留未确认猜测的写法`);
+}
+
+// —— 推断所需证据：发帖人的简短回复挂在被回复的评论下，并带作者标识 ——
+const threadEvidence = XhsAi.buildEvidence({
+  source: { platform: "xiaohongshu", noteId: "note-thread" },
+  note: { title: "某高校洗澡水发黄", content: "已经一个星期了" },
+  media: { images: [] },
+  commentExport: {
+    comments: [{
+      content: "航天桥你是北工商还是首师的",
+      likes: { value: 2 },
+      visibleReplies: [{ content: "1", likes: { value: 0 }, isAuthor: true }]
+    }]
+  }
+}, [], null);
+const thread = JSON.parse(JSON.stringify(threadEvidence.comments[0]));
+assert.equal(thread.content, "航天桥你是北工商还是首师的");
+assert.equal(JSON.stringify(thread.visibleReplies), JSON.stringify([{ content: "1", likes: 0, isAuthor: true }]));
+
 process.stdout.write("prompt overrides tests passed\n");
