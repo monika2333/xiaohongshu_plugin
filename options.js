@@ -10,7 +10,8 @@ const fields = {
   feishuAppId: document.querySelector("#feishu-app-id"),
   feishuAppSecret: document.querySelector("#feishu-app-secret"),
   feishuRecipientId: document.querySelector("#feishu-recipient-id"),
-  rememberKeys: document.querySelector("#remember-keys")
+  rememberKeys: document.querySelector("#remember-keys"),
+  splitModels: document.querySelector("#split-models")
 };
 
 const form = document.querySelector("#settings-form");
@@ -28,6 +29,18 @@ const feishuWebhookFields = document.querySelector("#feishu-webhook-fields");
 const feishuAppFields = document.querySelector("#feishu-app-fields");
 const feishuTestButton = document.querySelector("#feishu-test-button");
 const feishuTestStatus = document.querySelector("#feishu-test-status");
+const visionGroup = document.querySelector("#vision-group");
+const textGroupTitle = document.querySelector("#text-group-title");
+const textTestButton = document.querySelector("#text-test-button");
+const switchToSplitButton = document.querySelector("#switch-to-split-button");
+const modelIntro = document.querySelector("#model-intro");
+const flowVision = document.querySelector("#flow-vision");
+const flowText = document.querySelector("#flow-text");
+
+const MODEL_INTRO = {
+  shared: "文字概括与图片识别默认共用一个模型，只需填一份 API Key。模型需同时支持文字与图片输入，点「测试模型」会一并检查。",
+  split: "文字概括与图片识别分别使用下面两组设置。图片模型需支持图像输入。"
+};
 
 const PROMPT_EDITORS = ["textSystem", "mergeSystem", "visionSystem", "screenshotSystem"].map((key) => ({
   key,
@@ -98,6 +111,51 @@ for (const editor of PROMPT_EDITORS) {
   });
 }
 
+function modelMode() {
+  return fields.splitModels.checked ? "split" : "shared";
+}
+
+// 图片那组是否已有用户自己的设置：没有时，第一次开启分开配置先用当前文字设置填好，用户只改需要改的。
+let visionConfigured = false;
+
+function updateModelModeUi() {
+  const split = modelMode() === "split";
+  visionGroup.hidden = !split;
+  textGroupTitle.hidden = !split;
+  switchToSplitButton.hidden = true;
+  textTestButton.textContent = split ? "测试文字模型" : "测试模型";
+  const introLink = modelIntro.querySelector?.("a");
+  modelIntro.textContent = MODEL_INTRO[split ? "split" : "shared"];
+  if (introLink) modelIntro.append(introLink);
+  flowVision.textContent = split ? "图片模型识别" : "模型识别图片";
+  flowText.textContent = split ? "文字模型编写" : "模型编写简报";
+}
+
+function prefillVisionFromText() {
+  if (visionConfigured) return;
+  fields.visionBaseUrl.value = fields.textBaseUrl.value;
+  fields.visionModel.value = fields.textModel.value;
+  fields.visionKey.value = "";
+  visionConfigured = true;
+}
+
+function setModelMode(split) {
+  fields.splitModels.checked = split;
+  if (split) prefillVisionFromText();
+  updateModelModeUi();
+}
+
+fields.splitModels.addEventListener("change", () => {
+  cancelCloseCountdown();
+  setModelMode(fields.splitModels.checked);
+});
+
+switchToSplitButton.addEventListener("click", () => {
+  cancelCloseCountdown();
+  setModelMode(true);
+  fields.visionModel.focus?.();
+});
+
 function selectedFeishuMode() {
   return document.querySelector('input[name="feishu-mode"]:checked')?.value || "webhook";
 }
@@ -105,6 +163,7 @@ function selectedFeishuMode() {
 function formValue() {
   return {
     config: {
+      modelMode: modelMode(),
       text: {
         baseUrl: fields.textBaseUrl.value.trim(),
         model: fields.textModel.value.trim()
@@ -221,6 +280,9 @@ async function restoreSettings() {
   fields.feishuWebhookSecret.value = response.secrets.feishuWebhookSecret || "";
   fields.feishuAppSecret.value = response.secrets.feishuAppSecret || "";
   fillPromptEditors(response.config.promptOverrides);
+  visionConfigured = response.config.modelMode === "split";
+  fields.splitModels.checked = response.config.modelMode === "split";
+  updateModelModeUi();
   updateFeishuUi();
 }
 
@@ -235,7 +297,8 @@ form.addEventListener("submit", async (event) => {
   setSaveStatus("正在保存设置…", "", statusTarget);
   try {
     const values = formValue();
-    const permissionUrls = [values.config.text.baseUrl, values.config.vision.baseUrl];
+    const permissionUrls = [values.config.text.baseUrl];
+    if (values.config.modelMode === "split") permissionUrls.push(values.config.vision.baseUrl);
     if (hasFeishuSettings(values)) permissionUrls.push("https://open.feishu.cn");
     await ensureApiPermissions(permissionUrls);
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_SAVE_CONFIG", ...values });
@@ -305,13 +368,17 @@ feishuTestButton.addEventListener("click", async () => {
 
 document.querySelectorAll(".test-button[data-provider]").forEach((button) => {
   button.addEventListener("click", async () => {
-    const provider = button.dataset.provider;
+    const values = formValue();
+    // 共用模式下文字那组的测试按钮同时测文字与图片（provider: shared）。
+    const provider = button.dataset.provider === "vision"
+      ? "vision"
+      : (values.config.modelMode === "shared" ? "shared" : "text");
     const status = document.querySelector(provider === "vision" ? "#vision-test-status" : "#text-test-status");
     button.disabled = true;
-    status.textContent = "正在连接…";
+    if (provider === "shared") switchToSplitButton.hidden = true;
+    status.textContent = { text: "正在连接…", vision: "正在测试图片识别…", shared: "正在测试文字与图片识别…" }[provider];
     status.dataset.state = "";
     try {
-      const values = formValue();
       const targetUrl = provider === "vision" ? values.config.vision.baseUrl : values.config.text.baseUrl;
       await ensureApiPermissions([targetUrl]);
       const response = await chrome.runtime.sendMessage({
@@ -320,8 +387,17 @@ document.querySelectorAll(".test-button[data-provider]").forEach((button) => {
         ...values
       });
       if (!response?.ok) throw new Error(response?.error || "连接失败。");
-      status.textContent = `连接成功 · ${response.detail}`;
-      status.dataset.state = "ok";
+      if (provider === "shared" && response.vision?.ok === false) {
+        status.textContent = `文字可用，图片识别失败：${response.vision.error} 帖文配图和截图将无法识别，可改为分开配置另选图片模型。`;
+        status.dataset.state = "error";
+        switchToSplitButton.hidden = false;
+      } else if (provider === "shared") {
+        status.textContent = `连接成功 · 文字与图片均可用（${response.vision?.detail || response.detail}）`;
+        status.dataset.state = "ok";
+      } else {
+        status.textContent = `连接成功 · ${response.detail}`;
+        status.dataset.state = "ok";
+      }
     } catch (error) {
       status.textContent = error?.message || "连接失败。";
       status.dataset.state = "error";

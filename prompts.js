@@ -90,6 +90,7 @@
   const COMMENTS_USAGE = "comments 是网民评论，只用于归纳 opinion_points，不写进 event_summary；其中发帖人的回复按写作规则使用。";
 
   const CONNECTION_TEST = "这是连接测试。请只回答 OK。";
+  const VISION_CONNECTION_TEST = "这是图片识别连接测试。图中色块是什么颜色？只回答颜色。";
 
   globalThis.XhsPrompts = Object.freeze({
     visionSystem: VISION_SYSTEM,
@@ -103,6 +104,7 @@
     screenshotInstruction,
     topicTagsUsage: TOPIC_TAGS_USAGE,
     commentsUsage: COMMENTS_USAGE,
-    connectionTest: CONNECTION_TEST
+    connectionTest: CONNECTION_TEST,
+    visionConnectionTest: VISION_CONNECTION_TEST
   });
 })();

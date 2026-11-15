@@ -6,7 +6,12 @@
   // 与内容脚本的采集上限一致：进入模型证据的评论条数兜底上限。
   const COMMENT_LIMIT = 50;
 
+  // 模型连接测试用的 32×32 纯红色 PNG：用来确认模型能否看图（只回答颜色）。
+  const VISION_TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR42mO4IydHU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAJI2YD30P/0LAAAAAElFTkSuQmCC";
+
   const DEFAULT_CONFIG = Object.freeze({
+    // shared：文字概括与图片识别共用 text 这一组设置；split：两组各自生效。
+    modelMode: "shared",
     text: {
       provider: "openai_compatible",
       baseUrl: "https://api.deepseek.com",
@@ -206,17 +211,20 @@
   }
 
   function normalizeConfig(raw = {}) {
+    const text = {
+      provider: "openai_compatible",
+      baseUrl: normalizeBaseUrl(raw.text?.baseUrl || DEFAULT_CONFIG.text.baseUrl),
+      model: cleanText(raw.text?.model || DEFAULT_CONFIG.text.model, 120)
+    };
+    const vision = {
+      provider: "openai_compatible",
+      baseUrl: normalizeBaseUrl(raw.vision?.baseUrl || DEFAULT_CONFIG.vision.baseUrl),
+      model: cleanText(raw.vision?.model || DEFAULT_CONFIG.vision.model, 120)
+    };
     return {
-      text: {
-        provider: "openai_compatible",
-        baseUrl: normalizeBaseUrl(raw.text?.baseUrl || DEFAULT_CONFIG.text.baseUrl),
-        model: cleanText(raw.text?.model || DEFAULT_CONFIG.text.model, 120)
-      },
-      vision: {
-        provider: "openai_compatible",
-        baseUrl: normalizeBaseUrl(raw.vision?.baseUrl || DEFAULT_CONFIG.vision.baseUrl),
-        model: cleanText(raw.vision?.model || DEFAULT_CONFIG.vision.model, 120)
-      },
+      modelMode: normalizeModelMode(raw.modelMode, text, vision),
+      text,
+      vision,
       feishu: {
         mode: raw.feishu?.mode === "app" ? "app" : "webhook",
         appId: cleanText(raw.feishu?.appId, 160),
@@ -225,6 +233,52 @@
       rememberApiKeys: raw.rememberApiKeys !== false,
       promptOverrides: normalizePromptOverrides(raw.promptOverrides)
     };
+  }
+
+  // v0.17.0 之前的配置没有 modelMode：文字与图片的地址、模型都相同就按共用处理，否则保持分开。
+  function normalizeModelMode(value, text, vision) {
+    if (value === "shared" || value === "split") return value;
+    return text.baseUrl === vision.baseUrl && text.model === vision.model ? "shared" : "split";
+  }
+
+  function sameApiOrigin(left, right) {
+    try {
+      return new URL(left).origin === new URL(right).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  // 生效配置：共用模式下图片识别直接用文字那一组设置；保存的 vision 保留不动，切回分开时还在。
+  function effectiveConfig(config) {
+    if (config.modelMode !== "shared") return config;
+    return { ...config, vision: { ...config.text } };
+  }
+
+  // 生效密钥：共用模式图片 Key 就是文字 Key；分开模式图片 Key 留空时，只在两边 API 同域名时沿用文字 Key，
+  // 不同域名绝不沿用，避免把一家厂商的 Key 发给另一家。
+  function effectiveSecrets(config, secrets) {
+    const textApiKey = cleanText(secrets?.textApiKey);
+    let visionApiKey = textApiKey;
+    if (config.modelMode !== "shared") {
+      visionApiKey = cleanText(secrets?.visionApiKey) ||
+        (sameApiOrigin(config.text.baseUrl, config.vision.baseUrl) ? textApiKey : "");
+    }
+    return { ...(secrets || {}), textApiKey, visionApiKey };
+  }
+
+  // 所有调用模型的入口都经这里取配置与密钥，保证共用 / 分开的换算只有一处。
+  function resolveModels(rawConfig, secrets) {
+    const config = normalizeConfig(rawConfig);
+    return {
+      config: validateConfig(effectiveConfig(config)),
+      secrets: effectiveSecrets(config, secrets)
+    };
+  }
+
+  function modelLabel(config, role) {
+    if (config.modelMode === "shared") return "模型";
+    return role === "vision" ? "图片模型" : "文字模型";
   }
 
   function validateHttpsUrl(value, label) {
@@ -238,10 +292,14 @@
   }
 
   function validateConfig(config) {
-    validateHttpsUrl(config.text.baseUrl, "文字模型 API 地址");
-    validateHttpsUrl(config.vision.baseUrl, "图片模型 API 地址");
-    if (!config.text.model) throw new Error("请填写文字模型名称。");
-    if (!config.vision.model) throw new Error("请填写图片模型名称。");
+    const textLabel = modelLabel(config, "text");
+    validateHttpsUrl(config.text.baseUrl, `${textLabel} API 地址`);
+    if (!config.text.model) throw new Error(`请填写${textLabel}名称。`);
+    // 共用模式下保存的 vision 不生效，也不校验，免得隐藏的旧值挡住保存。
+    if (config.modelMode !== "shared") {
+      validateHttpsUrl(config.vision.baseUrl, "图片模型 API 地址");
+      if (!config.vision.model) throw new Error("请填写图片模型名称。");
+    }
     return config;
   }
 
@@ -786,9 +844,9 @@
     }
   }
 
-  async function prepareVision(payload, rawConfig, secrets, cache = {}, emitProgress = () => {}) {
-    const config = validateConfig(normalizeConfig(rawConfig));
-    const visionApiKey = secrets?.visionApiKey;
+  async function prepareVision(payload, rawConfig, rawSecrets, cache = {}, emitProgress = () => {}) {
+    const { config, secrets } = resolveModels(rawConfig, rawSecrets);
+    const visionApiKey = secrets.visionApiKey;
     const prepared = await resolveVision(payload, config, visionApiKey, cache, emitProgress);
     return { ...prepared, cache };
   }
@@ -801,16 +859,16 @@
   async function summarize(
     payload,
     rawConfig,
-    secrets,
+    rawSecrets,
     cache = {},
     emitProgress = () => {},
     force = false,
     preparedVision = null
   ) {
-    const config = validateConfig(normalizeConfig(rawConfig));
-    const textApiKey = secrets?.textApiKey;
-    const visionApiKey = secrets?.visionApiKey;
-    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
+    const { config, secrets } = resolveModels(rawConfig, rawSecrets);
+    const textApiKey = secrets.textApiKey;
+    const visionApiKey = secrets.visionApiKey;
+    if (!textApiKey) throw new Error(`尚未配置${modelLabel(config, "text")} API Key，请先打开模型设置。`);
 
     const images = (payload.media?.images || []).slice(0, MAX_IMAGE_COUNT);
     const vKey = visionCacheKey(payload, config);
@@ -987,7 +1045,7 @@
   async function summarizeMerged(
     payloads,
     rawConfig,
-    secrets,
+    rawSecrets,
     cache = {},
     emitProgress = () => {},
     force = false
@@ -995,10 +1053,10 @@
     if (!Array.isArray(payloads) || !payloads.length) {
       throw new Error("合并清单是空的，请先加入帖文或上传截图。");
     }
-    const config = validateConfig(normalizeConfig(rawConfig));
-    const textApiKey = secrets?.textApiKey;
-    const visionApiKey = secrets?.visionApiKey;
-    if (!cleanText(textApiKey)) throw new Error("尚未配置文字模型 API Key，请先打开模型设置。");
+    const { config, secrets } = resolveModels(rawConfig, rawSecrets);
+    const textApiKey = secrets.textApiKey;
+    const visionApiKey = secrets.visionApiKey;
+    if (!textApiKey) throw new Error(`尚未配置${modelLabel(config, "text")} API Key，请先打开模型设置。`);
 
     const ordered = sortPayloadsChronologically(payloads);
     const visions = [];
@@ -1070,12 +1128,7 @@
     };
   }
 
-  async function testProvider(provider, rawConfig, secrets) {
-    const config = validateConfig(normalizeConfig(rawConfig));
-    const isVision = provider === "vision";
-    const target = isVision ? config.vision : config.text;
-    const apiKey = isVision ? secrets?.visionApiKey : secrets?.textApiKey;
-    if (!cleanText(apiKey)) throw new Error(`请先填写${isVision ? "图片" : "文字"}模型 API Key。`);
+  async function testTextTarget(target, apiKey) {
     const answer = await callChat({
       baseUrl: target.baseUrl,
       apiKey,
@@ -1084,12 +1137,62 @@
       temperature: 0,
       timeoutMs: 45000
     });
-    return { ok: true, detail: cleanText(answer, 80) || "连接成功" };
+    return cleanText(answer, 80) || "连接成功";
+  }
+
+  // 发一张纯红色小图，要求只回答颜色：答出红色才算能看图。不支持图片的模型通常直接报错，
+  // 也有接口静默丢掉图片照常作答，所以还要核对答案。
+  async function testVisionTarget(target, apiKey) {
+    const answer = cleanText(await callChat({
+      baseUrl: target.baseUrl,
+      apiKey,
+      model: target.model,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: VISION_TEST_IMAGE } },
+          { type: "text", text: XhsPrompts.visionConnectionTest }
+        ]
+      }],
+      temperature: 0,
+      timeoutMs: 45000
+    }), 80);
+    if (!/红|red/i.test(answer)) {
+      throw new Error(`模型没有认出测试图片${answer ? `（回答：${answer}）` : ""}，可能不支持图片输入。`);
+    }
+    return answer;
+  }
+
+  // provider：text / vision 测单项（分开模式）；shared 先测文字再测图片，图片失败不算整体失败，
+  // 由设置页提示改为分开配置。
+  async function testProvider(provider, rawConfig, rawSecrets) {
+    const { config, secrets } = resolveModels(rawConfig, rawSecrets);
+    if (provider === "shared") {
+      if (!secrets.textApiKey) throw new Error("请先填写模型 API Key。");
+      const textDetail = await testTextTarget(config.text, secrets.textApiKey);
+      try {
+        const visionDetail = await testVisionTarget(config.vision, secrets.visionApiKey);
+        return { ok: true, detail: textDetail, vision: { ok: true, detail: visionDetail } };
+      } catch (error) {
+        return { ok: true, detail: textDetail, vision: { ok: false, error: error?.message || "图片识别测试失败。" } };
+      }
+    }
+    const isVision = provider === "vision";
+    const apiKey = isVision ? secrets.visionApiKey : secrets.textApiKey;
+    if (!apiKey) throw new Error(`请先填写${isVision ? "图片" : "文字"}模型 API Key。`);
+    const detail = isVision
+      ? await testVisionTarget(config.vision, apiKey)
+      : await testTextTarget(config.text, apiKey);
+    return { ok: true, detail };
   }
 
   globalThis.XhsAi = {
     DEFAULT_CONFIG,
     normalizeConfig,
+    effectiveConfig,
+    effectiveSecrets,
+    resolveModels,
+    modelLabel,
     normalizePromptOverrides,
     resolvePrompts,
     promptCacheTag,

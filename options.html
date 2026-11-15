@@ -13,7 +13,7 @@
         <div class="title-copy">
           <p class="eyebrow">PERSONAL BYOK WORKBENCH</p>
           <h1>插件设置</h1>
-          <p>配置文字与图片模型，自定义概括提示词，并按需把完成的概括自动推送到飞书。</p>
+          <p>配置模型（文字与图片默认共用一个），自定义概括提示词，并按需把完成的概括自动推送到飞书。</p>
         </div>
       </header>
 
@@ -39,62 +39,72 @@
         </div>
       </aside>
 
-        <section class="provider-card" aria-labelledby="text-title">
+        <section class="provider-card model-card" aria-labelledby="model-title">
           <div class="card-number">A</div>
           <div class="card-heading">
-            <p class="eyebrow">TEXT MODEL</p>
-            <h2 id="text-title">文字概括模型 <span class="recommendation">推荐 DeepSeek</span></h2>
-            <p>综合正文、前 50 条评论和图片识别结果，生成最终简报。<a class="provider-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">获取 DeepSeek API Key ↗</a></p>
+            <p class="eyebrow">AI MODEL</p>
+            <h2 id="model-title">模型 <span class="recommendation">推荐 DeepSeek</span></h2>
+            <p id="model-intro">文字概括与图片识别默认共用一个模型，只需填一份 API Key。模型需同时支持文字与图片输入，点「测试模型」会一并检查。<a class="provider-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">获取 DeepSeek API Key ↗</a></p>
           </div>
-          <div class="fields">
-            <label class="wide-field">
-              <span>API 地址</span>
-              <input id="text-base-url" type="url" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              <span>模型名称</span>
-              <input id="text-model" type="text" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              <span>API Key</span>
-              <input id="text-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
-            </label>
-          </div>
-          <div class="card-actions">
-            <button class="test-button" type="button" data-provider="text">测试文字模型</button>
-            <span id="text-test-status" class="test-status" aria-live="polite"></span>
-          </div>
-        </section>
+          <div class="model-body">
+            <div class="model-group" id="text-group">
+              <p class="model-group-title" id="text-group-title" hidden>文字概括模型<small>综合正文、前 50 条评论和图片识别结果，生成最终简报。</small></p>
+              <div class="fields">
+                <label class="wide-field">
+                  <span>API 地址</span>
+                  <input id="text-base-url" type="url" autocomplete="off" spellcheck="false" required>
+                </label>
+                <label>
+                  <span>模型名称</span>
+                  <input id="text-model" type="text" autocomplete="off" spellcheck="false" required>
+                </label>
+                <label>
+                  <span>API Key</span>
+                  <input id="text-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+                </label>
+              </div>
+              <div class="card-actions">
+                <button id="text-test-button" class="test-button" type="button" data-provider="text">测试模型</button>
+                <span id="text-test-status" class="test-status" aria-live="polite"></span>
+              </div>
+              <button id="switch-to-split-button" class="inline-action" type="button" hidden>改为文字与图片分开配置 →</button>
+            </div>
 
-        <section class="provider-card" aria-labelledby="vision-title">
-          <div class="card-number">B</div>
-          <div class="card-heading">
-            <p class="eyebrow">VISION MODEL</p>
-            <h2 id="vision-title">图片识别模型 <span class="recommendation">推荐 DeepSeek</span></h2>
-            <p>逐图提取可见文字与关键事实，需要选择支持图像输入的兼容模型；与文字模型同用 DeepSeek 时只需一份 Key。<a class="provider-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">获取 DeepSeek API Key ↗</a></p>
-          </div>
-          <div class="fields">
-            <label class="wide-field">
-              <span>API 地址</span>
-              <input id="vision-base-url" type="url" autocomplete="off" spellcheck="false" required>
+            <label class="split-option">
+              <input id="split-models" class="remember-input" type="checkbox">
+              <span class="remember-toggle" aria-hidden="true"></span>
+              <span class="split-copy">
+                <strong>文字与图片分开配置</strong>
+                <small>模型不支持图片输入，或想让文字与图片用不同的模型时开启</small>
+              </span>
             </label>
-            <label>
-              <span>模型名称</span>
-              <input id="vision-model" type="text" autocomplete="off" spellcheck="false" required>
-            </label>
-            <label>
-              <span>API Key</span>
-              <input id="vision-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
-            </label>
-          </div>
-          <div class="card-actions">
-            <button class="test-button" type="button" data-provider="vision">测试图片模型</button>
-            <span id="vision-test-status" class="test-status" aria-live="polite"></span>
+
+            <div class="model-group" id="vision-group" hidden>
+              <p class="model-group-title">图片识别模型<small>逐图提取可见文字与关键事实，需支持图像输入。与文字模型同一域名时 API Key 可留空，沿用文字模型的 Key。</small></p>
+              <div class="fields">
+                <label class="wide-field">
+                  <span>API 地址</span>
+                  <input id="vision-base-url" type="url" autocomplete="off" spellcheck="false">
+                </label>
+                <label>
+                  <span>模型名称</span>
+                  <input id="vision-model" type="text" autocomplete="off" spellcheck="false">
+                </label>
+                <label>
+                  <span>API Key</span>
+                  <input id="vision-key" type="password" autocomplete="off" spellcheck="false" placeholder="同域名可留空">
+                </label>
+              </div>
+              <div class="card-actions">
+                <button class="test-button" type="button" data-provider="vision">测试图片模型</button>
+                <span id="vision-test-status" class="test-status" aria-live="polite"></span>
+              </div>
+            </div>
           </div>
         </section>
 
         <section class="provider-card notification-card" aria-labelledby="feishu-title">
-          <div class="card-number">C</div>
+          <div class="card-number">B</div>
           <div class="card-heading">
             <p class="eyebrow">FEISHU DELIVERY</p>
             <h2 id="feishu-title">飞书自动推送 <span class="recommendation">可选</span></h2>
@@ -155,7 +165,7 @@
         </section>
 
         <section class="workflow-strip" aria-label="处理顺序">
-          <span>页面证据</span><b>→</b><span>图片模型识别</span><b>→</b><span>文字模型编写</span><b>→</b><span>飞书（可选）</span>
+          <span>页面证据</span><b>→</b><span id="flow-vision">模型识别图片</span><b>→</b><span id="flow-text">模型编写简报</span><b>→</b><span>飞书（可选）</span>
         </section>
 
         <div class="save-row">

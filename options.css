@@ -405,6 +405,78 @@ input:focus {
 .test-button:hover { color: var(--paper); background: var(--ink); }
 .test-button:disabled { cursor: wait; opacity: .58; }
 
+/* —— 模型卡：默认共用一组设置，开启「分开配置」后展开图片模型那组 —— */
+.model-body {
+  grid-column: 3;
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.model-group { display: grid; gap: 14px; }
+/* .fields / .card-actions 在卡片网格里占第 3 列（窄屏第 2 列），放进组内要复位，否则会撑出隐式列 */
+.model-group .fields,
+.model-group .card-actions { grid-column: auto; }
+.model-group .card-actions { margin-top: 0; }
+
+#vision-group {
+  padding-top: 18px;
+  border-top: 1px dashed var(--line);
+}
+
+.model-group-title {
+  margin: 0;
+  font-family: "STSong", "Songti SC", serif;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.model-group-title small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.split-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+/* 抵消通用的 label > span 字段标签样式 */
+.split-option .split-copy {
+  margin: 0;
+  color: var(--ink);
+  font-size: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.split-copy strong { display: block; font-size: 12px; }
+.split-copy small { color: var(--muted); font-size: 11px; }
+.split-option .remember-toggle { flex: none; }
+
+.inline-action {
+  justify-self: start;
+  padding: 0;
+  color: var(--red-dark);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.inline-action:hover { color: var(--red); }
+
 .test-status { color: var(--muted); font-size: 11px; }
 .test-status[data-state="ok"] { color: var(--green); }
 .test-status[data-state="error"] { color: var(--red-dark); }
@@ -457,7 +529,7 @@ input:focus {
   .credential-row { align-items: flex-start; flex-direction: column; }
   .credential-hint { margin-left: 0; }
   .provider-card { grid-template-columns: 34px 1fr; }
-  .fields, .card-actions, .notification-settings { grid-column: 2; }
+  .fields, .card-actions, .notification-settings, .model-body { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {

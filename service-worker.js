@@ -1081,9 +1081,12 @@ async function recognizeScreenshots(message) {
   }
   const sourceUrl = validateScreenshotSourceUrl(message?.sourceUrl);
 
-  const [config, secrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  const [storedConfig, storedSecrets] = await Promise.all([getStoredConfig(), getStoredSecrets()]);
+  const { config, secrets } = XhsAi.resolveModels(storedConfig, storedSecrets);
   const visionApiKey = secrets.visionApiKey;
-  if (!cleanText(visionApiKey)) throw new Error("识别截图需要先配置图片模型 API Key，请打开设置填写。");
+  if (!visionApiKey) {
+    throw new Error(`识别截图需要先配置${XhsAi.modelLabel(config, "vision")} API Key，请打开设置填写。`);
+  }
 
   const extraction = await XhsAi.analyzeScreenshots(images, config, visionApiKey);
   const payload = XhsAi.buildScreenshotPayload(extraction, {

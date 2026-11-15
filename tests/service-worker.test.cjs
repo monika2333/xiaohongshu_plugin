@@ -82,11 +82,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.16.6");
+assert.equal(manifest.version, "0.17.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.16.6");
+assert.equal(packageJson.version, "0.17.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -347,6 +347,97 @@ const payload = {
   assert.equal("enabled" in customConfig.feishu, false);
   assert.equal(customConfig.feishu.mode, "webhook");
 
+  // —— v0.17.0 模型共用 / 分开：旧配置迁移、生效配置与 Key 沿用规则 ——
+  // 旧配置没有 modelMode：地址、模型都相同按共用，否则保持分开
+  assert.equal(customConfig.modelMode, "split");
+  assert.equal(context.XhsAi.normalizeConfig({}).modelMode, "shared");
+  assert.equal(context.XhsAi.normalizeConfig({
+    text: { baseUrl: "https://api.deepseek.com/", model: "deepseek-flash" },
+    vision: { baseUrl: "https://api.deepseek.com", model: "deepseek-flash" }
+  }).modelMode, "shared");
+  assert.equal(context.XhsAi.normalizeConfig({ ...customConfig, modelMode: "shared" }).modelMode, "shared");
+
+  // 共用：图片用文字那组设置与 Key，保存的 vision 设置与 Key 保留但不生效
+  const sharedResolved = context.XhsAi.resolveModels(
+    { ...customConfig, modelMode: "shared" },
+    { textApiKey: "text-key", visionApiKey: "stale-vision-key" }
+  );
+  assert.equal(sharedResolved.config.vision.baseUrl, "https://models.example.com/v1");
+  assert.equal(sharedResolved.config.vision.model, "custom-text");
+  assert.equal(sharedResolved.secrets.visionApiKey, "text-key");
+  assert.equal(context.XhsAi.normalizeConfig({ ...customConfig, modelMode: "shared" }).vision.model, "custom-vision");
+  // 共用模式下隐藏的图片地址无效也不挡保存
+  assert.doesNotThrow(() => context.XhsAi.validateConfig(context.XhsAi.normalizeConfig({
+    modelMode: "shared",
+    vision: { baseUrl: "http://insecure.example.com", model: "x" }
+  })));
+  assert.throws(() => context.XhsAi.validateConfig(context.XhsAi.normalizeConfig({
+    modelMode: "split",
+    vision: { baseUrl: "http://insecure.example.com", model: "x" }
+  })), /图片模型 API 地址必须使用 HTTPS/);
+
+  // 分开：图片 Key 留空时只在同域名下沿用文字 Key，跨域名绝不沿用
+  const splitSameHost = context.XhsAi.resolveModels({
+    modelMode: "split",
+    text: { baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+    vision: { baseUrl: "https://api.deepseek.com/v1", model: "deepseek-flash" }
+  }, { textApiKey: "text-key", visionApiKey: "" });
+  assert.equal(splitSameHost.config.vision.model, "deepseek-flash");
+  assert.equal(splitSameHost.secrets.visionApiKey, "text-key");
+  const splitOtherHost = context.XhsAi.resolveModels(customConfig, { textApiKey: "text-key", visionApiKey: "" });
+  assert.equal(splitOtherHost.secrets.visionApiKey, "");
+  const splitOwnKey = context.XhsAi.resolveModels(customConfig, { textApiKey: "text-key", visionApiKey: "vision-key" });
+  assert.equal(splitOwnKey.secrets.visionApiKey, "vision-key");
+
+  // 报错文案：共用模式不区分文字 / 图片
+  await assert.rejects(
+    context.XhsAi.summarize({ source: {}, media: { images: [] } }, {}, { textApiKey: "" }),
+    /尚未配置模型 API Key/
+  );
+  await assert.rejects(
+    context.XhsAi.summarize({ source: {}, media: { images: [] } }, customConfig, { textApiKey: "" }),
+    /尚未配置文字模型 API Key/
+  );
+
+  // 连接测试：shared 先测文字再发红色测试图；图片失败只标在 vision 上，不算整体失败
+  const providerRequests = [];
+  const savedFetch = context.fetch;
+  const chatReply = (content) => ({ ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) });
+  context.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    providerRequests.push({ url, auth: options.headers.Authorization, body });
+    return chatReply(Array.isArray(body.messages[0].content) ? "红色" : "OK");
+  };
+  const sharedTest = await context.XhsAi.testProvider("shared", {}, { textApiKey: "text-key", visionApiKey: "" });
+  assert.equal(sharedTest.ok, true);
+  assert.equal(sharedTest.vision.ok, true);
+  assert.equal(providerRequests.length, 2);
+  assert.equal(typeof providerRequests[0].body.messages[0].content, "string");
+  const imageParts = providerRequests[1].body.messages[0].content;
+  assert.match(imageParts[0].image_url.url, /^data:image\/png;base64,/);
+  assert.equal(providerRequests[1].auth, "Bearer text-key");
+
+  context.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    if (Array.isArray(body.messages[0].content)) {
+      return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "image input is not supported" } }) };
+    }
+    return chatReply("OK");
+  };
+  const sharedNoVision = await context.XhsAi.testProvider("shared", {}, { textApiKey: "text-key" });
+  assert.equal(sharedNoVision.ok, true);
+  assert.equal(sharedNoVision.vision.ok, false);
+  assert.match(sharedNoVision.vision.error, /image input is not supported/);
+
+  // 接口静默丢图照常作答时，答不出红色也判为不支持
+  context.fetch = async () => chatReply("OK");
+  await assert.rejects(
+    context.XhsAi.testProvider("vision", customConfig, { textApiKey: "text-key", visionApiKey: "vision-key" }),
+    /没有认出测试图片（回答：OK），可能不支持图片输入/
+  );
+  await assert.rejects(context.XhsAi.testProvider("shared", {}, { textApiKey: "" }), /请先填写模型 API Key/);
+  context.fetch = savedFetch;
+
   await context.saveAiSettings(
     { ...customConfig, rememberApiKeys: true },
     { textApiKey: "persistent-text", visionApiKey: "persistent-vision" }
@@ -444,7 +535,8 @@ const payload = {
     }
     visionModelCalls += 1;
     assert.equal(url, "https://api.deepseek.com/chat/completions");
-    assert.equal(options.headers.Authorization, "Bearer test-vision-key");
+    // 默认共用模式：图片识别用文字那一份 Key，存着的 visionApiKey 不生效
+    assert.equal(options.headers.Authorization, "Bearer test-deepseek-key");
     return {
       ok: true,
       status: 200,
@@ -790,7 +882,8 @@ const payload = {
   assert.match(shotOnlyRender, /截至目前，该帖文获55次点赞、998条评论。/);
   assert.match(shotOnlyRender, /（原帖已删除，内容据用户上传截图整理）$/);
 
-  storageState.local.xhsAiConfig = context.XhsAi.DEFAULT_CONFIG;
+  // 分开模式：同一 API 域名、图片单独填 Key 时，截图识别用图片 Key（下方按 Authorization 区分两类请求）
+  storageState.local.xhsAiConfig = { ...context.XhsAi.DEFAULT_CONFIG, modelMode: "split" };
   storageState.local.xhsAiPersistentSecrets = {
     textApiKey: "test-deepseek-key",
     visionApiKey: "test-vision-key"
