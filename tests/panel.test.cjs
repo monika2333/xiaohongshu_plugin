@@ -140,6 +140,7 @@ const tabsUpdates = [];
 const windowsUpdates = [];
 let tabsActivatedListener = null;
 let tabsRemovedListener = null;
+let tabsUpdatedListener = null;
 let runtimeListener = null;
 const documentListeners = {};
 const runtimeMessages = [];
@@ -225,6 +226,7 @@ const context = {
       },
       onActivated: { addListener(listener) { tabsActivatedListener = listener; } },
       onRemoved: { addListener(listener) { tabsRemovedListener = listener; } },
+      onUpdated: { addListener(listener) { tabsUpdatedListener = listener; } },
       sendMessage: async (tabId, message) => {
         tabMessages.push({ tabId, message });
         return tabHandler(tabId, message);
@@ -258,6 +260,7 @@ vm.runInContext(source, context, { filename: "panel.js" });
 
 // 静态结构：旧单条/多条页签已删除，四个区块与结果卡的新控件都在
 const panelHtml = fs.readFileSync(path.join(__dirname, "..", "panel.html"), "utf8");
+assert.equal(typeof tabsUpdatedListener, "function", "面板应监听 chrome.tabs.onUpdated，跟随页签内跳转");
 assert.doesNotMatch(panelHtml, /class="view-tabs"/);
 assert.doesNotMatch(panelHtml, /id="(?:view-single|view-merge|shot-single-[^"]*|link-input|link-run|screenshot-url|merge-dropzone|screenshot-staging|screenshot-run|screenshot-input)"/);
 for (const id of [
@@ -2024,6 +2027,63 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     "链接已记录，但概括正文编辑过，未能自动替换，请手动修改。"
   );
   assert.equal(elements["#material-feedback"].dataset.state, "info");
+
+  // —— 0.16.2：页签内的地址变化只发 onUpdated，按钮不能停在旧地址上 ——
+  const XHS_NOTE_14 = "6a76029300000000250070ce";
+  const feedUrl = "https://www.xiaohongshu.com/explore?channel_id=homefeed";
+  const postUrl14 = `https://www.xiaohongshu.com/explore/${XHS_NOTE_14}?xsec_token=tok-14`;
+  pageUrlById[14] = feedUrl;
+  noteIdById[14] = null;
+  sessionById[14] = "page-session-14";
+  await switchChromeTab(14);
+  assert.equal(elements["#extract-button"].disabled, true, "首页不是帖文页，按钮应置灰");
+  assert.equal(elements["#current-post-label"].hidden, false);
+
+  // 从首页点开笔记：同一页签内 URL 变化，不触发 onActivated，只发 onUpdated
+  pageUrlById[14] = postUrl14;
+  noteIdById[14] = XHS_NOTE_14;
+  tabsUpdatedListener(14, { url: postUrl14 });
+  await settle(8);
+  assert.equal(elements["#extract-button"].disabled, false, "页签内跳到帖文页后按钮应恢复可用");
+  assert.equal(elements[".button-label"].textContent, "提取并概括");
+  assert.equal(elements["#current-post-badge"].textContent, "小红书");
+  assert.equal(elements["#current-post-label"].hidden, true);
+
+  // 完成一条概括后，在同一页签里回到首页：按钮置灰，旧页面的结果不再显示
+  runtimeListener({
+    type: "XHS_AI_WORKFLOW_STATE",
+    workflow: workflowMessage(14, {
+      status: "done",
+      result: makeResult("★ 第十四条\n概括正文。"),
+      progress: { title: "概括完成", detail: "已按固定格式生成，可直接复制。", percent: 100 }
+    })
+  });
+  await settle();
+  assert.equal(elements["#result-card"].hidden, false);
+  pageUrlById[14] = feedUrl;
+  noteIdById[14] = null;
+  tabsUpdatedListener(14, { url: feedUrl });
+  await settle(8);
+  assert.equal(elements["#extract-button"].disabled, true, "离开帖文页后按钮应置灰");
+  assert.equal(elements["#result-card"].hidden, true, "旧页面的概括不再挂在当前页签上");
+  assert.equal(elements["#current-post-label"].hidden, false);
+
+  // 刷新只发 status=complete 且地址没变：结果与按钮保持原样
+  pageUrlById[14] = postUrl14;
+  noteIdById[14] = XHS_NOTE_14;
+  tabsUpdatedListener(14, { url: postUrl14 });
+  await settle(8);
+  runtimeListener({
+    type: "XHS_AI_WORKFLOW_STATE",
+    workflow: workflowMessage(14, { status: "done", result: makeResult("★ 第十四条\n刷新后仍在。") })
+  });
+  await settle();
+  assert.equal(elements["#result-card"].hidden, false);
+  tabsUpdatedListener(14, { status: "complete" });
+  await settle(8);
+  assert.equal(elements["#result-card"].hidden, false, "刷新不应清掉当前页签的结果");
+  assert.equal(elements["#extract-button"].disabled, false);
+  await switchChromeTab(7);
 
   // —— 解析工具：小红书短链/长链、微博长链、非帖文地址 ——
   assert.equal(

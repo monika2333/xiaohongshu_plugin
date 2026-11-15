@@ -420,6 +420,40 @@ async function setActiveTab(tabId) {
   else refreshButtons();
 }
 
+// 页签内的地址变化（点开笔记这类前端跳转、刷新、前进后退）不触发 onActivated，
+// 只靠页签切换更新地址会让「提取并概括 / 加入清单」停在上一次的非帖文地址上一直置灰。
+// 收到 onUpdated 后重新读一次活动页签地址，地址没变就什么都不做。
+let tabUrlSyncing = false;
+
+async function syncActiveTabUrl() {
+  if (tabUrlSyncing || activeTabId == null) return;
+  if (typeof chrome.tabs?.get !== "function") return;
+  tabUrlSyncing = true;
+  const tabId = activeTabId;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    // 等待期间切了页签：交给 onActivated 处理
+    if (tabId !== activeTabId) return;
+    const url = String(tab?.url || "");
+    if (!url || url === activeTabUrl) return;
+    activeTabUrl = url;
+    const slot = pageSlots.get(tabId);
+    if (slot?.context && !tasks.has(pageTaskKey(tabId))) {
+      // 仍停在同一篇帖文（例如地址补了 xsec_token）就保留旧结果；
+      // 换了帖子或离开帖文页则清槽位，避免按钮与结果沿用上一页的上下文。
+      const platform = detectPostPlatform(url);
+      const nextNoteId = platform ? noteIdFromUrlForPlatform(platform, url) : null;
+      if (!nextNoteId || nextNoteId !== slot.context.noteId) pageSlots.delete(tabId);
+    }
+    if (historyVisible) refreshButtons();
+    else renderFocus();
+  } catch {
+    // 页签已关闭或读取失败：保持当前显示，等 onRemoved / onActivated
+  } finally {
+    tabUrlSyncing = false;
+  }
+}
+
 // —— 通用工具 ——
 
 function escapeHtml(value) {
@@ -556,7 +590,11 @@ function formatHistoryTime(timestamp) {
 
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab;
+  if (tab?.id != null) return tab;
+  // Edge 侧边栏里 currentWindow 偶尔解析不到浏览器窗口：退回最近获得焦点的窗口，
+  // 否则面板会以为没有活动页签，按钮一直置灰。
+  const [fallback] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return fallback;
 }
 
 async function hasLoginCookie(url, name) {
@@ -2620,6 +2658,14 @@ chrome.tabs.onActivated?.addListener?.((info) => {
   void setActiveTab(info?.tabId);
 });
 
+// 活动页签内地址变化（前端跳转 / 刷新 / 前进后退）只发 onUpdated：
+// 不跟着更新地址，按钮会按旧地址判断而一直置灰。
+chrome.tabs.onUpdated?.addListener?.((tabId, changeInfo) => {
+  if (tabId !== activeTabId || !changeInfo) return;
+  if (changeInfo.url == null && changeInfo.status !== "complete") return;
+  void syncActiveTabUrl();
+});
+
 chrome.windows?.onFocusChanged?.addListener?.((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
   void (async () => {
@@ -2642,6 +2688,12 @@ chrome.tabs.onRemoved?.addListener?.((tabId) => {
     if (focus.kind === "tab" && !historyVisible) renderFocus();
   }
   refreshButtons();
+});
+
+// 侧边栏重新展开时补一次：折叠期间可能已经在页签里跳转过，事件不一定送达
+document.addEventListener?.("visibilitychange", () => {
+  if (document.hidden) return;
+  void syncActiveTabUrl();
 });
 
 // 任务条点击：页签任务跳到对应 Chrome 页签，其余任务切到自己的结果来源
