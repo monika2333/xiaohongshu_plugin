@@ -2109,6 +2109,23 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   );
   assert.equal(context.extractPostUrl("这段文案里没有链接"), null);
 
+  // —— 链接行内编辑：粘入带全角括号的整段文字，只保存干净的帖文链接 ——
+  const editorLink = "https://www.xiaohongshu.com/explore/6af918430000000022038c3c?xsec_source=app_share";
+  for (const isScreenshot of [false, true]) {
+    const applied = [];
+    await context.saveLinkEditor({
+      raw: `（小红书 ${editorLink}）`,
+      isScreenshot,
+      targetNoteId: null,
+      apply: async (url) => { applied.push(url); },
+      close: () => {},
+      showHint: (text) => { throw new Error(`不应提示：${text}`); },
+      showConfirm: () => { throw new Error("不应要求确认"); },
+      rememberPending: () => {}
+    });
+    assert.deepEqual(applied, [editorLink], `${isScreenshot ? "截图" : "网页"}帖文链接不应带上全角括号`);
+  }
+
   process.stdout.write("panel unified workspace tests passed\n");
 })().catch((error) => {
   console.error(error);

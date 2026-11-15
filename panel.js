@@ -1367,7 +1367,10 @@ async function rerenderMergeIfPossible() {
 
 // 两个行内链接编辑器（结果卡与清单条目）共用的保存流程：
 // 清空 / 截图特判 / 域名校验 → 后台解析校验 → 指向不符时两步确认 → 应用并收起编辑框。
-async function saveLinkEditor({ raw, isScreenshot, targetNoteId, apply, close, showHint, showConfirm, rememberPending }) {
+async function saveLinkEditor({ raw: rawInput, isScreenshot, targetNoteId, apply, close, showHint, showConfirm, rememberPending }) {
+  // 与素材输入框同一套提取：粘进来的常是带全角括号或分享文案的整段文字，
+  // 直接 new URL 会把黏尾的「）」编码成 %EF%BC%89 写进简报链接
+  const raw = rawInput ? (extractPostUrl(rawInput) || rawInput) : rawInput;
   if (!raw) {
     try {
       await apply("", false);

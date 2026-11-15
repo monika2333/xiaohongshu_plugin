@@ -95,7 +95,9 @@ for (const key of ["textSystem", "mergeSystem"]) {
   const prompt = XhsPrompts[key];
   assert.match(prompt, /要尽量查明具体名称/, `${key} 应要求查明涉事主体`);
   assert.match(prompt, /结合它所回复的那条评论理解/, `${key} 应要求结合上下文理解发帖人的简短回复`);
-  assert.match(prompt, /一律使用全称/, `${key} 应要求简称换成全称`);
+  assert.match(prompt, /回复数字表示选中对应序号的选项/, `${key} 应说明发帖人回复数字的含义`);
+  assert.match(prompt, /发帖人在评论区确认/, `${key} 应要求简要交代确认依据`);
+  assert.match(prompt, /具体名称的全称/, `${key} 应要求简称换成全称`);
   assert.match(prompt, /在 opinion_points 中写明网民猜测的具体名称/, `${key} 应保留未确认猜测的写法`);
 }
 
