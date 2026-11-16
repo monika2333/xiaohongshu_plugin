@@ -245,8 +245,14 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .link-choice-option:hover { border-color: var(--ink); background: var(--paper-deep); }
 .link-choice-option[data-kind="new"] { color: var(--red-dark); border-color: currentColor; }
 
-/* 清单：每条一行链接，编辑框固定在清单下方 */
+/* 合并概括：每条一行链接，编辑框固定在条目下方 */
 .basket-panel { margin-top: 18px; padding-top: 14px; border-top: 2px solid var(--ink); }
+/* 空的时候只留标题 + 一句用途说明，收成一条窄提示 */
+.basket-panel[data-empty="true"] { padding-top: 10px; border-top: 1px dashed var(--line); }
+.basket-panel[data-empty="true"] #basket-hint { margin-bottom: 0; }
+.basket-panel[data-empty="true"] .merge-heading { margin-bottom: 2px; }
+.basket-panel[data-empty="true"] .merge-heading h2 { color: var(--muted); font-size: 14px; }
+.basket-panel[data-empty="true"] .merge-list { display: none; }
 .basket-single-hint { margin-top: 10px; }
 .merge-list { margin: 10px 0 0; padding: 0; list-style: none; }
 .merge-item { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; padding: 7px 2px; border-bottom: 1px dashed var(--line); font-size: 10px; }

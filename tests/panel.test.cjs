@@ -62,6 +62,7 @@ const selectors = [
   "#basket-link-cancel",
   "#basket-link-hint",
   "#basket-single-hint",
+  "#basket-hint",
   "#merge-summarize-button",
   "#merge-summarize-label",
   "#merge-view-result-button",
@@ -415,6 +416,15 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
 
   await settle(8);
 
+  // —— 启动：合并概括区为空时也常驻一条窄提示，讲清用途 ——
+  assert.equal(elements["#basket-panel"].hidden, false);
+  assert.equal(elements["#basket-panel"].dataset.empty, "true");
+  assert.equal(elements["#basket-count"].textContent, "0");
+  assert.equal(elements["#basket-hint"].textContent, "同一事件的几条帖文（含截图）放进来，生成一份简报。");
+  assert.equal(elements["#merge-clear-button"].hidden, true);
+  assert.equal(elements["#merge-summarize-button"].hidden, true);
+  assert.equal(elements["#basket-single-hint"].hidden, true);
+
   // —— 启动：恢复当前页签的进行中任务；当前帖文区块显示平台 ——
   assert.equal(elements["#extract-button"].disabled, true);
   assert.equal(elements[".button-label"].textContent, "正在处理…");
@@ -468,7 +478,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#current-post-label"].textContent, "");
   assert.equal(elements["#status-title"].textContent, "概括完成");
   assert.equal(elements["#status-count"].textContent, "100%");
-  assert.equal(elements["#result-add-basket-button"].textContent, "加入清单");
+  assert.equal(elements["#result-add-basket-button"].textContent, "加入合并");
   assert.match(elements["#result-link-display"].textContent, /xiaohongshu\.com\/explore\//);
   assert.equal(elements["#extract-button"].disabled, false);
 
@@ -553,10 +563,16 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(findTabMessage("XHS_CAPTURE_FOR_MERGE").length, 0);
   assert.equal(elements["#basket-panel"].hidden, false);
   assert.equal(elements["#basket-count"].textContent, "1");
+  assert.equal(elements["#basket-panel"].dataset.empty, "false");
+  assert.match(elements["#basket-hint"].textContent, /链接可随时补到任意一条上/);
+  assert.equal(elements["#merge-clear-button"].hidden, false);
+  // 当前帖文已在合并里：按钮标明状态并置灰
+  assert.equal(elements["#merge-add-button"].textContent, "✓ 已在合并里");
+  assert.equal(elements["#merge-add-button"].disabled, true);
   assert.match(elements["#merge-list"].innerHTML, /第一条帖文/);
   assert.equal(elements["#basket-single-hint"].hidden, false);
   assert.equal(elements["#merge-summarize-button"].hidden, true);
-  assert.equal(elements["#result-add-basket-button"].textContent, "已在清单");
+  assert.equal(elements["#result-add-basket-button"].textContent, "✓ 已在合并里");
   assert.equal(elements["#result-add-basket-button"].disabled, true);
 
   // —— 痛点 2：页签 8 的结果直接加入清单，清单出现合并入口 ——
@@ -566,7 +582,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#basket-count"].textContent, "2");
   assert.equal(elements["#merge-summarize-button"].hidden, false);
   assert.equal(elements["#merge-summarize-label"].textContent, "合并概括（2 条）");
-  assert.equal(elements["#result-add-basket-button"].textContent, "已在清单");
+  assert.equal(elements["#result-add-basket-button"].textContent, "✓ 已在合并里");
 
   // —— 合并概括：焦点切到 merge，结果顶部标注来源 ——
   let resolveMerge;
@@ -692,7 +708,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#merge-summarize-button"].disabled, true);
   // 切到另一个页签：焦点回到 tab，页签 8 的按钮不被页签 7/合并任务锁住
   await switchChromeTab(8);
-  assert.equal(elements["#status-title"].textContent, "已加入合并清单");
+  assert.equal(elements["#status-title"].textContent, "已加入合并");
   assert.equal(elements["#extract-button"].disabled, false);
   assert.equal(elements["#merge-summarize-button"].disabled, true);
   assert.equal(taskCount(), 2);
@@ -745,7 +761,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#material-staging"].hidden, false);
   assert.equal(elements["#material-shot-actions"].hidden, false);
   assert.match(elements["#shot-summarize-button"].textContent, /识别这张截图并概括/);
-  assert.match(elements["#shot-basket-button"].textContent, /识别这张截图并加入清单/);
+  assert.match(elements["#shot-basket-button"].textContent, /识别这张截图并加入合并/);
 
   let resolveShotSummarize;
   setRuntime(async (message) => {
@@ -785,7 +801,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#result-source-label"].textContent, "截图");
   assert.equal(elements["#material-staging"].hidden, true);
   assert.equal(elements["#result-link-display"].textContent, "＋补充链接");
-  assert.equal(elements["#result-add-basket-button"].textContent, "加入清单");
+  assert.equal(elements["#result-add-basket-button"].textContent, "加入合并");
 
   // 截图结果的「加入清单」复用 payload
   await elements["#result-add-basket-button"].listeners.click();
@@ -793,7 +809,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#basket-count"].textContent, "3");
   assert.equal(findRuntime("XHS_AI_MERGE_ADD").length, 1);
   assert.equal(findRuntime("XHS_AI_MERGE_ADD")[0].payload.source.origin, "user_screenshot");
-  assert.equal(elements["#result-add-basket-button"].textContent, "已在清单");
+  assert.equal(elements["#result-add-basket-button"].textContent, "✓ 已在合并里");
 
   // 截图结果补链接：只校验网址合法，随后可清空回到“原帖已删除”
   setRuntime(async (message) => {
@@ -855,7 +871,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     files: [{ name: "paste-2.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }]
   }));
   await settle();
-  assert.match(elements["#shot-basket-button"].textContent, /识别这 2 张截图并加入清单/);
+  assert.match(elements["#shot-basket-button"].textContent, /识别这 2 张截图并加入合并/);
   const shotBasketClick = elements["#shot-basket-button"].listeners.click();
   await settle();
   assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD").length, 1);
@@ -864,7 +880,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   resolveShotBasket();
   await shotBasketClick;
   await settle();
-  assert.match(elements["#material-feedback"].textContent, /截图已识别并加入清单/);
+  assert.match(elements["#material-feedback"].textContent, /截图已识别并加入合并/);
   assert.equal(elements["#basket-count"].textContent, "4");
   assert.equal(elements["#material-staging"].hidden, true);
 

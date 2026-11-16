@@ -60,6 +60,7 @@ const selectors = [
   "#basket-link-cancel",
   "#basket-link-hint",
   "#basket-single-hint",
+  "#basket-hint",
   "#merge-summarize-button",
   "#merge-summarize-label",
   "#merge-view-result-button",

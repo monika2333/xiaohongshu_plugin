@@ -918,11 +918,11 @@ async function getMergeBasket() {
 
 async function addToMergeBasket(payload) {
   if (!payload?.note || !payload?.commentExport || !payload?.source) {
-    throw new Error("要加入清单的采集数据不完整，请重新采集后再试。");
+    throw new Error("要加入合并的采集数据不完整，请重新采集后再试。");
   }
   const isScreenshot = payload.source.origin === "user_screenshot";
   if (!isScreenshot && !payload.source.noteId) {
-    throw new Error("采集数据缺少帖文 ID，无法加入清单。");
+    throw new Error("采集数据缺少帖文 ID，无法加入合并。");
   }
   // 微博 ID 与小红书 ID 的命名空间不同，清单条目 ID 带平台前缀避免混淆。
   const liveIdPrefix = payload.source.platform === "weibo" ? "wbnote:" : "note:";
@@ -937,7 +937,7 @@ async function addToMergeBasket(payload) {
     items[existingIndex] = item;
   } else {
     if (items.length >= MAX_MERGE_ITEMS) {
-      throw new Error(`合并清单最多保留 ${MAX_MERGE_ITEMS} 条帖文，请先移除部分条目。`);
+      throw new Error(`合并概括最多放 ${MAX_MERGE_ITEMS} 条帖文，请先移除部分条目。`);
     }
     items.push(item);
   }
@@ -947,7 +947,7 @@ async function addToMergeBasket(payload) {
 
 async function removeFromMergeBasket(message) {
   const id = cleanText(message?.id);
-  if (!id) throw new Error("缺少要移除的清单条目。");
+  if (!id) throw new Error("缺少要移除的合并条目。");
   const items = (await getMergeBasket()).filter((item) => item.id !== id);
   await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
   return { ok: true, basket: items.map(basketItemSummary) };
@@ -1109,7 +1109,7 @@ async function addScreenshotToBasket(message) {
 
 async function summarizeMergeBasket(message) {
   const items = await getMergeBasket();
-  if (!items.length) throw new Error("合并清单是空的，请先加入帖文或上传截图。");
+  if (!items.length) throw new Error("合并概括里还没有帖文，请先加入帖文或上传截图。");
   const payloads = items.map((item) => item.payload);
 
   const [config, secrets, cacheRecord] = await Promise.all([
@@ -1286,10 +1286,10 @@ async function relinkResult(message) {
 
 async function setMergeItemLink(message) {
   const id = cleanText(message?.id);
-  if (!id) throw new Error("缺少要更新链接的清单条目。");
+  if (!id) throw new Error("缺少要更新链接的合并条目。");
   const items = await getMergeBasket();
   const index = items.findIndex((item) => item.id === id);
-  if (index < 0) throw new Error("该条目已不在清单中。");
+  if (index < 0) throw new Error("该条目已不在合并概括里。");
   const previousPayload = items[index].payload;
   // 合并结果的来源后缀由整组条目渲染；把改动前后的后缀一起交给 rerender，
   // 编辑过的合并正文才能只替换后缀、保住其余文字。

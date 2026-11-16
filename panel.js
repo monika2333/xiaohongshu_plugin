@@ -46,6 +46,7 @@ const elements = {
   basketLinkCancel: document.querySelector("#basket-link-cancel"),
   basketLinkHint: document.querySelector("#basket-link-hint"),
   basketSingleHint: document.querySelector("#basket-single-hint"),
+  basketHint: document.querySelector("#basket-hint"),
   mergeSummarizeButton: document.querySelector("#merge-summarize-button"),
   mergeSummarizeLabel: document.querySelector("#merge-summarize-label"),
   mergeViewResultButton: document.querySelector("#merge-view-result-button"),
@@ -118,10 +119,14 @@ const shotSlot = { status: null, result: null, capture: null };
 let stagedScreenshots = [];
 
 // 结果与状态只属于当前焦点：tab 跟随活动页签，shot 归截图任务，merge 归合并任务。
+// 合并概括区的说明：空的时候讲清用途，有条目后补一句链接可随时补
+const BASKET_HINT_EMPTY = "同一事件的几条帖文（含截图）放进来，生成一份简报。";
+const BASKET_HINT_FILLED = "同一事件的几条帖文（含截图）放在一起，生成一份简报；链接可随时补到任意一条上。";
+
 const DEFAULT_STATUS = {
   tab: { state: "idle", title: "准备就绪", detail: "请先打开帖文详情页。", percent: 0 },
-  shot: { state: "idle", title: "准备就绪", detail: "选择或粘贴截图后，可识别并概括，或加入清单。", percent: 0 },
-  merge: { state: "idle", title: "准备就绪", detail: "把帖文加入清单后，即可一键合并概括。", percent: 0 }
+  shot: { state: "idle", title: "准备就绪", detail: "选择或粘贴截图后，可识别并概括，或加入合并。", percent: 0 },
+  merge: { state: "idle", title: "准备就绪", detail: "把同一事件的几条帖文加入合并后，即可一键生成一份简报。", percent: 0 }
 };
 
 function applyViewVisibility() {
@@ -314,7 +319,10 @@ function refreshButtons() {
   const postPage = Boolean(currentPostPlatform());
   elements.extractButton.disabled = tabBusy || !postPage;
   elements.buttonLabel.textContent = tabBusy ? "正在处理…" : "提取并概括";
-  elements.mergeAddButton.disabled = tabBusy || !postPage;
+  // 当前帖文已在合并里时按钮标明状态并置灰，与结果卡的「加入合并」一致
+  const currentInBasket = postPage && basketHasPayload(currentSlot()?.capture);
+  elements.mergeAddButton.textContent = currentInBasket ? "✓ 已在合并里" : "＋ 加入合并";
+  elements.mergeAddButton.disabled = tabBusy || !postPage || currentInBasket;
   elements.materialLinkButton.disabled = tasks.has("link");
   elements.shotSummarizeButton.disabled = tasks.has("shot:single");
   elements.shotBasketButton.disabled = tasks.has("shot:merge");
@@ -1332,7 +1340,7 @@ async function setBasketItemLink(id, url, verified) {
     givenUrl: url,
     verified
   });
-  if (!response?.ok) throw new Error(response?.error || "清单链接更新失败。");
+  if (!response?.ok) throw new Error(response?.error || "合并条目的链接更新失败。");
   // rerender 需要改动前后的来源后缀与链接，才能保住合并结果里的手工编辑
   lastMergeLinkChange = response.linkChange || null;
   basketItems = response.basket || [];
@@ -1691,7 +1699,12 @@ function renderBasket() {
   }).join("");
   const count = basketItems.length;
   const hasMergeResult = Boolean(mergeSlot.result);
-  elements.basketPanel.hidden = count === 0 && !hasMergeResult;
+  // 空的时候也常驻一条窄提示：用户点「加入合并」之前就知道东西会去哪、能干什么
+  elements.basketPanel.hidden = false;
+  elements.basketPanel.dataset.empty = count === 0 ? "true" : "false";
+  elements.basketHint.textContent = count === 0
+    ? BASKET_HINT_EMPTY
+    : BASKET_HINT_FILLED;
   elements.basketCount.textContent = String(count);
   elements.mergeClearButton.hidden = count === 0;
   elements.mergeSummarizeButton.hidden = count < 2;
@@ -1718,6 +1731,8 @@ function renderBasket() {
     elements.resultSourceLabel.textContent = resultSourceLabel(mergeSlot.result);
   }
   refreshResultBasketButton();
+  // 当前帖文的「加入合并」要跟着条目增删切换「已在合并里」
+  refreshButtons();
 }
 
 async function refreshBasket() {
@@ -1737,13 +1752,13 @@ function refreshResultBasketButton() {
   }
   elements.resultAddBasketButton.hidden = false;
   const inBasket = basketHasPayload(focusedPayload());
-  elements.resultAddBasketButton.textContent = inBasket ? "已在清单" : "加入清单";
+  elements.resultAddBasketButton.textContent = inBasket ? "✓ 已在合并里" : "加入合并";
   elements.resultAddBasketButton.disabled = inBasket;
 }
 
 async function addPayloadToBasket(payload) {
   const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_ADD", payload });
-  if (!response?.ok) throw new Error(response?.error || "加入清单失败。");
+  if (!response?.ok) throw new Error(response?.error || "加入合并失败。");
   basketItems = response.basket || [];
   renderBasket();
   return response;
@@ -1773,14 +1788,14 @@ async function addCurrentPostToBasket() {
         slot.pendingGivenUrlVerified = false;
       }
       const detail = added.replaced
-        ? "已替换清单中的同一条帖文。"
-        : `已加入清单，当前共 ${basketItems.length} 条。`;
-      writePageStatus(tabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+        ? "合并里已有这条帖文，已替换为最新内容。"
+        : `已加入合并，当前共 ${basketItems.length} 条。`;
+      writePageStatus(tabId, { state: "done", title: "已加入合并", detail, percent: 100 });
       if (focus.kind !== "tab") showMaterialFeedback(detail);
       renderBasket();
       refreshButtons();
     } catch (error) {
-      const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+      const status = { state: "error", title: "未能加入合并", detail: error?.message || "发生未知错误。", percent: 0 };
       writePageStatus(tabId, status);
       if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
     }
@@ -1791,7 +1806,7 @@ async function addCurrentPostToBasket() {
   try {
     page = await prepareCurrentPage();
   } catch (error) {
-    const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+    const status = { state: "error", title: "未能加入合并", detail: error?.message || "发生未知错误。", percent: 0 };
     writePageStatus(error.tabId ?? tabId, status);
     if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
     return;
@@ -1812,12 +1827,12 @@ async function addCurrentPostToBasket() {
       currentSlot.pendingGivenUrlVerified = false;
     }
     const detail = added.replaced
-      ? "已替换清单中的同一条帖文。"
-      : `当前清单共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`;
-    writePageStatus(page.tabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+      ? "合并里已有这条帖文，已替换为最新内容。"
+      : `合并里共 ${basketItems.length} 条帖文，可继续加入或直接合并概括。`;
+    writePageStatus(page.tabId, { state: "done", title: "已加入合并", detail, percent: 100 });
     if (focus.kind !== "tab") showMaterialFeedback(detail);
   } catch (error) {
-    const status = { state: "error", title: "未能加入清单", detail: error?.message || "发生未知错误。", percent: 0 };
+    const status = { state: "error", title: "未能加入合并", detail: error?.message || "发生未知错误。", percent: 0 };
     writePageStatus(page.tabId, status);
     if (focus.kind !== "tab") showMaterialFeedback(status.detail, "error");
   }
@@ -1835,16 +1850,16 @@ async function addFocusedResultToBasket() {
   try {
     const added = await addPayloadToBasket(payload);
     const detail = added.replaced
-      ? "已替换清单中的同一条帖文。"
-      : `已加入清单，当前共 ${basketItems.length} 条。`;
+      ? "合并里已有这条帖文，已替换为最新内容。"
+      : `已加入合并，当前共 ${basketItems.length} 条。`;
     if (focus.kind === "shot") {
-      shotSlot.status = { state: "done", title: "已加入合并清单", detail, percent: 100 };
+      shotSlot.status = { state: "done", title: "已加入合并", detail, percent: 100 };
     } else if (focus.kind === "tab" && activeTabId != null) {
-      writePageStatus(activeTabId, { state: "done", title: "已加入合并清单", detail, percent: 100 });
+      writePageStatus(activeTabId, { state: "done", title: "已加入合并", detail, percent: 100 });
     }
     renderFocus();
   } catch (error) {
-    showMaterialFeedback(error?.message || "加入清单失败。", "error");
+    showMaterialFeedback(error?.message || "加入合并失败。", "error");
   }
 }
 
@@ -2183,7 +2198,7 @@ function renderStaging() {
   elements.materialStaging.hidden = count === 0;
   elements.materialShotActions.hidden = count === 0;
   elements.shotSummarizeButton.textContent = count > 1 ? `识别这 ${count} 张截图并概括` : "识别这张截图并概括";
-  elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入清单` : "识别这张截图并加入清单";
+  elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入合并` : "识别这张截图并加入合并";
 }
 
 // 图片模型因图片过大、尺寸或长宽比超限拒收时，接口的原始报错原样透出，并附拆分建议；其余错误不加工。
@@ -2234,7 +2249,7 @@ async function addScreenshotImagesToBasket(images, sourceUrl) {
     ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
     : "";
   const linkNote = sourceUrl ? "，已带上输入框里的原帖链接" : "";
-  showMaterialFeedback(`截图已识别并加入清单，当前共 ${basketItems.length} 条${dateNote}${warningNote}${linkNote}。`);
+  showMaterialFeedback(`截图已识别并加入合并，当前共 ${basketItems.length} 条${dateNote}${warningNote}${linkNote}。`);
 }
 
 async function commitStagedScreenshots(mode) {
@@ -2260,7 +2275,7 @@ async function commitStagedScreenshots(mode) {
   };
   setTask(taskKey, {
     kind: "shot",
-    title: isMerge ? "识别截图加入清单" : "识别截图并概括",
+    title: isMerge ? "识别截图加入合并" : "识别截图并概括",
     detail: `${countLabel}，正在提取帖文内容…`,
     percent: 15
   });

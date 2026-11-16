@@ -1051,7 +1051,7 @@
     force = false
   ) {
     if (!Array.isArray(payloads) || !payloads.length) {
-      throw new Error("合并清单是空的，请先加入帖文或上传截图。");
+      throw new Error("合并概括里还没有帖文，请先加入帖文或上传截图。");
     }
     const { config, secrets } = resolveModels(rawConfig, rawSecrets);
     const textApiKey = secrets.textApiKey;

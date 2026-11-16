@@ -37,7 +37,7 @@
               <span class="button-label">提取并概括</span>
               <span class="button-arrow" aria-hidden="true">↘</span>
             </button>
-            <button id="merge-add-button" class="secondary-button add-basket-button" type="button">加入清单</button>
+            <button id="merge-add-button" class="secondary-button add-basket-button" type="button">＋ 加入合并</button>
           </div>
           <section id="status-card" class="status-card" aria-live="polite">
             <div class="status-topline">
@@ -72,17 +72,17 @@
           <ul id="material-staging" class="staging-list" hidden></ul>
           <div id="material-shot-actions" class="material-shot-actions" hidden>
             <button id="shot-summarize-button" class="secondary-button staging-run" type="button">识别并概括</button>
-            <button id="shot-basket-button" class="secondary-button staging-run" type="button">识别并加入清单</button>
+            <button id="shot-basket-button" class="secondary-button staging-run" type="button">识别并加入合并</button>
           </div>
           <input id="material-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         </section>
 
-        <section id="basket-panel" class="merge-panel basket-panel" aria-labelledby="basket-title" hidden>
+        <section id="basket-panel" class="merge-panel basket-panel" aria-labelledby="basket-title" data-empty="true">
           <div class="merge-heading">
-            <h2 id="basket-title">清单 · <span id="basket-count">0</span> 条</h2>
-            <button id="merge-clear-button" class="merge-clear" type="button">清空清单</button>
+            <h2 id="basket-title">合并概括 · <span id="basket-count">0</span> 条</h2>
+            <button id="merge-clear-button" class="merge-clear" type="button" hidden>清空</button>
           </div>
-          <p class="merge-hint">同一事件的多条帖文（含截图）放在一起，可一次性合并概括；链接可随时补到任意一条上。</p>
+          <p id="basket-hint" class="merge-hint">同一事件的几条帖文（含截图）放进来，生成一份简报。</p>
           <ul id="merge-list" class="merge-list"></ul>
           <div id="basket-link-editor" class="basket-link-editor" hidden>
             <p id="basket-link-editor-label" class="link-editor-label"></p>
@@ -139,7 +139,7 @@
           <p id="result-link-hint" class="link-hint" hidden></p>
           <div class="result-actions">
             <button id="copy-button" class="copy-button" type="button">复制概括</button>
-            <button id="result-add-basket-button" class="secondary-button" type="button">加入清单</button>
+            <button id="result-add-basket-button" class="secondary-button" type="button">加入合并</button>
             <button id="open-source-button" class="secondary-button" type="button" hidden>打开原帖 ↗</button>
             <button id="regenerate-button" class="icon-button" type="button" title="重新生成" aria-label="重新生成">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
