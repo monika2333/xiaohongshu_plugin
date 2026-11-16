@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-16（v0.18.0 长截图暂存时自动切段，避开图片模型单边 8192 像素上限与整图缩小糊字）
+> 最近更新：2026-11-16（v0.18.1 长截图暂存时自动切段，暂存区仍按原截图单卡显示）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.18.0。更早的演进见 `git log`。
+- 当前版本：0.18.1。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -63,7 +63,7 @@
 - **提示词**：全部集中在 `prompts.js`。用户可在设置页覆盖（`xhsAiConfig.promptOverrides`）。缓存键含生效提示词的哈希，改提示词自动失效旧缓存。输出 JSON 字段名与 `ai-pipeline.js` 的解析代码绑定，改字段名要同步改解析。
 - **模型共用 / 分开**：`xhsAiConfig.modelMode` 为 `shared`（默认）或 `split`，`text`、`vision` 两组设置都保存。所有调模型的入口经 `ai-pipeline.js` 的 `resolveModels` 取生效配置与 Key：共用时 vision 取 text 那组、图片 Key 即文字 Key；分开时图片 Key 留空只在两边 API 同 origin 时沿用文字 Key，跨域名绝不沿用。新增调模型的入口必须走它，不要直接读 `config.vision` / `secrets.visionApiKey`。共用模式不校验保存着的 vision。旧配置无 `modelMode` 时按「地址与模型都相同 → shared」推断。设置页「测试模型」在共用模式发 `provider: shared`，会附一张内置纯红小图，回答没有「红 / red」也判为不能看图。
 - **图片与文字分开调用**：图片模型只负责如实描述与 OCR，内容是否有增量、是否写进概括，由文字模型判断。合并调用对图片多的帖文太慢，因此分开。
-- **长截图自动切段**：`panel.js` 的 `stageScreenshotFiles` 用 `createImageBitmap` 读原始尺寸，高度超过宽度 2.5 倍或超过 8192 像素时按原分辨率切段（`planScreenshotSlices`，段间 8% 重叠、单张最多 8 段），暂存项带 `partIndex` / `partCount` / `groupId` 角标；点任意一段的移除按钮按 `groupId` 整组删除，避免只删中间段。宽度超过 8192 像素时暂存阶段直接提示缩小（纵向切段解决不了宽度）；普通截图不转码。切段后的张数计入后台 `MAX_SCREENSHOT_IMAGES = 8`，面板 `SCREENSHOT_BATCH_LIMIT` 必须与它同步（测试里有断言）。
+- **长截图自动切段**：`panel.js` 的 `stageScreenshotFiles` 用 `createImageBitmap` 读原始尺寸，高度超过宽度 2.5 倍或超过 8192 像素时按原分辨率切段（`planScreenshotSlices`，段间 8% 重叠、单张最多 8 段），内部暂存项带 `partIndex` / `partCount` / `groupId`；界面按原截图单卡显示（`stagedScreenshotGroups`），角标标注「长图 · N 段」，点这张卡片的移除按钮按 `groupId` 整组删除，避免只删中间段。宽度超过 8192 像素时暂存阶段直接提示缩小（纵向切段解决不了宽度）；普通截图不转码。切段后的张数计入后台 `MAX_SCREENSHOT_IMAGES = 8`，面板 `SCREENSHOT_BATCH_LIMIT` 必须与它同步（测试里有断言）。
 - **截图证据对齐网页帖**：截图帖文的配图文字（`note.imageText`）与画面描述（`note.imageDescription`，截图模型字段 `image_description`）不直接进证据，由 `buildEvidence` 合成一条与图片模型输出同结构的 `imageEvidence` 条目，分别落在 `visible_text` / `factual_description`（只在证据内部，不进图片识别缓存）；只有标题的视频帖缺了画面描述时，文字模型会拿话题标签和「正文未说明……」凑正文，写作规则只在提示词维护一处。截图相对时间按上传当天换算，换算提示由 `screenshotDateNotice` 随识别响应返回。
 - **日期行拆属地**：`content-script.js` 的 `splitPublishedAndLocation` 只在末段不含数字、不是相对时间时才当 IP 属地拆走；页面不显示属地时日期行只有「编辑于 10-13」，旧逻辑会把日期当属地，概括丢日期。
 - **涉事主体全称**：帖文简称或话题标签本身能定全称时直接写全称、不写依据句；只有借评论区线索认定才交代依据。`prompts.js` 的 `SUBJECT_RULE` 由单帖与合并提示词共用，要求帖文只写代称或简称时结合评论区查明全称；发帖人回复「对」「是」算确认，对列选项的追问回复数字算选中对应序号；发帖人确认，或线索足以认定（发帖人透露的校区、类型指向唯一主体，或与网民点名吻合且未否认）才写进标题正文，正文交代依据且线索认定不能写成「发帖人确认」；仅网民猜测时保留代称、猜测写进 opinion_points。opinion_points 字段规则另有一句「已认定的不再单列猜测」——写在字段规则里模型才听。依赖证据里评论回复挂在父评论下并带 `isAuthor`（`compactComment`），改评论证据结构时别丢。

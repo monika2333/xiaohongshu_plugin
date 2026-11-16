@@ -2142,10 +2142,10 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await elements["#material-file-input"].listeners.change();
   await settle(12);
   assert.equal(elements["#material-staging"].hidden, false);
-  assert.match(elements["#shot-summarize-button"].textContent, /识别这 4 张截图并概括/);
-  assert.match(elements["#material-feedback"].textContent, /已自动切成 4 段/);
-  assert.equal((elements["#material-staging"].innerHTML.match(/class="staging-part"/g) || []).length, 4);
-  assert.match(elements["#material-staging"].innerHTML, /1\/4/);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这张截图并概括/);
+  assert.match(elements["#material-feedback"].textContent, /识别时会自动切成 4 段上传/);
+  assert.equal((elements["#material-staging"].innerHTML.match(/class="staging-item"/g) || []).length, 1, "长截图在暂存区仍只显示一张缩略图");
+  assert.match(elements["#material-staging"].innerHTML, /长图 · 4 段/);
   assert.equal(drawnSlices.length, 4);
   assert.equal(closedBitmaps, 1, "切段结束后应释放 ImageBitmap");
   assert.equal(drawnSlices[0].sy, 0);
@@ -2162,11 +2162,11 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     assert.equal(slice.canvasHeight, slice.sh, "画布高度应为该段高度");
   }
 
-  // 点任意一段的移除按钮会移除整张截图，避免只删中间段导致识别内容缺失
+  // 一张长图在暂存区只有一张卡片；点它的移除按钮会移除整张截图，避免只删中间段
   const firstSplitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(firstSplitIds.length, 4);
+  assert.equal(firstSplitIds.length, 1, "长截图只渲染一张卡片");
   elements["#material-staging"].listeners.click({
-    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: firstSplitIds[1] } } : null }
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: firstSplitIds[0] } } : null }
   });
   assert.equal(elements["#material-staging"].hidden, true);
   assert.match(elements["#material-feedback"].textContent, /已移除整张长截图（4 段）/);
@@ -2178,9 +2178,12 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await settle(12);
   assert.equal(drawnSlices.length, 4);
 
+  let resolveSplitRecognize;
   let resolveSplitShot;
   setRuntime(async (message) => {
-    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") return { ok: true, payload: shotPayload, warnings: [] };
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") {
+      return new Promise((resolve) => { resolveSplitRecognize = resolve; });
+    }
     if (message.type === "XHS_AI_SUMMARIZE") {
       return new Promise((resolve) => { resolveSplitShot = resolve; });
     }
@@ -2188,6 +2191,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   });
   const splitShotClick = elements["#shot-summarize-button"].listeners.click();
   await settle();
+  assert.match(elements["#status-detail"].textContent, /共 1 张截图（自动切成 4 段）/);
   const splitCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE");
   assert.equal(splitCalls.length, 1);
   assert.equal(splitCalls[0].images.length, 4);
@@ -2197,6 +2201,8 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     "1,2,3,4",
     "分段应按顺序上传"
   );
+  resolveSplitRecognize({ ok: true, payload: shotPayload, warnings: [] });
+  await settle(4);
   resolveSplitShot({ ok: true, result: makeResult("★ 长截图事件\n长截图正文。（原帖已删除，内容据用户上传截图整理）") });
   await splitShotClick;
   await settle();
@@ -2228,8 +2234,10 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   }];
   await elements["#material-file-input"].listeners.change();
   await settle(12);
-  assert.match(elements["#shot-summarize-button"].textContent, /识别这 4 张截图并概括/);
-  assert.equal((elements["#material-staging"].innerHTML.match(/data:image\/png;base64,SLICE-/g) || []).length, 4);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这张截图并概括/);
+  assert.equal((elements["#material-staging"].innerHTML.match(/class="staging-item"/g) || []).length, 1, "PNG 长截图也只显示一张卡片");
+  assert.match(elements["#material-staging"].innerHTML, /data:image\/png;base64,SLICE-1/);
+  assert.match(elements["#material-staging"].innerHTML, /长图 · 4 段/);
   const pngSplitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
   elements["#material-staging"].listeners.click({
     target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: pngSplitIds[0] } } : null }
@@ -2282,8 +2290,8 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   ];
   await elements["#material-file-input"].listeners.change();
   await settle(20);
-  assert.match(elements["#shot-summarize-button"].textContent, /识别这 9 张截图并概括/);
-  assert.match(elements["#material-feedback"].textContent, /超过单次识别上限 8 张/);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这 3 张截图并概括/);
+  assert.match(elements["#material-feedback"].textContent, /单次最多识别 8 张截图（长图自动切段后共 9 段）/);
   setRuntime(async () => ({ ok: true }));
   const overLimitClick = elements["#shot-summarize-button"].listeners.click();
   await settle();
@@ -2293,7 +2301,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await overLimitClick;
   await settle();
   const overLimitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(overLimitIds.length, 9);
+  assert.equal(overLimitIds.length, 3, "长截图按原图显示为一张卡片，普通截图各一张");
   for (const id of overLimitIds) {
     elements["#material-staging"].listeners.click({
       target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id } } : null }

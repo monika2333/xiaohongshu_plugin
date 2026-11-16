@@ -2059,6 +2059,38 @@ function makeStagedScreenshot(name, dataUrl) {
   };
 }
 
+// 暂存区按「原截图」分组显示：长截图内部虽然拆成多段，界面上仍是一张图，只标注自动切成了几段。
+function stagedScreenshotGroups() {
+  const groups = [];
+  const byKey = new Map();
+  for (const item of stagedScreenshots) {
+    const key = item.groupId || item.id;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, items: [] };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups;
+}
+
+function stagedScreenshotCountLabel() {
+  const groups = stagedScreenshotGroups();
+  return groups.length < stagedScreenshots.length
+    ? `共 ${groups.length} 张截图（自动切成 ${stagedScreenshots.length} 段）`
+    : `共 ${groups.length} 张截图`;
+}
+
+function screenshotBatchLimitMessage() {
+  const groups = stagedScreenshotGroups();
+  const splitNote = groups.length < stagedScreenshots.length
+    ? `（长图自动切段后共 ${stagedScreenshots.length} 段）`
+    : "";
+  return `单次最多识别 ${SCREENSHOT_BATCH_LIMIT} 张截图${splitNote}，当前暂存 ${groups.length} 张，请先移除部分截图（长截图会整组移除）。`;
+}
+
 // 单张文件 → 一条或多条暂存项。长图返回切段后的多张，并带上切段信息供界面提示。
 async function prepareScreenshotStaging(file) {
   const label = file.name || "剪贴板图片";
@@ -2077,6 +2109,7 @@ async function prepareScreenshotStaging(file) {
           items: dataUrls.map((dataUrl, index) => ({
             ...makeStagedScreenshot(`${label}（第 ${index + 1}/${dataUrls.length} 段）`, dataUrl),
             groupId,
+            sourceName: label,
             partIndex: index + 1,
             partCount: dataUrls.length
           })),
@@ -2117,31 +2150,36 @@ async function stageScreenshotFiles(files) {
   if (failures.length) {
     showMaterialFeedback(failures[0], "error");
   } else if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
-    showMaterialFeedback(
-      `暂存截图共 ${stagedScreenshots.length} 张（长截图切段后会占多张），超过单次识别上限 ${SCREENSHOT_BATCH_LIMIT} 张，请先移除部分截图（长截图会整组移除）。`,
-      "error"
-    );
+    showMaterialFeedback(screenshotBatchLimitMessage(), "error");
   } else if (splits.length) {
     const parts = splits.reduce((sum, split) => sum + split.count, 0);
     showMaterialFeedback(
       splits.length === 1
-        ? `「${splits[0].label}」是长截图（${splits[0].width}×${splits[0].height}），已自动切成 ${splits[0].count} 段，识别时文字更清晰。`
+        ? `「${splits[0].label}」是长截图（${splits[0].width}×${splits[0].height}），识别时会自动切成 ${splits[0].count} 段上传，文字更清晰。`
         : `已自动切分 ${splits.length} 张长截图，共 ${parts} 段，识别时文字更清晰。`
     );
   }
 }
 
 function renderStaging() {
-  elements.materialStaging.innerHTML = stagedScreenshots.map((item) => {
-    const partBadge = item.partCount > 1
-      ? `<span class="staging-part">${item.partIndex}/${item.partCount}</span>`
+  const groups = stagedScreenshotGroups();
+  elements.materialStaging.innerHTML = groups.map((group) => {
+    const first = group.items[0];
+    const segmentCount = group.items.length;
+    // 长截图在暂存区仍只显示一张缩略图，角标标注识别时会自动切成几段。
+    const partBadge = segmentCount > 1
+      ? `<span class="staging-part">长图 · ${segmentCount} 段</span>`
       : "";
-    // 长截图的分段缩略图共用一个移除按钮文案：点任意一段都移除整张图，避免只删中间段导致内容缺失。
-    const removeLabel = item.partCount > 1 ? `移除整张截图（${item.partCount} 段）` : `移除 ${item.name}`;
-    return `<li class="staging-item">${partBadge}<img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
-      `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(removeLabel)}">×</button></li>`;
+    const title = segmentCount > 1
+      ? `${first.sourceName || first.name}（长图，识别时自动切成 ${segmentCount} 段）`
+      : first.name;
+    const removeLabel = segmentCount > 1
+      ? `移除整张截图（长图自动切成 ${segmentCount} 段）`
+      : `移除 ${first.name}`;
+    return `<li class="staging-item">${partBadge}<img src="${escapeHtml(first.dataUrl)}" alt="${escapeHtml(title)}" title="${escapeHtml(title)}">` +
+      `<button class="staging-remove" type="button" data-id="${escapeHtml(first.id)}" aria-label="${escapeHtml(removeLabel)}">×</button></li>`;
   }).join("");
-  const count = stagedScreenshots.length;
+  const count = groups.length;
   elements.materialStaging.hidden = count === 0;
   elements.materialShotActions.hidden = count === 0;
   elements.shotSummarizeButton.textContent = count > 1 ? `识别这 ${count} 张截图并概括` : "识别这张截图并概括";
@@ -2203,6 +2241,7 @@ async function commitStagedScreenshots(mode) {
   const isMerge = mode === "basket";
   const taskKey = isMerge ? "shot:merge" : "shot:single";
   if (!stagedScreenshots.length || tasks.has(taskKey)) return;
+  const countLabel = stagedScreenshotCountLabel();
   if (!isMerge) {
     focus = { kind: "shot" };
     if (historyVisible) {
@@ -2222,10 +2261,10 @@ async function commitStagedScreenshots(mode) {
   setTask(taskKey, {
     kind: "shot",
     title: isMerge ? "识别截图加入清单" : "识别截图并概括",
-    detail: `共 ${stagedScreenshots.length} 张截图，正在提取帖文内容…`,
+    detail: `${countLabel}，正在提取帖文内容…`,
     percent: 15
   });
-  writeStatus({ state: "working", title: "正在识别截图", detail: `共 ${stagedScreenshots.length} 张截图，正在提取帖文内容…`, percent: 15 });
+  writeStatus({ state: "working", title: "正在识别截图", detail: `${countLabel}，正在提取帖文内容…`, percent: 15 });
   const committedIds = new Set(stagedScreenshots.map((item) => item.id));
   // 输入框里同时留有链接时随本次截图一起提交，成功后才算消费掉
   const givenLink = screenshotLinkFromMaterialInput();
@@ -2233,9 +2272,7 @@ async function commitStagedScreenshots(mode) {
     const images = stagedScreenshots.map((item) => item.dataUrl);
     // 长截图切段后张数会变多，先按后台的单次上限拦下，避免提交后才报错
     if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
-      throw new Error(
-        `单次最多识别 ${SCREENSHOT_BATCH_LIMIT} 张截图（长截图自动切段后会占多张），当前暂存 ${stagedScreenshots.length} 张，请先移除部分截图或分批识别（长截图会整组移除）。`
-      );
+      throw new Error(screenshotBatchLimitMessage());
     }
     // 超过扩展消息的安全体积时提前拦下，不让后台静默失败
     const totalChars = images.reduce((sum, url) => sum + String(url).length, 0);
