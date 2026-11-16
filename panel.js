@@ -30,8 +30,12 @@ const elements = {
   materialFeedback: document.querySelector("#material-feedback"),
   linkChoice: document.querySelector("#link-choice"),
   linkChoiceOptions: document.querySelector("#link-choice-options"),
+  linkChoiceTitle: document.querySelector("#link-choice-title"),
   materialDropzone: document.querySelector("#material-dropzone"),
   materialStaging: document.querySelector("#material-staging"),
+  stagingLink: document.querySelector("#staging-link"),
+  stagingLinkValue: document.querySelector("#staging-link-value"),
+  stagingLinkRemove: document.querySelector("#staging-link-remove"),
   shotSummarizeButton: document.querySelector("#shot-summarize-button"),
   shotBasketButton: document.querySelector("#shot-basket-button"),
   materialShotActions: document.querySelector("#material-shot-actions"),
@@ -111,12 +115,20 @@ const HISTORY_HINT_TEXT = "概括成功后保存在本机（最多 100 条，超
 //   page:<tabId>  页签级采集概括（提取并概括 / 重新生成 / 加入清单的采集阶段）
 //   merge         合并概括
 //   shot:single   截图识别概括
-//   shot:merge    截图识别加入清单
+//   shot:merge:<pendingId>  截图识别加入合并：每批截图一个任务，可同时识别多批
 const tasks = new Map();
 const pageSlots = new Map();
 const mergeSlot = { status: null, result: null };
 const shotSlot = { status: null, result: null, capture: null };
 let stagedScreenshots = [];
+// 挂在截图暂存卡上的原帖链接：贴链接时由用户明确选择「这是截图的原帖链接」才会挂上，
+// 提交截图时只认它，不再从输入框里顺带读取。
+let stagedShotLink = null;
+// 已点「加入合并」、还在识别（或识别失败）的截图批次。只存在于面板，识别成功才写进后台的合并条目。
+//   { id, status: "working" | "error", error, staged, link, sentLink, countLabel }
+let pendingShots = [];
+let pendingShotSeq = 0;
+const SHOT_PENDING_TASK_PREFIX = "shot:merge:";
 
 // 结果与状态只属于当前焦点：tab 跟随活动页签，shot 归截图任务，merge 归合并任务。
 // 合并概括区的说明：空的时候讲清用途，有条目后补一句链接可随时补
@@ -325,8 +337,8 @@ function refreshButtons() {
   elements.mergeAddButton.disabled = tabBusy || !postPage || currentInBasket;
   elements.materialLinkButton.disabled = tasks.has("link");
   elements.shotSummarizeButton.disabled = tasks.has("shot:single");
-  elements.shotBasketButton.disabled = tasks.has("shot:merge");
-  elements.mergeSummarizeButton.disabled = tasks.has("merge") || basketItems.length < 2;
+  // 还有截图在识别或识别失败时先不合并，免得合并时漏掉它
+  elements.mergeSummarizeButton.disabled = tasks.has("merge") || basketItems.length < 2 || pendingShots.length > 0;
   const focusedTaskBusy = focus.kind === "merge"
     ? tasks.has("merge")
     : focus.kind === "shot"
@@ -1184,15 +1196,25 @@ function validateScreenshotLink(value) {
   return parsed.href;
 }
 
-// 截图提交时顺带带上素材输入框里的链接；截图管线只覆盖小红书，微博链接不带入。
-function screenshotLinkFromMaterialInput() {
-  const url = extractPostUrl(elements.materialInput?.value);
-  if (!url) return null;
+function validateShotLinkOrNull(url) {
   try {
     return validateScreenshotLink(url);
   } catch {
     return null;
   }
+}
+
+// 输入框里能挂到截图上的链接；截图管线只覆盖小红书，微博链接不算。
+function screenshotLinkFromMaterialInput() {
+  const url = extractPostUrl(elements.materialInput?.value);
+  return url ? validateShotLinkOrNull(url) : null;
+}
+
+function attachLinkToStagedShots(url) {
+  stagedShotLink = url;
+  elements.materialInput.value = "";
+  renderStaging();
+  showMaterialFeedback("链接已挂到截图上，识别时一起带入。");
 }
 
 // 链接归位到当前页签：已有结果就直接换链接；还没提取就暂存，提取时带入。
@@ -1501,6 +1523,47 @@ async function applyGivenLinkToBasket(id, url, verified) {
   }
 }
 
+function renderLinkChoice(title, options) {
+  elements.linkChoiceTitle.textContent = title;
+  elements.linkChoiceOptions.innerHTML = options.map((option) => (
+    `<button class="link-choice-option" type="button" data-choice="${escapeHtml(option.choice)}" data-kind="${option.kind}">${escapeHtml(option.label)}</button>`
+  )).join("");
+  elements.linkChoice.hidden = false;
+}
+
+// 暂存区有截图时贴入小红书链接：先问清楚是截图的原帖链接，还是另一条帖文。
+// 截图帖文没有帖子 ID，程序无从比对，只能让用户说；绝不按“链接和截图同时摆着”去猜。
+function showShotLinkChoice(url) {
+  pendingLinkChoice = { url, mode: "shot" };
+  renderLinkChoice("这条链接是：", [
+    { choice: "shot-stage", kind: "basket", label: "下面这组截图的原帖链接" },
+    { choice: "resolve", kind: "new", label: "另一条帖文，识别它" }
+  ]);
+}
+
+// 输入框里有小红书链接、暂存区有截图、链接还没挂上时询问一次。贴链接和贴截图谁先谁后都会走到这里。
+function maybeOfferShotLink() {
+  const url = stagedScreenshots.length ? screenshotLinkFromMaterialInput() : null;
+  if (!url || url === stagedShotLink) {
+    if (pendingLinkChoice?.mode === "shot") hideLinkChoice();
+    return;
+  }
+  if (pendingLinkChoice?.url === url) return;
+  showShotLinkChoice(url);
+}
+
+// 还没有链接的截图帖文：识别好的合并条目，以及识别中的批次（识别完再补上）
+function linklessScreenshotTargets() {
+  return [
+    ...basketItems
+      .filter((item) => item.kind === "user_screenshot" && !item.link)
+      .map((item) => ({ choice: `basket:${item.id}`, kind: "basket", label: basketItemLabel(item) })),
+    ...pendingShots
+      .filter((pending) => pending.status === "working" && !pending.link)
+      .map((pending) => ({ choice: `pending:${pending.id}`, kind: "basket", label: `截图（识别中，${pending.countLabel}）` }))
+  ];
+}
+
 // 解析失败时绝不猜：内联列出当前帖文、清单每条（含截图）与新帖。
 function showLinkChoice(url) {
   pendingLinkChoice = { url };
@@ -1513,13 +1576,10 @@ function showLinkChoice(url) {
     options.push({ choice: `basket:${item.id}`, kind: "basket", label: basketItemLabel(item) });
   }
   options.push({ choice: "new", kind: "new", label: "作为新帖打开" });
-  elements.linkChoiceOptions.innerHTML = options.map((option) => (
-    `<button class="link-choice-option" type="button" data-choice="${escapeHtml(option.choice)}" data-kind="${option.kind}">${escapeHtml(option.label)}</button>`
-  )).join("");
-  elements.linkChoice.hidden = false;
+  renderLinkChoice("无法自动判断这条链接属于哪条帖文", options);
 }
 
-async function handleMaterialLink() {
+async function handleMaterialLink({ skipShotOffer = false } = {}) {
   const raw = elements.materialInput.value;
   const url = extractPostUrl(raw);
   if (!url) {
@@ -1528,6 +1588,18 @@ async function handleMaterialLink() {
     return;
   }
   hideLinkChoice();
+  // 暂存区有截图时，小红书链接很可能就是截图的原帖链接：先问，不直接当新帖打开
+  const shotLink = validateShotLinkOrNull(url);
+  if (!skipShotOffer && stagedScreenshots.length && shotLink) {
+    if (shotLink === stagedShotLink) {
+      elements.materialInput.value = "";
+      showMaterialFeedback("这条链接已经挂在截图上了。");
+    } else {
+      clearMaterialFeedback();
+      showShotLinkChoice(shotLink);
+    }
+    return;
+  }
   const token = ++linkResolveToken;
   showMaterialFeedback("正在识别链接…");
   let resolved;
@@ -1552,6 +1624,17 @@ async function handleMaterialLink() {
     candidate.platform === resolved.platform && candidate.noteId === resolved.noteId
   ));
   if (!matches.length) {
+    // 对不上任何已有素材，但还有没链接的截图帖文：原帖多半已删，直接打开只会得到死页面，先问是不是它们的链接
+    const shotTargets = resolved.platform === "weibo" ? [] : linklessScreenshotTargets();
+    if (shotTargets.length) {
+      pendingLinkChoice = { url, mode: "attach" };
+      clearMaterialFeedback();
+      renderLinkChoice("这条链接没有对上已有帖文。是下面截图帖文的原帖链接吗？", [
+        ...shotTargets,
+        { choice: "new", kind: "new", label: "都不是，作为新帖打开" }
+      ]);
+      return;
+    }
     // 解析出的 ID 对不上任何已有素材：当作新帖打开
     elements.materialInput.value = "";
     clearMaterialFeedback();
@@ -1633,7 +1716,29 @@ async function chooseLinkTarget(choice) {
   const pending = pendingLinkChoice;
   if (!pending) return;
   const url = pending.url;
+  if (choice === "resolve") {
+    // 不是截图的链接：按普通链接识别（输入框内容保留给识别流程）
+    hideLinkChoice();
+    await handleMaterialLink({ skipShotOffer: true });
+    return;
+  }
   hideLinkChoice();
+  if (choice === "shot-stage") {
+    attachLinkToStagedShots(url);
+    return;
+  }
+  if (choice.startsWith("pending:")) {
+    const target = pendingShots.find((item) => item.id === choice.slice("pending:".length));
+    elements.materialInput.value = "";
+    if (!target || target.status !== "working") {
+      showMaterialFeedback("这批截图已经识别完了，请在合并条目上点 ✎ 补链接。", "error");
+      return;
+    }
+    target.link = validateShotLinkOrNull(url) || url;
+    renderBasket();
+    showMaterialFeedback("已记下链接，这批截图识别完会自动补上。");
+    return;
+  }
   elements.materialInput.value = "";
   clearMaterialFeedback();
   if (choice === "new") {
@@ -1674,6 +1779,41 @@ function basketLinkButton(item) {
     `title="编辑链接" aria-label="编辑链接">✎</button>`;
 }
 
+// 识别中 / 识别失败的截图批次：显示在合并条目末尾，识别成功后原地换成正常条目
+function renderPendingShot(pending) {
+  const failed = pending.status === "error";
+  const label = failed ? "识别失败" : "识别中…";
+  const linkText = pending.link ? shortenLink(pending.link) : "未添加";
+  const actions = failed
+    ? `<p class="basket-pending-error">${escapeHtml(pending.error || "截图识别失败。")}</p>` +
+      `<div class="basket-pending-actions">` +
+      `<button class="merge-clear" type="button" data-pending-action="retry">重试</button>` +
+      `<button class="merge-clear" type="button" data-pending-action="restore">放回暂存区</button>` +
+      `</div>`
+    : "";
+  return `<li class="merge-item basket-item basket-pending" data-pending-id="${escapeHtml(pending.id)}" data-state="${failed ? "error" : "working"}">` +
+    `<div class="basket-main">` +
+    `<span class="merge-badge merge-badge-shot">截图</span>` +
+    `<span class="merge-item-label">${failed ? "" : `<span class="task-spinner" aria-hidden="true"></span>`}${label}</span>` +
+    `<span class="merge-item-meta">${escapeHtml(pending.countLabel)}</span>` +
+    (failed
+      ? `<button class="merge-remove" type="button" title="丢弃这批截图" data-pending-action="discard">✕</button>`
+      : `<span></span>`) +
+    `</div>` +
+    `<div class="basket-link-line"><span class="basket-link-label">链接</span>` +
+    `<span class="basket-pending-link" data-empty="${pending.link ? "false" : "true"}" title="${escapeHtml(pending.link || "")}">${escapeHtml(linkText)}</span></div>` +
+    actions +
+    `</li>`;
+}
+
+function pendingShotHint() {
+  const working = pendingShots.filter((item) => item.status === "working").length;
+  const failed = pendingShots.length - working;
+  if (working) return `还有 ${working} 条截图在识别，识别完即可合并。`;
+  if (failed) return `有 ${failed} 条截图识别失败，重试或移除后再合并。`;
+  return "";
+}
+
 function renderBasket() {
   if (basketLinkEditingId && !basketItems.some((item) => item.id === basketLinkEditingId)) {
     basketLinkEditingId = null;
@@ -1696,20 +1836,24 @@ function renderBasket() {
       `<div class="basket-link-line"><span class="basket-link-label">链接</span>${basketLinkButton(item)}` +
       `${unverified ? `<span class="merge-item-meta">${unverified}</span>` : ""}</div>` +
       `</li>`;
-  }).join("");
+  }).join("") + pendingShots.map(renderPendingShot).join("");
   const count = basketItems.length;
+  // 识别中的截图也算一条：点下「加入合并」那一刻它就出现在这里
+  const total = count + pendingShots.length;
   const hasMergeResult = Boolean(mergeSlot.result);
   // 空的时候也常驻一条窄提示：用户点「加入合并」之前就知道东西会去哪、能干什么
   elements.basketPanel.hidden = false;
-  elements.basketPanel.dataset.empty = count === 0 ? "true" : "false";
-  elements.basketHint.textContent = count === 0
+  elements.basketPanel.dataset.empty = total === 0 ? "true" : "false";
+  elements.basketHint.textContent = total === 0
     ? BASKET_HINT_EMPTY
     : BASKET_HINT_FILLED;
-  elements.basketCount.textContent = String(count);
-  elements.mergeClearButton.hidden = count === 0;
-  elements.mergeSummarizeButton.hidden = count < 2;
-  elements.mergeSummarizeLabel.textContent = `合并概括（${count} 条）`;
-  elements.basketSingleHint.hidden = count !== 1;
+  elements.basketCount.textContent = String(total);
+  elements.mergeClearButton.hidden = count === 0 && !pendingShots.some((item) => item.status === "error");
+  elements.mergeSummarizeButton.hidden = total < 2;
+  elements.mergeSummarizeLabel.textContent = `合并概括（${total} 条）`;
+  const pendingHint = pendingShotHint();
+  elements.basketSingleHint.textContent = pendingHint || "再加入至少 1 条即可合并。";
+  elements.basketSingleHint.hidden = !pendingHint && total !== 1;
   // 合并结果被切走后，清单区保留一个回到结果的入口；清单变了则标为「上次合并」
   elements.mergeViewResultButton.hidden = !hasMergeResult || focus.kind === "merge" || historyVisible;
   if (!elements.mergeViewResultButton.hidden) {
@@ -1877,14 +2021,19 @@ async function removeBasketItem(id) {
 }
 
 async function clearBasket() {
-  if (!basketItems.length) return;
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
-    if (!response?.ok) throw new Error(response?.error || "清空失败。");
-  } catch (error) {
-    showMaterialFeedback(error?.message || "清空失败。", "error");
-    return;
+  const failedShots = pendingShots.filter((item) => item.status === "error");
+  if (!basketItems.length && !failedShots.length) return;
+  if (basketItems.length) {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_CLEAR" });
+      if (!response?.ok) throw new Error(response?.error || "清空失败。");
+    } catch (error) {
+      showMaterialFeedback(error?.message || "清空失败。", "error");
+      return;
+    }
   }
+  // 识别失败的批次一起清掉；正在识别的请求已经发出，识别完仍会加进来
+  pendingShots = pendingShots.filter((item) => item.status === "working");
   basketItems = [];
   basketLinkEditingId = null;
   renderBasket();
@@ -1901,7 +2050,7 @@ function mergeProgressTitle(stage) {
 }
 
 async function runMergeSummarize(force = false) {
-  if (tasks.has("merge") || basketItems.length < 2) return;
+  if (tasks.has("merge") || basketItems.length < 2 || pendingShots.length) return;
   focus = { kind: "merge" };
   if (historyVisible) {
     historyVisible = false;
@@ -1996,6 +2145,8 @@ const SCREENSHOT_SPLIT_OVERLAP_RATIO = 0.08;
 const SCREENSHOT_SPLIT_OVERLAP_MIN = 120;
 // 与 service-worker.js 的 MAX_SCREENSHOT_IMAGES 保持一致：长截图切段后会占多张。
 const SCREENSHOT_BATCH_LIMIT = 8;
+// 与后台 MAX_MERGE_ITEMS 一致：识别中的截图批次也算名额，避免识别完才发现放不下
+const MERGE_ITEM_LIMIT = 5;
 
 // 返回每段的起始 y 与高度；不需要切段时返回 null。段间按比例重叠，避免文字行正好被切断。
 function planScreenshotSlices(width, height) {
@@ -2162,6 +2313,8 @@ async function stageScreenshotFiles(files) {
     }
   }
   renderStaging();
+  // 先贴了链接、后加截图：问一句要不要把输入框里的链接挂上
+  maybeOfferShotLink();
   if (failures.length) {
     showMaterialFeedback(failures[0], "error");
   } else if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
@@ -2197,6 +2350,14 @@ function renderStaging() {
   const count = groups.length;
   elements.materialStaging.hidden = count === 0;
   elements.materialShotActions.hidden = count === 0;
+  // 原帖链接挂在暂存卡上，提交前一眼看得到链接跟着哪组截图
+  elements.stagingLink.hidden = count === 0;
+  elements.stagingLink.dataset.empty = stagedShotLink ? "false" : "true";
+  elements.stagingLinkValue.textContent = stagedShotLink
+    ? shortenLink(stagedShotLink)
+    : "未添加（把原帖链接贴到上方输入框即可挂上）";
+  elements.stagingLinkValue.title = stagedShotLink || "";
+  elements.stagingLinkRemove.hidden = !stagedShotLink;
   elements.shotSummarizeButton.textContent = count > 1 ? `识别这 ${count} 张截图并概括` : "识别这张截图并概括";
   elements.shotBasketButton.textContent = count > 1 ? `识别这 ${count} 张截图并加入合并` : "识别这张截图并加入合并";
 }
@@ -2235,38 +2396,132 @@ async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
   });
 }
 
-async function addScreenshotImagesToBasket(images, sourceUrl) {
-  const response = await chrome.runtime.sendMessage({
-    type: "XHS_AI_SCREENSHOT_ADD",
-    images,
-    ...(sourceUrl ? { sourceUrl } : {})
+// 识别前的统一检查：张数与体积超限时提前拦下，不让后台静默失败
+function checkScreenshotBatch(items) {
+  // 长截图切段后张数会变多，先按后台的单次上限拦下，避免提交后才报错
+  if (items.length > SCREENSHOT_BATCH_LIMIT) throw new Error(screenshotBatchLimitMessage());
+  const totalChars = items.reduce((sum, item) => sum + String(item.dataUrl).length, 0);
+  if (totalChars > SCREENSHOT_MESSAGE_MAX_CHARS) throw new Error("截图总体积过大，请分批识别。");
+}
+
+function pendingShotTaskKey(pending) {
+  return `${SHOT_PENDING_TASK_PREFIX}${pending.id}`;
+}
+
+// 「识别并加入合并」：截图立刻从暂存区搬进合并概括，成为一条「识别中」的占位条目；
+// 暂存区马上空出来，可以接着贴下一条帖文的截图，几批同时识别。
+function commitScreenshotsToMerge() {
+  if (!stagedScreenshots.length) return;
+  try {
+    checkScreenshotBatch(stagedScreenshots);
+    const queued = basketItems.length + pendingShots.filter((item) => item.status === "working").length;
+    if (queued >= MERGE_ITEM_LIMIT) {
+      throw new Error(`合并概括最多放 ${MERGE_ITEM_LIMIT} 条帖文，请先移除部分条目。`);
+    }
+  } catch (error) {
+    showMaterialFeedback(error?.message || "截图识别失败。", "error");
+    return;
+  }
+  const pending = {
+    id: `pending-${++pendingShotSeq}`,
+    status: "working",
+    error: null,
+    staged: stagedScreenshots,
+    link: stagedShotLink,
+    sentLink: null,
+    countLabel: stagedScreenshotCountLabel()
+  };
+  stagedScreenshots = [];
+  stagedShotLink = null;
+  if (pendingLinkChoice?.mode === "shot") hideLinkChoice();
+  pendingShots.push(pending);
+  renderStaging();
+  showMaterialFeedback("已放进合并概括，正在识别；可以接着添加下一条帖文的截图。");
+  void runPendingShot(pending);
+}
+
+async function runPendingShot(pending) {
+  const taskKey = pendingShotTaskKey(pending);
+  pending.status = "working";
+  pending.error = null;
+  pending.sentLink = pending.link;
+  setTask(taskKey, {
+    kind: "shot",
+    title: "识别截图加入合并",
+    detail: `${pending.countLabel}，正在提取帖文内容…`,
+    percent: 15
   });
-  if (!response?.ok) throw new Error(screenshotRecognitionError(response));
-  basketItems = response.basket || [];
   renderBasket();
-  const dateNote = response.dateNotice ? `；${response.dateNotice}` : "";
-  const warningNote = response.warnings?.length
-    ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
-    : "";
-  const linkNote = sourceUrl ? "，已带上输入框里的原帖链接" : "";
-  showMaterialFeedback(`截图已识别并加入合并，当前共 ${basketItems.length} 条${dateNote}${warningNote}${linkNote}。`);
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "XHS_AI_SCREENSHOT_ADD",
+      images: pending.staged.map((item) => item.dataUrl),
+      ...(pending.sentLink ? { sourceUrl: pending.sentLink } : {})
+    });
+    if (!response?.ok) throw new Error(screenshotRecognitionError(response));
+    pendingShots = pendingShots.filter((item) => item !== pending);
+    basketItems = response.basket || [];
+    // 识别期间才补上的链接：条目落地后按普通补链接写进去
+    let lateLinkNote = "";
+    if (pending.link && pending.link !== pending.sentLink && response.id) {
+      try {
+        await setBasketItemLink(response.id, pending.link, false);
+        lateLinkNote = "，识别期间补的链接已带上";
+      } catch (error) {
+        lateLinkNote = `；链接未能补上（${error?.message || "未知错误"}），可在条目上点 ✎ 重补`;
+      }
+    }
+    renderBasket();
+    const dateNote = response.dateNotice ? `；${response.dateNotice}` : "";
+    const warningNote = response.warnings?.length
+      ? `；${response.warnings.length} 项信息未能完全识别（如时间、互动数）`
+      : "";
+    const linkNote = pending.sentLink ? "，已带上原帖链接" : "";
+    showMaterialFeedback(`截图已识别并加入合并，当前共 ${basketItems.length} 条${linkNote}${lateLinkNote}${dateNote}${warningNote}。`);
+  } catch (error) {
+    pending.status = "error";
+    pending.error = error?.message || "截图识别失败。";
+    renderBasket();
+    showMaterialFeedback(`有一批截图识别失败，可在合并概括里重试或放回暂存区。`, "error");
+  } finally {
+    removeTask(taskKey);
+    renderBasket();
+  }
+}
+
+// 识别失败的占位条目：重试、放回暂存区，或直接丢弃
+function handlePendingShotAction(id, action) {
+  const pending = pendingShots.find((item) => item.id === id);
+  if (!pending || pending.status !== "error") return;
+  if (action === "retry") {
+    void runPendingShot(pending);
+    return;
+  }
+  pendingShots = pendingShots.filter((item) => item !== pending);
+  if (action === "restore") {
+    stagedScreenshots = stagedScreenshots.concat(pending.staged);
+    if (pending.link && !stagedShotLink) stagedShotLink = pending.link;
+    renderStaging();
+    showMaterialFeedback("截图已放回暂存区。");
+  }
+  renderBasket();
 }
 
 async function commitStagedScreenshots(mode) {
-  const isMerge = mode === "basket";
-  const taskKey = isMerge ? "shot:merge" : "shot:single";
+  if (mode === "basket") {
+    commitScreenshotsToMerge();
+    return;
+  }
+  const taskKey = "shot:single";
   if (!stagedScreenshots.length || tasks.has(taskKey)) return;
   const countLabel = stagedScreenshotCountLabel();
-  if (!isMerge) {
-    focus = { kind: "shot" };
-    if (historyVisible) {
-      historyVisible = false;
-      applyViewVisibility();
-    }
-    renderFocus();
+  focus = { kind: "shot" };
+  if (historyVisible) {
+    historyVisible = false;
+    applyViewVisibility();
   }
+  renderFocus();
   const writeStatus = (status) => {
-    if (isMerge) return;
     shotSlot.status = status;
     if (focus.kind === "shot" && !historyVisible) renderStatus(status);
     if (status.state === "working") {
@@ -2275,41 +2530,26 @@ async function commitStagedScreenshots(mode) {
   };
   setTask(taskKey, {
     kind: "shot",
-    title: isMerge ? "识别截图加入合并" : "识别截图并概括",
+    title: "识别截图并概括",
     detail: `${countLabel}，正在提取帖文内容…`,
     percent: 15
   });
   writeStatus({ state: "working", title: "正在识别截图", detail: `${countLabel}，正在提取帖文内容…`, percent: 15 });
   const committedIds = new Set(stagedScreenshots.map((item) => item.id));
-  // 输入框里同时留有链接时随本次截图一起提交，成功后才算消费掉
-  const givenLink = screenshotLinkFromMaterialInput();
+  // 只带暂存卡上挂着的链接，不再从输入框顺带读取
+  const givenLink = stagedShotLink;
   try {
-    const images = stagedScreenshots.map((item) => item.dataUrl);
-    // 长截图切段后张数会变多，先按后台的单次上限拦下，避免提交后才报错
-    if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
-      throw new Error(screenshotBatchLimitMessage());
-    }
-    // 超过扩展消息的安全体积时提前拦下，不让后台静默失败
-    const totalChars = images.reduce((sum, url) => sum + String(url).length, 0);
-    if (totalChars > SCREENSHOT_MESSAGE_MAX_CHARS) throw new Error("截图总体积过大，请分批识别。");
-    if (isMerge) {
-      await addScreenshotImagesToBasket(images, givenLink);
-    } else {
-      await summarizeScreenshotImages(images, writeStatus, givenLink);
-    }
+    checkScreenshotBatch(stagedScreenshots);
+    await summarizeScreenshotImages(stagedScreenshots.map((item) => item.dataUrl), writeStatus, givenLink);
     // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
     stagedScreenshots = stagedScreenshots.filter((item) => !committedIds.has(item.id));
-    if (givenLink) elements.materialInput.value = "";
+    if (givenLink && stagedShotLink === givenLink) stagedShotLink = null;
     renderStaging();
   } catch (error) {
-    if (isMerge) {
-      showMaterialFeedback(error?.message || "截图识别失败。", "error");
-    } else {
-      writeStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
-    }
+    writeStatus({ state: "error", title: "截图识别失败", detail: error?.message || "发生未知错误。", percent: 0 });
   } finally {
     removeTask(taskKey);
-    if (focus.kind === (isMerge ? "merge" : "shot")) renderFocus();
+    if (focus.kind === "shot") renderFocus();
     else {
       renderBasket();
       refreshButtons();
@@ -2916,8 +3156,13 @@ elements.taskList.addEventListener("click", (event) => {
     renderFocus();
     return;
   }
-  if (task.key === "shot:single" || task.key === "shot:merge") {
+  if (task.key === "shot:single") {
     setFocus("shot");
+    return;
+  }
+  if (String(task.key).startsWith(SHOT_PENDING_TASK_PREFIX)) {
+    // 截图加入合并的进度就在合并概括区的占位条目上
+    elements.basketPanel.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
     return;
   }
   if (task.kind === "merge") setFocus("merge");
@@ -2931,6 +3176,10 @@ elements.historyButton.addEventListener("click", () => { void openHistory(); });
 elements.historyBackButton.addEventListener("click", closeHistory);
 
 elements.materialLinkButton.addEventListener("click", () => { void handleMaterialLink(); });
+// 暂存区有截图时，输入框里一出现小红书链接就问它是不是截图的原帖链接（粘贴也会触发 input）
+elements.materialInput.addEventListener("input", () => {
+  maybeOfferShotLink();
+});
 elements.materialInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -2967,8 +3216,21 @@ elements.materialStaging.addEventListener("click", (event) => {
     : [target];
   const removedIds = new Set(removed.map((item) => item.id));
   stagedScreenshots = stagedScreenshots.filter((item) => !removedIds.has(item.id));
+  // 截图全部移除后，挂着的链接放回输入框，不悄悄丢掉
+  const restoredLink = !stagedScreenshots.length && stagedShotLink ? stagedShotLink : null;
+  if (restoredLink) {
+    stagedShotLink = null;
+    if (!elements.materialInput.value.trim()) elements.materialInput.value = restoredLink;
+  }
   renderStaging();
-  if (removed.length > 1) showMaterialFeedback(`已移除整张长截图（${removed.length} 段）。`);
+  if (pendingLinkChoice?.mode === "shot" && !stagedScreenshots.length) hideLinkChoice();
+  if (restoredLink) showMaterialFeedback("截图已全部移除，原帖链接放回了输入框。");
+  else if (removed.length > 1) showMaterialFeedback(`已移除整张长截图（${removed.length} 段）。`);
+});
+elements.stagingLinkRemove.addEventListener("click", () => {
+  stagedShotLink = null;
+  renderStaging();
+  showMaterialFeedback("已移除截图的原帖链接。");
 });
 elements.materialDropzone.addEventListener("dragenter", (event) => {
   if (event.dataTransfer?.types?.includes("Files")) elements.materialDropzone.dataset.dragover = "true";
@@ -3011,6 +3273,11 @@ elements.mergeClearButton.addEventListener("click", () => { void clearBasket(); 
 elements.basketList.addEventListener("click", (event) => {
   const row = event.target?.closest?.(".basket-item");
   if (!row) return;
+  if (row.dataset?.pendingId) {
+    const action = event.target.closest?.("[data-pending-action]")?.dataset?.pendingAction;
+    if (action) handlePendingShotAction(row.dataset.pendingId, action);
+    return;
+  }
   if (event.target.closest?.(".merge-remove")) {
     void removeBasketItem(row.dataset?.id);
     return;

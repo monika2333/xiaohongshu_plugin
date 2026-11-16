@@ -62,7 +62,7 @@
           </div>
           <p id="material-feedback" class="link-feedback" hidden></p>
           <div id="link-choice" class="link-choice" hidden>
-            <p class="link-choice-title">无法自动判断这条链接属于哪条帖文</p>
+            <p id="link-choice-title" class="link-choice-title">无法自动判断这条链接属于哪条帖文</p>
             <div id="link-choice-options" class="link-choice-options"></div>
           </div>
           <div id="material-dropzone" class="dropzone" role="button" tabindex="0" aria-label="添加截图：点击选择，或粘贴、拖入图片">
@@ -70,6 +70,11 @@
             <span>或直接 Ctrl+V 粘贴、拖入图片，可连续添加多张</span>
           </div>
           <ul id="material-staging" class="staging-list" hidden></ul>
+          <div id="staging-link" class="staging-link" hidden>
+            <span class="basket-link-label">原帖链接</span>
+            <span id="staging-link-value" class="staging-link-value"></span>
+            <button id="staging-link-remove" class="link-edit-button" type="button" title="移除链接" aria-label="移除原帖链接" hidden>×</button>
+          </div>
           <div id="material-shot-actions" class="material-shot-actions" hidden>
             <button id="shot-summarize-button" class="secondary-button staging-run" type="button">识别并概括</button>
             <button id="shot-basket-button" class="secondary-button staging-run" type="button">识别并加入合并</button>

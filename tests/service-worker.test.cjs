@@ -13,11 +13,12 @@ let panelPendingLinkReply = { pending: false };
 
 function storageArea(name) {
   return {
+    // 与真实 chrome.storage 一致：每次读到的都是拷贝，改了不写回就不生效（并发读-改-写才测得出覆盖）
     get: async (keys) => {
       const state = storageState[name];
-      if (keys == null) return { ...state };
+      if (keys == null) return structuredClone({ ...state });
       const requested = Array.isArray(keys) ? keys : [keys];
-      return Object.fromEntries(requested.filter((key) => key in state).map((key) => [key, state[key]]));
+      return structuredClone(Object.fromEntries(requested.filter((key) => key in state).map((key) => [key, state[key]])));
     },
     set: async (values) => { Object.assign(storageState[name], values); },
     remove: async (keys) => {
@@ -82,11 +83,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.18.2");
+assert.equal(manifest.version, "0.19.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.18.2");
+assert.equal(packageJson.version, "0.19.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -1004,12 +1005,17 @@ const payload = {
   assert.equal(cachedMerge.ok, true);
   assert.equal(mergeTextCalls, 1);
 
-  for (let index = 0; index < 3; index += 1) {
-    await context.addToMergeBasket({
-      ...textOnlyPayload,
-      source: { ...textOnlyPayload.source, noteId: `6a7602930000000025007${String(index).padStart(2, "0")}` }
-    });
-  }
+  // 几批截图可以同时识别完、同时落地：并发加入必须排队写入，不能后写覆盖先写
+  const concurrentAdds = await Promise.all([0, 1, 2].map((index) => context.addToMergeBasket({
+    ...textOnlyPayload,
+    source: { ...textOnlyPayload.source, noteId: `6a7602930000000025007${String(index).padStart(2, "0")}` }
+  })));
+  assert.deepEqual(
+    concurrentAdds.map((added) => added.id),
+    [0, 1, 2].map((index) => `note:6a7602930000000025007${String(index).padStart(2, "0")}`),
+    "加入合并应返回新条目 ID，供面板补上识别期间贴的链接"
+  );
+  assert.equal((await context.listMergeBasket()).basket.length, 5);
   const overflow = await context.addToMergeBasket({
     ...textOnlyPayload,
     source: { ...textOnlyPayload.source, noteId: "6a7602930000000025007ff" }

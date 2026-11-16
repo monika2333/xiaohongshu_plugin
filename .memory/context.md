@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-16（v0.18.2 界面上的「清单」按用途改称「合并概括」，空的时候常驻一条窄提示）
+> 最近更新：2026-11-16（v0.19.0 截图原帖链接挂到暂存卡上；识别并加入合并改为立即出现「识别中」占位条目、多批并行）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.18.2。更早的演进见 `git log`。
+- 当前版本：0.19.0。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -42,13 +42,13 @@
 
 1. **单条**：面板注入采集脚本 → 内容脚本采集，同时后台并行识别图片 → 后台调用文字模型 → `renderSummary` 拼出最终文本 → 写历史 → 若面板还有比本次 `givenUrl` 更新的待补链接，先记 `notification = { status: "deferred" }`、不推送，否则立即推送飞书 → 面板完成 relink 后用最终文本调 `XHS_AI_NOTIFY_FEISHU_RESULT` 补发一次。
 2. **合并**：清单条目的 payload 存在 `chrome.storage.session`，合并时按发帖时间排序后一次性交给文字模型，再由 `renderMergedSummary` 渲染；运行中改过清单链接时同样先 deferred，面板按当前清单原地重渲染后再推送一次。
-3. **截图**：普通截图以原始文件、原始尺寸、原始格式上传；长截图（高度超过宽度 ×2.5 或高度超过 8192 像素）在面板暂存时按原分辨率带重叠切段（单张最多 8 段；PNG 源仍出 PNG，JPEG / WebP 转高质量 JPEG），段间重叠交给截图提示词已有的「多张按顺序拼接、去掉重叠」规则；宽度超过 8192 像素时纵向切段解决不了，暂存阶段直接提示缩小。切段后的一批受源文件单张 12 MB、本批 data URL 总长 32 MB、单次最多 8 张限制 → 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板把素材输入框里的小红书链接（含 xhslink 短链）随消息 `sourceUrl` 带入，落到 payload 的 `source.url`；微博链接不带入（截图管线只覆盖小红书）。
+3. **截图**：普通截图以原始文件、原始尺寸、原始格式上传；长截图（高度超过宽度 ×2.5 或高度超过 8192 像素）在面板暂存时按原分辨率带重叠切段（单张最多 8 段；PNG 源仍出 PNG，JPEG / WebP 转高质量 JPEG），段间重叠交给截图提示词已有的「多张按顺序拼接、去掉重叠」规则；宽度超过 8192 像素时纵向切段解决不了，暂存阶段直接提示缩小。切段后的一批受源文件单张 12 MB、本批 data URL 总长 32 MB、单次最多 8 张限制 → 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板只带暂存卡上挂着的链接（`stagedShotLink`，随消息 `sourceUrl` 带入，落到 payload 的 `source.url`），不再从输入框顺带读取；微博链接挂不上（截图管线只覆盖小红书）。
 4. **链接**：`XHS_AI_RESOLVE_LINK` 把链接解析为「平台 + 帖子 ID」→ 与当前页签、清单条目比对 → 命中就补链接，没命中就开新页签采集，解析失败就让用户手动选择。新页签只在 `detailReady`（标题渲染）后就开采集，因此小红书采集端自带就绪等待（`content-script.js` 的 `TIMING`，测试可用 `__XHS_CAPTURE_TIMING__` 缩短）：互动数或评论总数出现才继续，评论区挂载与首条评论各有等待上限；「共 0 条评论」立即结束，超时记 `comment_load_timeout` 并向 `uncertainties` 写「评论未能读取」。
 
 ## 关键约定（改代码前必读）
 
 - **程序写，模型不写**：结果里的日期、互动数、来源链接都由程序渲染，不交给模型生成。
-- **链接只写 `source.givenUrl`**，永远不改 `source.url`。`source.url` 会进入证据和缓存键，改了会触发重新调用模型。例外是截图 payload 的**创建时**：素材输入框里的链接经 `XHS_AI_SCREENSHOT_RECOGNIZE`/`_ADD` 的 `sourceUrl` 字段写入 `source.url`（先于任何模型调用，无缓存失效问题）；事后补链接仍只写 `givenUrl`。
+- **链接只写 `source.givenUrl`**，永远不改 `source.url`。`source.url` 会进入证据和缓存键，改了会触发重新调用模型。例外是截图 payload 的**创建时**：暂存卡上挂着的链接经 `XHS_AI_SCREENSHOT_RECOGNIZE`/`_ADD` 的 `sourceUrl` 字段写入 `source.url`（先于任何模型调用，无缓存失效问题）；事后补链接（含识别期间才选定的链接，落地后走 `XHS_AI_MERGE_SET_LINK`）仍只写 `givenUrl`。
 - **补链接不调用模型、不自动重复推送**：用结果里已有的 `structured` 重新渲染，并按 `historyId` 同步历史。合并结果只有在条目集合（`itemIds`）未变时才原地重渲染。生成进行中贴入的待补链接会延迟推送：后台先记 `notification = { status: "deferred" }`，面板 relink 后调 `XHS_AI_NOTIFY_FEISHU_RESULT` 用最终文本补发，一次生成仍只有一条消息；已经发送过之后再补链接/编辑不自动重发，结果卡显示「飞书里仍是旧版本」+ 飞书图标红点，点图标重发当前文本。结果对象带 `renderedText`（程序最后一次渲染的干净文本），后台按 `text !== renderedText` 判断是否被手工编辑；编辑过就只替换来源后缀或旧链接，两者都找不到时保持用户文本并返回 `linkApplied: "kept"`，不整段覆盖。历史始终写干净的重渲染文本。
 - **飞书发送状态**：`notification.status` 为 `sent | failed | deferred`；成功时带 `sentText`（实际发送的文本），用于判断结果卡/历史里是否还是旧版本。后台推送前用 `XHS_AI_QUERY_PENDING_LINK` 向面板同步查询待补链接（面板有 pending 就答 true，即使已切走；无 pending 时只有 `activeTabId` 匹配才答 false，避免多窗口里非属主抢先答 false；合并任务只由运行它的面板应答），延迟补发走 `XHS_AI_NOTIFY_FEISHU_RESULT`。补发期间按 `historyId` 记录在途，点图标提示“正在推送飞书，请稍候”，避免第二条；更新历史与工作流快照里的 `notification` 时不广播 `XHS_AI_WORKFLOW_STATE`，避免覆盖面板当前编辑。
 - **任务进行中补链接**：面板先写槽位 `pendingGivenUrl`，任务完成后再 `XHS_AI_RELINK`；后台 `relinkResult` 遇到 `working` 或 pageSession 不一致时不改写工作流状态。
@@ -71,6 +71,8 @@
 - **提示词修改原则**：最小干预。先移除诱因，再考虑加约束；尽量不写明确禁令；每次只改一处并单独测试。通过书面规则修正，不加 few-shot 示例。
 - **缓存**：`chrome.storage.session` 的 `xhsAiCacheV1`，只保留最近 16 条，被淘汰后会重新识别或生成。
 - **清单（界面叫「合并概括」）**：代码里仍叫 basket / 清单，用户可见文案一律按用途叫「合并概括」「加入合并」「✓ 已在合并里」，不再出现「清单」二字。上限 5 条，会话存储，关闭浏览器即清空。条目 ID 为 `note:<id>`、`wbnote:<id>` 或 `shot:<id>`，同 ID 重复加入会替换。合并概括区常驻：为空时 `#basket-panel[data-empty="true"]` 收成标题 + 一句用途说明（`BASKET_HINT_EMPTY`），有条目后换成 `BASKET_HINT_FILLED`。当前帖文与结果卡的「加入合并」在该帖已在合并里时都显示「✓ 已在合并里」并置灰（`refreshButtons` / `refreshResultBasketButton`，`renderBasket` 末尾会调 `refreshButtons` 同步）。
+- **截图原帖链接挂在暂存卡上**：暂存区有截图时，素材输入框一出现小红书链接（`input` 事件，含粘贴），或加完截图时输入框里已有链接，`maybeOfferShotLink` 就用链接选择区问「下面这组截图的原帖链接 / 另一条帖文，识别它」（`pendingLinkChoice.mode = "shot"`）；回车或「识别链接」在此状态下也先问、不解析。截图帖文没有帖子 ID，程序无从比对，所以只能让用户说，不按「同时摆着」去猜。截图全部移除时链接放回输入框。识别后才拿到的链接：解析出的 ID 对不上任何帖文、又有没链接的截图条目（含识别中的批次）时，`handleMaterialLink` 列出它们让用户选（`mode = "attach"`），不直接当新帖打开。
+- **截图加入合并的占位条目**：「识别并加入合并」点下去就把暂存截图搬进 `pendingShots`（面板内存，后台不知道），在合并概括末尾渲染「识别中…」条目，暂存区立刻清空；每批一个任务 `shot:merge:<pendingId>`，可并行。成功后后台返回新条目 `id`，识别期间才选定的链接用它补写；失败的条目可重试、放回暂存区或丢弃。有占位条目时合并按钮置灰（`refreshButtons` 与 `runMergeSummarize` 都判断 `pendingShots.length`），条数与 5 条名额都算上识别中的批次（面板 `MERGE_ITEM_LIMIT` 必须等于后台 `MAX_MERGE_ITEMS`，有测试断言）。后台合并条目的增删改都经 `withMergeBasketLock` 串行，避免并行识别完一起落地时读-改-写互相覆盖；测试的存储 mock 返回拷贝，才测得出这种覆盖。
 - **历史**：`chrome.storage.local`，最多 100 条，只存概括全文与元信息，不存评论和图片证据。
 - **消息来源校验**：`EXTENSION_PAGE_MESSAGES` 只接受插件页面发出的消息，内容脚本消息只接受来自帖文页的。新增消息要加入对应集合。
 - **帖子 ID**：小红书为 24 位十六进制，取自 `/explore/<id>` 或 `/discovery/item/<id>`。微博为 `mblogid`；URL 路径是纯数字 mid 时视为无法解析。

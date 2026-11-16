@@ -46,8 +46,12 @@ const selectors = [
   "#material-feedback",
   "#link-choice",
   "#link-choice-options",
+  "#link-choice-title",
   "#material-dropzone",
   "#material-staging",
+  "#staging-link",
+  "#staging-link-value",
+  "#staging-link-remove",
   "#shot-summarize-button",
   "#shot-basket-button",
   "#material-shot-actions",
@@ -318,6 +322,9 @@ for (const id of [
 // 面板的截图张数上限必须与后台一致：长截图切段后会按多张计算。
 assert.match(source, /const SCREENSHOT_BATCH_LIMIT = 8;/, "面板应声明截图张数上限 8");
 assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_SCREENSHOT_IMAGES = 8;/, "后台截图张数上限应与面板一致");
+// 识别中的截图批次也占合并名额：面板的上限必须与后台一致
+assert.match(source, /const MERGE_ITEM_LIMIT = 5;/, "面板应声明合并条目上限 5");
+assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_MERGE_ITEMS = 5;/, "后台合并条目上限应与面板一致");
 // 结果动作同一行：复制 → 加入清单 →（历史）打开原帖 → 重新生成图标
 const actionOrder = ["copy-button", "result-add-basket-button", "open-source-button", "regenerate-button"]
   .map((id) => panelHtml.indexOf(`id="${id}"`));
@@ -851,15 +858,20 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await settle(10);
   assert.match(elements["#result-text"].value, /原帖已删除，内容据用户上传截图整理/);
 
-  // 统一暂存列表的「识别并加入清单」
-  let resolveShotBasket;
+  // 统一暂存列表的「识别并加入合并」：点下去截图立刻搬进合并概括成「识别中」占位条目，
+  // 暂存区马上空出来，几批截图可以同时识别
+  const shotAddResolvers = [];
+  const XHS_NOTE_UNKNOWN = "6ab3c400000000000200d1ff";
   setRuntime(async (message) => {
     if (message.type === "XHS_AI_SCREENSHOT_ADD") {
-      const item = basketItem(`shot:shot-test-2`, "粘贴截图", { kind: "user_screenshot" });
-      basket = basket.concat(item);
-      return new Promise((resolve) => {
-        resolveShotBasket = () => resolve({ ok: true, basket, warnings: [] });
-      });
+      return new Promise((resolve) => { shotAddResolvers.push(resolve); });
+    }
+    if (message.type === "XHS_AI_RESOLVE_LINK") {
+      return { ok: true, platform: "xiaohongshu", noteId: XHS_NOTE_UNKNOWN, resolvedUrl: `https://www.xiaohongshu.com/explore/${XHS_NOTE_UNKNOWN}` };
+    }
+    if (message.type === "XHS_AI_MERGE_SET_LINK") {
+      basket = basket.map((entry) => entry.id === message.id ? { ...entry, link: message.givenUrl } : entry);
+      return { ok: true, basket, linkChange: null };
     }
     return { ok: true };
   });
@@ -872,16 +884,110 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   }));
   await settle();
   assert.match(elements["#shot-basket-button"].textContent, /识别这 2 张截图并加入合并/);
-  const shotBasketClick = elements["#shot-basket-button"].listeners.click();
+  assert.equal(elements["#staging-link"].hidden, false);
+  assert.match(elements["#staging-link-value"].textContent, /未添加/);
+  await elements["#shot-basket-button"].listeners.click();
   await settle();
   assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD").length, 1);
   assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD")[0].images.length, 2);
   assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD")[0].sourceUrl, undefined);
-  resolveShotBasket();
-  await shotBasketClick;
-  await settle();
-  assert.match(elements["#material-feedback"].textContent, /截图已识别并加入合并/);
+  // 点击的同时：暂存区清空，合并概括里多出一条识别中的占位条目，合并按钮先置灰
+  assert.equal(elements["#material-staging"].hidden, true);
+  assert.equal(elements["#staging-link"].hidden, true);
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-id="pending-1"[^>]*data-state="working"/);
+  assert.match(elements["#merge-list"].innerHTML, /识别中…/);
   assert.equal(elements["#basket-count"].textContent, "4");
+  assert.equal(elements["#merge-summarize-button"].disabled, true);
+  assert.equal(elements["#basket-single-hint"].hidden, false);
+  assert.match(elements["#basket-single-hint"].textContent, /还有 1 条截图在识别/);
+  assert.match(elements["#task-list"].innerHTML, /识别截图加入合并/);
+  assert.match(elements["#material-feedback"].textContent, /已放进合并概括，正在识别/);
+
+  // 第一批还在识别时可以接着提交第二批：两个请求同时在跑
+  documentListeners.paste(makeDataTransferEvent({
+    files: [{ name: "paste-3.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }]
+  }));
+  await settle();
+  assert.equal(elements["#shot-basket-button"].disabled, false);
+  await elements["#shot-basket-button"].listeners.click();
+  await settle();
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD").length, 2);
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-id="pending-2"/);
+  assert.equal(elements["#basket-count"].textContent, "5");
+  assert.match(elements["#basket-single-hint"].textContent, /还有 2 条截图在识别/);
+
+  // 识别中贴链接：对不上已有帖文时不直接当新帖打开，列出没链接的截图（含识别中的批次）让用户选
+  const tabCreatesBeforeShotLink = tabsUpdates.filter((update) => update.tabId === "create").length;
+  elements["#material-input"].value = "原帖 https://xhslink.cn/o/late-link";
+  await elements["#material-link-button"].listeners.click();
+  await settle();
+  assert.equal(elements["#link-choice"].hidden, false);
+  assert.match(elements["#link-choice-title"].textContent, /是下面截图帖文的原帖链接吗/);
+  assert.match(elements["#link-choice-options"].innerHTML, /data-choice="pending:pending-1"/);
+  assert.match(elements["#link-choice-options"].innerHTML, /都不是，作为新帖打开/);
+  assert.equal(tabsUpdates.filter((update) => update.tabId === "create").length, tabCreatesBeforeShotLink);
+  await elements["#link-choice-options"].listeners.click({
+    target: { closest: (selector) => selector === "[data-choice]" ? { dataset: { choice: "pending:pending-1" } } : null }
+  });
+  await settle();
+  assert.equal(elements["#link-choice"].hidden, true);
+  assert.equal(elements["#material-input"].value, "");
+  assert.match(elements["#merge-list"].innerHTML, /late-link/);
+  assert.match(elements["#material-feedback"].textContent, /识别完会自动补上/);
+
+  // 第二批识别失败：占位条目变红，给出重试与放回暂存区
+  shotAddResolvers[1]({ ok: false, error: "模型请求失败：image too large" });
+  await settle();
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-id="pending-2"[^>]*data-state="error"/);
+  assert.match(elements["#merge-list"].innerHTML, /识别失败/);
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-action="retry"/);
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-action="restore"/);
+  assert.match(elements["#material-feedback"].textContent, /有一批截图识别失败/);
+  assert.match(elements["#basket-single-hint"].textContent, /还有 1 条截图在识别/);
+
+  // 第一批识别成功：占位条目换成正常条目，识别期间补的链接按普通补链接写进去
+  basket = basket.concat(basketItem("shot:shot-test-2", "粘贴截图", { kind: "user_screenshot" }));
+  shotAddResolvers[0]({ ok: true, id: "shot:shot-test-2", basket, warnings: [] });
+  await settle(10);
+  assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK").length, 1);
+  assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK")[0].id, "shot:shot-test-2");
+  assert.equal(findRuntime("XHS_AI_MERGE_SET_LINK")[0].givenUrl, "https://xhslink.cn/o/late-link");
+  assert.doesNotMatch(elements["#merge-list"].innerHTML, /pending-1/);
+  assert.match(elements["#merge-list"].innerHTML, /粘贴截图/);
+  assert.match(elements["#material-feedback"].textContent, /截图已识别并加入合并.*识别期间补的链接已带上/);
+  assert.equal(elements["#basket-count"].textContent, "5");
+  assert.match(elements["#basket-single-hint"].textContent, /有 1 条截图识别失败/);
+  assert.equal(elements["#merge-summarize-button"].disabled, true);
+
+  // 重试：同一批截图再发一次
+  const clickPending = (pendingId, action) => elements["#merge-list"].listeners.click({
+    target: {
+      closest: (selector) => {
+        if (selector === ".basket-item") return { dataset: { pendingId } };
+        if (selector === "[data-pending-action]") return { dataset: { pendingAction: action } };
+        return null;
+      }
+    }
+  });
+  clickPending("pending-2", "retry");
+  await settle();
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD").length, 3);
+  assert.match(elements["#merge-list"].innerHTML, /data-pending-id="pending-2"[^>]*data-state="working"/);
+  shotAddResolvers[2]({ ok: false, error: "截图识别失败。" });
+  await settle();
+  // 放回暂存区：截图回到暂存区，占位条目消失，合并按钮恢复
+  clickPending("pending-2", "restore");
+  await settle();
+  assert.equal(elements["#material-staging"].hidden, false);
+  assert.doesNotMatch(elements["#merge-list"].innerHTML, /pending-2/);
+  assert.equal(elements["#basket-count"].textContent, "4");
+  assert.equal(elements["#basket-single-hint"].hidden, true);
+  assert.equal(elements["#merge-summarize-button"].disabled, false);
+  const restoredIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(restoredIds.length, 1);
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: restoredIds[0] } } : null }
+  });
   assert.equal(elements["#material-staging"].hidden, true);
 
   // 纯文本粘贴不拦截；非图片拖入被拦下但不进暂存区
@@ -897,8 +1003,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(nonImageDropEvent.defaultPrevented, true);
   assert.equal(elements["#material-staging"].hidden, true);
 
-  // 截图提交时输入框里的小红书链接随消息带入 sourceUrl，成功后清空输入框
-  elements["#material-input"].value = "备份 https://xhslink.cn/o/shot-with-link 备用";
+  // 暂存区有截图时贴入小红书链接：先问是不是截图的原帖链接；选了才挂到暂存卡上，提交时只认挂着的链接
   elements["#material-file-input"].files = [{ name: "shot-link.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
   let resolveShotWithLink;
   setRuntime(async (message) => {
@@ -910,6 +1015,23 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   });
   await elements["#material-file-input"].listeners.change();
   await settle();
+  assert.equal(elements["#link-choice"].hidden, true);
+  elements["#material-input"].value = "备份 https://xhslink.cn/o/shot-with-link 备用";
+  elements["#material-input"].listeners.input();
+  await settle();
+  assert.equal(elements["#link-choice"].hidden, false);
+  assert.equal(elements["#link-choice-title"].textContent, "这条链接是：");
+  assert.match(elements["#link-choice-options"].innerHTML, /data-choice="shot-stage"[^>]*>下面这组截图的原帖链接/);
+  assert.match(elements["#link-choice-options"].innerHTML, /另一条帖文，识别它/);
+  await elements["#link-choice-options"].listeners.click({
+    target: { closest: (selector) => selector === "[data-choice]" ? { dataset: { choice: "shot-stage" } } : null }
+  });
+  await settle();
+  assert.equal(elements["#link-choice"].hidden, true);
+  assert.equal(elements["#material-input"].value, "");
+  assert.match(elements["#staging-link-value"].textContent, /xhslink\.cn\/o\/shot-with-link/);
+  assert.equal(elements["#staging-link"].dataset.empty, "false");
+  assert.equal(elements["#staging-link-remove"].hidden, false);
   const shotWithLinkClick = elements["#shot-summarize-button"].listeners.click();
   await settle();
   const shotWithLinkCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length;
@@ -919,7 +1041,49 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await shotWithLinkClick;
   await settle();
   assert.equal(elements["#status-title"].textContent, "截图概括完成");
-  assert.equal(elements["#material-input"].value, "");
+  assert.equal(elements["#staging-link"].hidden, true);
+
+  // 先贴链接、后加截图：加完截图也会问；回车识别时同样先问，不会把截图的原帖当新帖打开
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_SCREENSHOT_ADD") return { ok: true, id: "shot:link-first", basket, warnings: [] };
+    return { ok: true };
+  });
+  elements["#material-input"].value = "https://xhslink.cn/o/link-first";
+  elements["#material-input"].listeners.input();
+  assert.equal(elements["#link-choice"].hidden, true);
+  elements["#material-file-input"].files = [{ name: "shot-first.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  assert.equal(elements["#link-choice"].hidden, false);
+  assert.equal(elements["#link-choice-title"].textContent, "这条链接是：");
+  await elements["#material-input"].listeners.keydown({ key: "Enter", preventDefault() {} });
+  await settle();
+  assert.equal(findRuntime("XHS_AI_RESOLVE_LINK").length, 0);
+  assert.equal(elements["#link-choice"].hidden, false);
+  await elements["#link-choice-options"].listeners.click({
+    target: { closest: (selector) => selector === "[data-choice]" ? { dataset: { choice: "shot-stage" } } : null }
+  });
+  await settle();
+  // 移除截图会把挂着的链接放回输入框，不悄悄丢掉
+  const linkFirstIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: linkFirstIds[0] } } : null }
+  });
+  assert.equal(elements["#material-input"].value, "https://xhslink.cn/o/link-first");
+  assert.match(elements["#material-feedback"].textContent, /原帖链接放回了输入框/);
+  elements["#material-file-input"].files = [{ name: "shot-first.png", type: "image/png", size: 1000, dataUrl: "data:image/png;base64,QUJD" }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  await elements["#link-choice-options"].listeners.click({
+    target: { closest: (selector) => selector === "[data-choice]" ? { dataset: { choice: "shot-stage" } } : null }
+  });
+  await settle();
+  await elements["#shot-basket-button"].listeners.click();
+  assert.match(elements["#merge-list"].innerHTML, /link-first/);
+  await settle(10);
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_ADD")[0].sourceUrl, "https://xhslink.cn/o/link-first");
+  assert.match(elements["#material-feedback"].textContent, /已带上原帖链接/);
+  assert.doesNotMatch(elements["#merge-list"].innerHTML, /data-pending-id/);
 
   // 输入框里是微博链接时截图提交不带 sourceUrl：截图管线只覆盖小红书
   const weiboInInput = "微博 https://weibo.com/1257000310/RhJDvgyf3";
@@ -935,6 +1099,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   });
   await elements["#material-file-input"].listeners.change();
   await settle();
+  assert.equal(elements["#link-choice"].hidden, true);
   const shotWeiboLinkClick = elements["#shot-summarize-button"].listeners.click();
   await settle();
   const shotWeiboLinkCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length;

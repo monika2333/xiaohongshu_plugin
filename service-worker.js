@@ -911,12 +911,25 @@ function basketItemSummary(item) {
   };
 }
 
+// 合并条目的增删改都是「读-改-写」会话存储；几批截图可以同时识别，
+// 识别完一起落地时若不排队，后写的会覆盖先写的。所有写操作经这里串行执行。
+let mergeBasketQueue = Promise.resolve();
+function withMergeBasketLock(task) {
+  const run = mergeBasketQueue.then(task, task);
+  mergeBasketQueue = run.catch(() => {});
+  return run;
+}
+
 async function getMergeBasket() {
   const stored = await chrome.storage.session.get(MERGE_BASKET_KEY);
   return stored[MERGE_BASKET_KEY] || [];
 }
 
-async function addToMergeBasket(payload) {
+function addToMergeBasket(payload) {
+  return withMergeBasketLock(() => addToMergeBasketUnlocked(payload));
+}
+
+async function addToMergeBasketUnlocked(payload) {
   if (!payload?.note || !payload?.commentExport || !payload?.source) {
     throw new Error("要加入合并的采集数据不完整，请重新采集后再试。");
   }
@@ -942,20 +955,24 @@ async function addToMergeBasket(payload) {
     items.push(item);
   }
   await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
-  return { ok: true, replaced: existingIndex >= 0, basket: items.map(basketItemSummary) };
+  return { ok: true, id, replaced: existingIndex >= 0, basket: items.map(basketItemSummary) };
 }
 
-async function removeFromMergeBasket(message) {
-  const id = cleanText(message?.id);
-  if (!id) throw new Error("缺少要移除的合并条目。");
-  const items = (await getMergeBasket()).filter((item) => item.id !== id);
-  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
-  return { ok: true, basket: items.map(basketItemSummary) };
+function removeFromMergeBasket(message) {
+  return withMergeBasketLock(async () => {
+    const id = cleanText(message?.id);
+    if (!id) throw new Error("缺少要移除的合并条目。");
+    const items = (await getMergeBasket()).filter((item) => item.id !== id);
+    await chrome.storage.session.set({ [MERGE_BASKET_KEY]: items });
+    return { ok: true, basket: items.map(basketItemSummary) };
+  });
 }
 
-async function clearMergeBasket() {
-  await chrome.storage.session.set({ [MERGE_BASKET_KEY]: [] });
-  return { ok: true, basket: [] };
+function clearMergeBasket() {
+  return withMergeBasketLock(async () => {
+    await chrome.storage.session.set({ [MERGE_BASKET_KEY]: [] });
+    return { ok: true, basket: [] };
+  });
 }
 
 async function listMergeBasket() {
@@ -1102,6 +1119,10 @@ async function recognizeScreenshots(message) {
 }
 
 async function addScreenshotToBasket(message) {
+  // 合并已满时不白白调用图片模型
+  if ((await getMergeBasket()).length >= MAX_MERGE_ITEMS) {
+    throw new Error(`合并概括最多放 ${MAX_MERGE_ITEMS} 条帖文，请先移除部分条目。`);
+  }
   const recognized = await recognizeScreenshots(message);
   const added = await addToMergeBasket(recognized.payload);
   return { ...added, warnings: recognized.warnings, dateNotice: recognized.dateNotice };
@@ -1284,7 +1305,11 @@ async function relinkResult(message) {
   return { ok: true, payload: nextPayload, result: nextResult, linkApplied: applied.linkApplied };
 }
 
-async function setMergeItemLink(message) {
+function setMergeItemLink(message) {
+  return withMergeBasketLock(() => setMergeItemLinkUnlocked(message));
+}
+
+async function setMergeItemLinkUnlocked(message) {
   const id = cleanText(message?.id);
   if (!id) throw new Error("缺少要更新链接的合并条目。");
   const items = await getMergeBasket();
