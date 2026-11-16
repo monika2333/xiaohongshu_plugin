@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-15（v0.17.1 修无属地日期被当属地拆走；简称或标签可定全称时不写依据句）
+> 最近更新：2026-11-16（v0.18.0 长截图暂存时自动切段，避开图片模型单边 8192 像素上限与整图缩小糊字）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.17.1。更早的演进见 `git log`。
+- 当前版本：0.18.0。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -42,7 +42,7 @@
 
 1. **单条**：面板注入采集脚本 → 内容脚本采集，同时后台并行识别图片 → 后台调用文字模型 → `renderSummary` 拼出最终文本 → 写历史 → 若面板还有比本次 `givenUrl` 更新的待补链接，先记 `notification = { status: "deferred" }`、不推送，否则立即推送飞书 → 面板完成 relink 后用最终文本调 `XHS_AI_NOTIFY_FEISHU_RESULT` 补发一次。
 2. **合并**：清单条目的 payload 存在 `chrome.storage.session`，合并时按发帖时间排序后一次性交给文字模型，再由 `renderMergedSummary` 渲染；运行中改过清单链接时同样先 deferred，面板按当前清单原地重渲染后再推送一次。
-3. **截图**：截图以原始文件、原始尺寸、原始格式上传（不压缩；单张 12 MB 上限，本批 data URL 总长超 32 MB 拦下提示分批）→ 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板把素材输入框里的小红书链接（含 xhslink 短链）随消息 `sourceUrl` 带入，落到 payload 的 `source.url`；微博链接不带入（截图管线只覆盖小红书）。
+3. **截图**：普通截图以原始文件、原始尺寸、原始格式上传；长截图（高度超过宽度 ×2.5 或高度超过 8192 像素）在面板暂存时按原分辨率带重叠切段（单张最多 8 段；PNG 源仍出 PNG，JPEG / WebP 转高质量 JPEG），段间重叠交给截图提示词已有的「多张按顺序拼接、去掉重叠」规则；宽度超过 8192 像素时纵向切段解决不了，暂存阶段直接提示缩小。切段后的一批受源文件单张 12 MB、本批 data URL 总长 32 MB、单次最多 8 张限制 → 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板把素材输入框里的小红书链接（含 xhslink 短链）随消息 `sourceUrl` 带入，落到 payload 的 `source.url`；微博链接不带入（截图管线只覆盖小红书）。
 4. **链接**：`XHS_AI_RESOLVE_LINK` 把链接解析为「平台 + 帖子 ID」→ 与当前页签、清单条目比对 → 命中就补链接，没命中就开新页签采集，解析失败就让用户手动选择。新页签只在 `detailReady`（标题渲染）后就开采集，因此小红书采集端自带就绪等待（`content-script.js` 的 `TIMING`，测试可用 `__XHS_CAPTURE_TIMING__` 缩短）：互动数或评论总数出现才继续，评论区挂载与首条评论各有等待上限；「共 0 条评论」立即结束，超时记 `comment_load_timeout` 并向 `uncertainties` 写「评论未能读取」。
 
 ## 关键约定（改代码前必读）
@@ -63,6 +63,7 @@
 - **提示词**：全部集中在 `prompts.js`。用户可在设置页覆盖（`xhsAiConfig.promptOverrides`）。缓存键含生效提示词的哈希，改提示词自动失效旧缓存。输出 JSON 字段名与 `ai-pipeline.js` 的解析代码绑定，改字段名要同步改解析。
 - **模型共用 / 分开**：`xhsAiConfig.modelMode` 为 `shared`（默认）或 `split`，`text`、`vision` 两组设置都保存。所有调模型的入口经 `ai-pipeline.js` 的 `resolveModels` 取生效配置与 Key：共用时 vision 取 text 那组、图片 Key 即文字 Key；分开时图片 Key 留空只在两边 API 同 origin 时沿用文字 Key，跨域名绝不沿用。新增调模型的入口必须走它，不要直接读 `config.vision` / `secrets.visionApiKey`。共用模式不校验保存着的 vision。旧配置无 `modelMode` 时按「地址与模型都相同 → shared」推断。设置页「测试模型」在共用模式发 `provider: shared`，会附一张内置纯红小图，回答没有「红 / red」也判为不能看图。
 - **图片与文字分开调用**：图片模型只负责如实描述与 OCR，内容是否有增量、是否写进概括，由文字模型判断。合并调用对图片多的帖文太慢，因此分开。
+- **长截图自动切段**：`panel.js` 的 `stageScreenshotFiles` 用 `createImageBitmap` 读原始尺寸，高度超过宽度 2.5 倍或超过 8192 像素时按原分辨率切段（`planScreenshotSlices`，段间 8% 重叠、单张最多 8 段），暂存项带 `partIndex` / `partCount` / `groupId` 角标；点任意一段的移除按钮按 `groupId` 整组删除，避免只删中间段。宽度超过 8192 像素时暂存阶段直接提示缩小（纵向切段解决不了宽度）；普通截图不转码。切段后的张数计入后台 `MAX_SCREENSHOT_IMAGES = 8`，面板 `SCREENSHOT_BATCH_LIMIT` 必须与它同步（测试里有断言）。
 - **截图证据对齐网页帖**：截图帖文的配图文字（`note.imageText`）与画面描述（`note.imageDescription`，截图模型字段 `image_description`）不直接进证据，由 `buildEvidence` 合成一条与图片模型输出同结构的 `imageEvidence` 条目，分别落在 `visible_text` / `factual_description`（只在证据内部，不进图片识别缓存）；只有标题的视频帖缺了画面描述时，文字模型会拿话题标签和「正文未说明……」凑正文，写作规则只在提示词维护一处。截图相对时间按上传当天换算，换算提示由 `screenshotDateNotice` 随识别响应返回。
 - **日期行拆属地**：`content-script.js` 的 `splitPublishedAndLocation` 只在末段不含数字、不是相对时间时才当 IP 属地拆走；页面不显示属地时日期行只有「编辑于 10-13」，旧逻辑会把日期当属地，概括丢日期。
 - **涉事主体全称**：帖文简称或话题标签本身能定全称时直接写全称、不写依据句；只有借评论区线索认定才交代依据。`prompts.js` 的 `SUBJECT_RULE` 由单帖与合并提示词共用，要求帖文只写代称或简称时结合评论区查明全称；发帖人回复「对」「是」算确认，对列选项的追问回复数字算选中对应序号；发帖人确认，或线索足以认定（发帖人透露的校区、类型指向唯一主体，或与网民点名吻合且未否认）才写进标题正文，正文交代依据且线索认定不能写成「发帖人确认」；仅网民猜测时保留代称、猜测写进 opinion_points。opinion_points 字段规则另有一句「已认定的不再单列猜测」——写在字段规则里模型才听。依赖证据里评论回复挂在父评论下并带 `isAuthor`（`compactComment`），改评论证据结构时别丢。

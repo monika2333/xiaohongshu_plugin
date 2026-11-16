@@ -96,6 +96,32 @@ const selectors = [
 ];
 const elements = Object.fromEntries(selectors.map((selector) => [selector, createElement()]));
 
+// 长截图切段用到的 Canvas 与图片解码 mock：记录每段画布 drawImage 的参数，
+// toBlob 返回带固定短 data URL 的假 Blob，再由 FileReader mock 转成 data URL。
+const drawnSlices = [];
+let closedBitmaps = 0;
+function createCanvasMock() {
+  const canvas = {
+    width: 0,
+    height: 0,
+    lastSliceIndex: -1,
+    getContext() {
+      return {
+        fillStyle: "",
+        fillRect() {},
+        drawImage(bitmap, sx, sy, sw, sh) {
+          drawnSlices.push({ bitmap, sx, sy, sw, sh, canvasWidth: canvas.width, canvasHeight: canvas.height });
+          canvas.lastSliceIndex = drawnSlices.length - 1;
+        }
+      };
+    },
+    toBlob(callback, mime) {
+      callback({ type: mime, dataUrl: `data:${mime};base64,SLICE-${canvas.lastSliceIndex + 1}` });
+    }
+  };
+  return canvas;
+}
+
 const XHS_NOTE_7 = "6a76029300000000250070c1";
 const XHS_NOTE_8 = "6a76029300000000250070c2";
 const XHS_NOTE_10 = "6a76029300000000250070ca";
@@ -240,9 +266,18 @@ const context = {
   },
   document: {
     querySelector: (selector) => elements[selector] || null,
+    createElement: (tag) => {
+      if (tag === "canvas") return createCanvasMock();
+      throw new Error(`Unexpected document.createElement: ${tag}`);
+    },
     execCommand: () => true,
     addEventListener: (type, listener) => { documentListeners[type] = listener; }
   },
+  createImageBitmap: async (file) => ({
+    width: file.width,
+    height: file.height,
+    close() { closedBitmaps += 1; }
+  }),
   navigator: { clipboard: { writeText: async () => {} } },
   console,
   Intl,
@@ -279,6 +314,9 @@ for (const id of [
 ]) {
   assert.match(panelHtml, new RegExp(`id="${id}"`), `panel.html 缺少 #${id}`);
 }
+// 面板的截图张数上限必须与后台一致：长截图切段后会按多张计算。
+assert.match(source, /const SCREENSHOT_BATCH_LIMIT = 8;/, "面板应声明截图张数上限 8");
+assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_SCREENSHOT_IMAGES = 8;/, "后台截图张数上限应与面板一致");
 // 结果动作同一行：复制 → 加入清单 →（历史）打开原帖 → 重新生成图标
 const actionOrder = ["copy-button", "result-add-basket-button", "open-source-button", "regenerate-button"]
   .map((id) => panelHtml.indexOf(`id="${id}"`));
@@ -2084,6 +2122,184 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   assert.equal(elements["#result-card"].hidden, false, "刷新不应清掉当前页签的结果");
   assert.equal(elements["#extract-button"].disabled, false);
   await switchChromeTab(7);
+
+  // —— 长截图自动切段：按原分辨率切、相邻段有重叠；普通截图保持原样 ——
+  // 切段数学边界：2.5 倍宽高比、8192 像素高兜底、单张 8 段上限
+  assert.equal(context.planScreenshotSlices(1080, 2700), null);
+  assert.equal(context.planScreenshotSlices(1080, 2701).length, 2);
+  assert.equal(context.planScreenshotSlices(4000, 9000).length, 2, "宽高比不到 2.5 但高度超过 8192 也应切");
+  assert.equal(context.planScreenshotSlices(1080, 64024).length, 8, "单张最多切 8 段");
+  assert.throws(() => context.planScreenshotSlices(1080, 64025), /每段仍超过 8192 像素/);
+  assert.equal(context.planScreenshotSlices(9000, 5000), null, "宽图不切段，由暂存层单独拦下");
+
+  const longShotFile = {
+    name: "long.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332,
+    dataUrl: "data:image/jpeg;base64,LONG"
+  };
+  drawnSlices.length = 0;
+  closedBitmaps = 0;
+  elements["#material-file-input"].files = [longShotFile];
+  await elements["#material-file-input"].listeners.change();
+  await settle(12);
+  assert.equal(elements["#material-staging"].hidden, false);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这 4 张截图并概括/);
+  assert.match(elements["#material-feedback"].textContent, /已自动切成 4 段/);
+  assert.equal((elements["#material-staging"].innerHTML.match(/class="staging-part"/g) || []).length, 4);
+  assert.match(elements["#material-staging"].innerHTML, /1\/4/);
+  assert.equal(drawnSlices.length, 4);
+  assert.equal(closedBitmaps, 1, "切段结束后应释放 ImageBitmap");
+  assert.equal(drawnSlices[0].sy, 0);
+  const lastDrawn = drawnSlices[drawnSlices.length - 1];
+  assert.equal(lastDrawn.sy + lastDrawn.sh, 8332, "最后一段应覆盖到图片底部");
+  for (let index = 1; index < drawnSlices.length; index += 1) {
+    assert.ok(drawnSlices[index].sy < drawnSlices[index - 1].sy + drawnSlices[index - 1].sh, "相邻两段应有重叠");
+  }
+  for (const slice of drawnSlices) {
+    assert.ok(slice.sh <= 8192, "每段高度不应超过模型单边上限");
+    assert.equal(slice.sx, 0);
+    assert.equal(slice.sw, 1080);
+    assert.equal(slice.canvasWidth, 1080, "画布宽度应为原图宽度");
+    assert.equal(slice.canvasHeight, slice.sh, "画布高度应为该段高度");
+  }
+
+  // 点任意一段的移除按钮会移除整张截图，避免只删中间段导致识别内容缺失
+  const firstSplitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(firstSplitIds.length, 4);
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: firstSplitIds[1] } } : null }
+  });
+  assert.equal(elements["#material-staging"].hidden, true);
+  assert.match(elements["#material-feedback"].textContent, /已移除整张长截图（4 段）/);
+
+  // 重新暂存同一张长图，继续验证提交的图片序列
+  drawnSlices.length = 0;
+  elements["#material-file-input"].files = [longShotFile];
+  await elements["#material-file-input"].listeners.change();
+  await settle(12);
+  assert.equal(drawnSlices.length, 4);
+
+  let resolveSplitShot;
+  setRuntime(async (message) => {
+    if (message.type === "XHS_AI_SCREENSHOT_RECOGNIZE") return { ok: true, payload: shotPayload, warnings: [] };
+    if (message.type === "XHS_AI_SUMMARIZE") {
+      return new Promise((resolve) => { resolveSplitShot = resolve; });
+    }
+    return { ok: true };
+  });
+  const splitShotClick = elements["#shot-summarize-button"].listeners.click();
+  await settle();
+  const splitCalls = findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE");
+  assert.equal(splitCalls.length, 1);
+  assert.equal(splitCalls[0].images.length, 4);
+  assert.ok(splitCalls[0].images.every((url) => url.startsWith("data:image/jpeg;base64,SLICE-")));
+  assert.equal(
+    Array.from(splitCalls[0].images, (url) => url.split("SLICE-")[1]).join(","),
+    "1,2,3,4",
+    "分段应按顺序上传"
+  );
+  resolveSplitShot({ ok: true, result: makeResult("★ 长截图事件\n长截图正文。（原帖已删除，内容据用户上传截图整理）") });
+  await splitShotClick;
+  await settle();
+  assert.equal(elements["#material-staging"].hidden, true);
+
+  // 普通手机截图（高度未超过宽度 2.5 倍）不切段，仍以原始文件上传
+  drawnSlices.length = 0;
+  elements["#material-file-input"].files = [{
+    name: "normal.png", type: "image/png", size: 1000, width: 1080, height: 2400,
+    dataUrl: "data:image/png;base64,NORMAL"
+  }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这张截图并概括/);
+  assert.equal(drawnSlices.length, 0);
+  assert.doesNotMatch(elements["#material-staging"].innerHTML, /staging-part/);
+  assert.match(elements["#material-staging"].innerHTML, /data:image\/png;base64,NORMAL/);
+  const normalStageId = elements["#material-staging"].innerHTML.match(/data-id="([^"]+)"/)[1];
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: normalStageId } } : null }
+  });
+  assert.equal(elements["#material-staging"].hidden, true);
+
+  // PNG 长截图切段后仍以 PNG 输出
+  drawnSlices.length = 0;
+  elements["#material-file-input"].files = [{
+    name: "long.png", type: "image/png", size: 1000, width: 1080, height: 8332,
+    dataUrl: "data:image/png;base64,LONGPNG"
+  }];
+  await elements["#material-file-input"].listeners.change();
+  await settle(12);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这 4 张截图并概括/);
+  assert.equal((elements["#material-staging"].innerHTML.match(/data:image\/png;base64,SLICE-/g) || []).length, 4);
+  const pngSplitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: pngSplitIds[0] } } : null }
+  });
+  assert.equal(elements["#material-staging"].hidden, true);
+
+  // 浏览器解不出图片尺寸（或图片损坏）时退回原样上传，不因自动切段失败挡住普通使用
+  const savedCreateImageBitmap = context.createImageBitmap;
+  context.createImageBitmap = async () => { throw new Error("decode failed"); };
+  elements["#material-file-input"].files = [{
+    name: "nodecode.jpg", type: "image/jpeg", size: 1000, dataUrl: "data:image/jpeg;base64,NODECODE"
+  }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  assert.match(elements["#material-staging"].innerHTML, /data:image\/jpeg;base64,NODECODE/);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这张截图并概括/);
+  const noDecodeId = elements["#material-staging"].innerHTML.match(/data-id="([^"]+)"/)[1];
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: noDecodeId } } : null }
+  });
+  context.createImageBitmap = savedCreateImageBitmap;
+
+  // 超长图切段后每段仍超过单边上限：暂存阶段直接提示，不进入识别
+  drawnSlices.length = 0;
+  elements["#material-file-input"].files = [{
+    name: "giant.png", type: "image/png", size: 1000, width: 1080, height: 70000,
+    dataUrl: "data:image/png;base64,GIANT"
+  }];
+  await elements["#material-file-input"].listeners.change();
+  await settle(12);
+  assert.match(elements["#material-feedback"].textContent, /每段仍超过 8192 像素/);
+  assert.equal(elements["#material-staging"].hidden, true);
+
+  // 宽度超过单边上限的图无法靠纵向切段解决：暂存阶段直接提示缩小
+  elements["#material-file-input"].files = [{
+    name: "wide.png", type: "image/png", size: 1000, width: 9000, height: 4000,
+    dataUrl: "data:image/png;base64,WIDE"
+  }];
+  await elements["#material-file-input"].listeners.change();
+  await settle();
+  assert.match(elements["#material-feedback"].textContent, /宽 9000 像素.*超过图片模型单边 8192 像素上限/);
+  assert.equal(elements["#material-staging"].hidden, true);
+
+  // 切段后暂存超过单次上限 8 张：暂存时提示，提交前拦下且不发请求
+  drawnSlices.length = 0;
+  elements["#material-file-input"].files = [
+    { name: "long-a.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332, dataUrl: "data:image/jpeg;base64,A" },
+    { name: "long-b.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332, dataUrl: "data:image/jpeg;base64,B" },
+    { name: "normal2.png", type: "image/png", size: 1000, width: 1080, height: 2400, dataUrl: "data:image/png;base64,NORMAL2" }
+  ];
+  await elements["#material-file-input"].listeners.change();
+  await settle(20);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这 9 张截图并概括/);
+  assert.match(elements["#material-feedback"].textContent, /超过单次识别上限 8 张/);
+  setRuntime(async () => ({ ok: true }));
+  const overLimitClick = elements["#shot-summarize-button"].listeners.click();
+  await settle();
+  assert.equal(findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length, 0);
+  assert.equal(elements["#status-title"].textContent, "截图识别失败");
+  assert.match(elements["#status-detail"].textContent, /单次最多识别 8 张截图/);
+  await overLimitClick;
+  await settle();
+  const overLimitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(overLimitIds.length, 9);
+  for (const id of overLimitIds) {
+    elements["#material-staging"].listeners.click({
+      target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id } } : null }
+    });
+  }
+  assert.equal(elements["#material-staging"].hidden, true);
 
   // —— 解析工具：小红书短链/长链、微博长链、非帖文地址 ——
   assert.equal(

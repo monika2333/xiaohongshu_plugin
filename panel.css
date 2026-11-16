@@ -213,6 +213,19 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
   cursor: pointer;
 }
 .staging-remove:hover { color: var(--paper); background: var(--red); }
+.staging-part {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 4px;
+  color: var(--paper);
+  background: rgba(20, 20, 20, 0.72);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.3;
+  pointer-events: none;
+}
 .staging-run { width: 100%; margin-top: 10px; min-height: 36px; cursor: pointer; font-size: 11px; font-weight: 700; }
 .staging-run[disabled] { cursor: default; }
 .material-shot-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }

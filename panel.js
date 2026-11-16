@@ -1953,27 +1953,148 @@ async function runMergeSummarize(force = false) {
 
 // —— 截图：一份暂存列表，两个提交动作 ——
 
-function readImageFile(file) {
+function readImageFile(file, label) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error(`读取 ${file.name} 失败。`));
+    reader.onerror = () => reject(new Error(`读取 ${label || file?.name || "图片"} 失败。`));
     reader.readAsDataURL(file);
   });
 }
 
 const ACCEPTED_SCREENSHOT_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
-// 截图不再缩放或转码，原始文件直接转 data URL 上传，保住长截图的文字清晰度。
+// 普通截图不缩放或转码，原始文件直接转 data URL 上传，保住文字清晰度；长截图在暂存时按原分辨率切段（见下）。
 // 但单条 chrome.runtime 消息没有官方文档的大小上限，走 Mojo IPC 序列化，实践中约 64 MB 处会直接失败
 // （Chromium issue 420956735；Tampermonkey #2285 同类问题靠分块规避）。本批 data URL 总长超过
 // 32 MB（留足 JSON 序列化余量）时提前拦下，提示分批识别，避免静默失败。
 const SCREENSHOT_MESSAGE_MAX_CHARS = 32 * 1024 * 1024;
 
+// —— 长截图自动切段 ——
+// 图片模型推理前会把整张图缩到约 1300×1300 总像素，整张超长截图里的文字会被缩到看不清；
+// 常见图片接口（含 README 推荐的 DeepSeek）还限制单边最长 8192 像素，超过会直接拒收。
+// 所以高度超过宽度 2.5 倍（或高度超过 8192 像素）的截图在本地按原分辨率切成有重叠的几段，
+// 复用截图提示词已有的「多张按顺序拼接、去掉重叠」规则；普通截图保持原样上传。
+const SCREENSHOT_SPLIT_RATIO = 2.5;
+const SCREENSHOT_MAX_SIDE = 8192;
+const SCREENSHOT_SPLIT_OVERLAP_RATIO = 0.08;
+const SCREENSHOT_SPLIT_OVERLAP_MIN = 120;
+// 与 service-worker.js 的 MAX_SCREENSHOT_IMAGES 保持一致：长截图切段后会占多张。
+const SCREENSHOT_BATCH_LIMIT = 8;
+
+// 返回每段的起始 y 与高度；不需要切段时返回 null。段间按比例重叠，避免文字行正好被切断。
+function planScreenshotSlices(width, height) {
+  if (!(width > 0) || !(height > 0)) return null;
+  if (height <= SCREENSHOT_MAX_SIDE && height <= width * SCREENSHOT_SPLIT_RATIO) return null;
+
+  const targetHeight = Math.max(1, Math.min(SCREENSHOT_MAX_SIDE, Math.round(width * SCREENSHOT_SPLIT_RATIO)));
+  const overlap = Math.min(
+    Math.max(SCREENSHOT_SPLIT_OVERLAP_MIN, Math.round(targetHeight * SCREENSHOT_SPLIT_OVERLAP_RATIO)),
+    Math.floor(targetHeight / 3)
+  );
+  let count = Math.max(2, Math.ceil((height - overlap) / (targetHeight - overlap)));
+  // 单张长图最多占满一批；切段再多也会超过后台的单次张数上限，反而无法提交。
+  if (count > SCREENSHOT_BATCH_LIMIT) count = SCREENSHOT_BATCH_LIMIT;
+  const sliceHeight = Math.ceil((height + (count - 1) * overlap) / count);
+  if (sliceHeight > SCREENSHOT_MAX_SIDE) {
+    throw new Error(`这张长图高 ${height} 像素，按单次最多 ${SCREENSHOT_BATCH_LIMIT} 段切分后每段仍超过 ${SCREENSHOT_MAX_SIDE} 像素，请先用其他工具拆分后再上传。`);
+  }
+  const slices = [];
+  for (let index = 0; index < count; index += 1) {
+    const y = index * (sliceHeight - overlap);
+    const partHeight = Math.min(sliceHeight, height - y);
+    if (partHeight <= 0) break;
+    slices.push({ y, height: partHeight });
+  }
+  return slices.length > 1 ? slices : null;
+}
+
+async function loadScreenshotBitmap(file) {
+  // 解不出尺寸（老浏览器或损坏文件）时退回原样上传，让接口报错，不在这里吞掉。
+  if (typeof createImageBitmap !== "function") return null;
+  try {
+    return await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+}
+
+function canvasToBlob(canvas, mime, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("长截图切段失败，请重试。"));
+    }, mime, quality);
+  });
+}
+
+async function splitScreenshotFile(file, bitmap, slices) {
+  // 保留源图的文本清晰度：PNG 仍出 PNG；JPEG / WebP 按高质量 JPEG 重新编码，避免切段后体积失控。
+  const mime = file.type === "image/png" ? "image/png" : "image/jpeg";
+  const quality = mime === "image/jpeg" ? 0.95 : undefined;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("当前浏览器无法切分长截图，请先把长图拆小后再上传。");
+  const dataUrls = [];
+  for (const slice of slices) {
+    canvas.width = bitmap.width;
+    canvas.height = slice.height;
+    // JPEG 不支持透明，先铺白底，避免透明区域变黑；PNG 保留原始透明通道。
+    if (mime === "image/jpeg") {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    context.drawImage(bitmap, 0, slice.y, bitmap.width, slice.height, 0, 0, bitmap.width, slice.height);
+    const blob = await canvasToBlob(canvas, mime, quality);
+    dataUrls.push(await readImageFile(blob, `${file.name || "剪贴板图片"}（第 ${dataUrls.length + 1}/${slices.length} 段）`));
+  }
+  return dataUrls;
+}
+
+function makeStagedScreenshot(name, dataUrl) {
+  return {
+    id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    dataUrl
+  };
+}
+
+// 单张文件 → 一条或多条暂存项。长图返回切段后的多张，并带上切段信息供界面提示。
+async function prepareScreenshotStaging(file) {
+  const label = file.name || "剪贴板图片";
+  const bitmap = await loadScreenshotBitmap(file);
+  if (bitmap) {
+    try {
+      // 自动切段只沿高度切；宽度超过单边上限时纵向切段帮不上忙，直接给出可操作的提示。
+      if (bitmap.width > SCREENSHOT_MAX_SIDE) {
+        throw new Error(`图片宽 ${bitmap.width} 像素，超过图片模型单边 ${SCREENSHOT_MAX_SIDE} 像素上限；自动切段只能沿高度切，请先缩小图片后再上传。`);
+      }
+      const slices = planScreenshotSlices(bitmap.width, bitmap.height);
+      if (slices) {
+        const dataUrls = await splitScreenshotFile(file, bitmap, slices);
+        const groupId = `shot-group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        return {
+          items: dataUrls.map((dataUrl, index) => ({
+            ...makeStagedScreenshot(`${label}（第 ${index + 1}/${dataUrls.length} 段）`, dataUrl),
+            groupId,
+            partIndex: index + 1,
+            partCount: dataUrls.length
+          })),
+          split: { label, width: bitmap.width, height: bitmap.height, count: dataUrls.length }
+        };
+      }
+    } finally {
+      bitmap.close?.();
+    }
+  }
+  return { items: [makeStagedScreenshot(label, await readImageFile(file))], split: null };
+}
+
 // 点击拖放区、Ctrl+V 粘贴或拖入的图片都进同一份暂存列表，凑齐后由按钮统一提交。
 async function stageScreenshotFiles(files) {
   if (!files?.length) return;
   const failures = [];
+  const splits = [];
   for (const file of files) {
     const label = file.name || "剪贴板图片";
     if (!ACCEPTED_SCREENSHOT_TYPES.includes(file.type)) {
@@ -1985,11 +2106,9 @@ async function stageScreenshotFiles(files) {
       continue;
     }
     try {
-      stagedScreenshots.push({
-        id: `shot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-        name: label,
-        dataUrl: await readImageFile(file)
-      });
+      const staged = await prepareScreenshotStaging(file);
+      stagedScreenshots.push(...staged.items);
+      if (staged.split) splits.push(staged.split);
     } catch (error) {
       failures.push(error?.message || `读取 ${label} 失败。`);
     }
@@ -1997,14 +2116,31 @@ async function stageScreenshotFiles(files) {
   renderStaging();
   if (failures.length) {
     showMaterialFeedback(failures[0], "error");
+  } else if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
+    showMaterialFeedback(
+      `暂存截图共 ${stagedScreenshots.length} 张（长截图切段后会占多张），超过单次识别上限 ${SCREENSHOT_BATCH_LIMIT} 张，请先移除部分截图（长截图会整组移除）。`,
+      "error"
+    );
+  } else if (splits.length) {
+    const parts = splits.reduce((sum, split) => sum + split.count, 0);
+    showMaterialFeedback(
+      splits.length === 1
+        ? `「${splits[0].label}」是长截图（${splits[0].width}×${splits[0].height}），已自动切成 ${splits[0].count} 段，识别时文字更清晰。`
+        : `已自动切分 ${splits.length} 张长截图，共 ${parts} 段，识别时文字更清晰。`
+    );
   }
 }
 
 function renderStaging() {
-  elements.materialStaging.innerHTML = stagedScreenshots.map((item) => (
-    `<li class="staging-item"><img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
-    `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="移除 ${escapeHtml(item.name)}">×</button></li>`
-  )).join("");
+  elements.materialStaging.innerHTML = stagedScreenshots.map((item) => {
+    const partBadge = item.partCount > 1
+      ? `<span class="staging-part">${item.partIndex}/${item.partCount}</span>`
+      : "";
+    // 长截图的分段缩略图共用一个移除按钮文案：点任意一段都移除整张图，避免只删中间段导致内容缺失。
+    const removeLabel = item.partCount > 1 ? `移除整张截图（${item.partCount} 段）` : `移除 ${item.name}`;
+    return `<li class="staging-item">${partBadge}<img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}">` +
+      `<button class="staging-remove" type="button" data-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(removeLabel)}">×</button></li>`;
+  }).join("");
   const count = stagedScreenshots.length;
   elements.materialStaging.hidden = count === 0;
   elements.materialShotActions.hidden = count === 0;
@@ -2095,6 +2231,12 @@ async function commitStagedScreenshots(mode) {
   const givenLink = screenshotLinkFromMaterialInput();
   try {
     const images = stagedScreenshots.map((item) => item.dataUrl);
+    // 长截图切段后张数会变多，先按后台的单次上限拦下，避免提交后才报错
+    if (stagedScreenshots.length > SCREENSHOT_BATCH_LIMIT) {
+      throw new Error(
+        `单次最多识别 ${SCREENSHOT_BATCH_LIMIT} 张截图（长截图自动切段后会占多张），当前暂存 ${stagedScreenshots.length} 张，请先移除部分截图或分批识别（长截图会整组移除）。`
+      );
+    }
     // 超过扩展消息的安全体积时提前拦下，不让后台静默失败
     const totalChars = images.reduce((sum, url) => sum + String(url).length, 0);
     if (totalChars > SCREENSHOT_MESSAGE_MAX_CHARS) throw new Error("截图总体积过大，请分批识别。");
@@ -2765,8 +2907,16 @@ elements.shotBasketButton.addEventListener("click", () => { void commitStagedScr
 elements.materialStaging.addEventListener("click", (event) => {
   const button = event.target?.closest?.(".staging-remove");
   if (!button) return;
-  stagedScreenshots = stagedScreenshots.filter((item) => item.id !== button.dataset?.id);
+  const target = stagedScreenshots.find((item) => item.id === button.dataset?.id);
+  if (!target) return;
+  // 长截图的分段共用一个 groupId：删掉任意一段就删整组，避免只删中间段导致识别内容缺失。
+  const removed = target.groupId
+    ? stagedScreenshots.filter((item) => item.groupId === target.groupId)
+    : [target];
+  const removedIds = new Set(removed.map((item) => item.id));
+  stagedScreenshots = stagedScreenshots.filter((item) => !removedIds.has(item.id));
   renderStaging();
+  if (removed.length > 1) showMaterialFeedback(`已移除整张长截图（${removed.length} 段）。`);
 });
 elements.materialDropzone.addEventListener("dragenter", (event) => {
   if (event.dataTransfer?.types?.includes("Files")) elements.materialDropzone.dataset.dragover = "true";
