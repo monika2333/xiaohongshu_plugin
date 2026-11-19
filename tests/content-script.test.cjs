@@ -446,7 +446,7 @@ function createDelayedDetailRoot({
 }
 
 // 与 captureFromPage 同构，但使用延迟挂载的详情根，并记录采集进度与耗时
-function captureFromDelayedPage(detailRoot, timing = {}, archiveRespond = null) {
+function captureFromDelayedPage(detailRoot, timing = {}, archiveRespond = null, extraContext = {}) {
   let messageListener;
   const progressMessages = [];
   const runtimeTypes = [];
@@ -483,7 +483,8 @@ function captureFromDelayedPage(detailRoot, timing = {}, archiveRespond = null) 
     },
     setTimeout,
     clearTimeout,
-    URL
+    URL,
+    ...extraContext
   };
   context.globalThis = context;
   vm.runInNewContext(
@@ -627,6 +628,30 @@ function captureFromDelayedPage(detailRoot, timing = {}, archiveRespond = null) 
   assert.equal(declinedRun.response.ok, true);
   assert.equal(declinedRun.response.payload.commentExport.extractedTopLevelCount, 1);
   assert.deepEqual(declinedRun.archiveMessages.map((item) => item.phase), ["start"]);
+
+  // 8) 窄窗口上下排列：.note-scroller 不再滚动，滚的是外层弹层；要滚外层才能加载出后面的评论，结束后恢复原位
+  {
+    const narrowRoot = createDelayedDetailRoot({ commentCount: 1 });
+    const note = narrowRoot.querySelector(".note-scroller");
+    const mask = { scrollTop: 0, scrollHeight: 3000, clientHeight: 800, dispatchEvent() {}, style: { overflowY: "auto", position: "fixed" } };
+    Object.assign(note, { scrollHeight: 2600, clientHeight: 2600, parentElement: mask, style: { overflowY: "visible", position: "static" } });
+    let maxMaskScroll = 0;
+    const commentParent = { querySelector: () => ({ id: "narrow", querySelector: () => null }), querySelectorAll: () => [] };
+    narrowRoot.querySelectorAll = (selector) => {
+      if (selector !== ".parent-comment") return [];
+      maxMaskScroll = Math.max(maxMaskScroll, mask.scrollTop);
+      // 外层滚动过才会冒出更多评论
+      return Array.from({ length: maxMaskScroll > 0 ? 3 : 1 }, () => commentParent);
+    };
+    const narrowRun = await captureFromDelayedPage(narrowRoot, { scrollWaitMs: 20 }, null, {
+      getComputedStyle: (element) => element.style || { overflowY: "visible", position: "static" }
+    }).run({ limit: 3 });
+    assert.equal(narrowRun.response.ok, true);
+    assert.equal(narrowRun.response.payload.commentExport.extractedTopLevelCount, 3, "应滚动外层弹层加载出更多评论");
+    assert.ok(maxMaskScroll > 0, "应滚动外层弹层而不是 .note-scroller");
+    assert.equal(note.scrollTop, 0);
+    assert.equal(mask.scrollTop, 0, "结束后恢复外层滚动位置");
+  }
 
   // 7) 未开启存档：不发任何截图请求
   const plainRun = await captureFromDelayedPage(createDelayedDetailRoot({ commentsDelayMs: 300 }), { scrollWaitMs: 30 }).run();

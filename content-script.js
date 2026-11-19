@@ -586,9 +586,32 @@
     };
   }
 
+  // 真正在滚的区域：宽窗口下是 .note-scroller 自己；窗口变窄、帖文改成上下排列后，.note-scroller 不再滚动，
+  // 滚的是外层容器或整个页面——只滚 .note-scroller 会以为「到底了」，评论只加载出第一页。
+  // 取自身或祖先中第一个设了滚动且内容超出的；都没有时，帖文不在固定定位的弹层里就用页面；
+  // 再不然退回第一个设了滚动的。与 archive.js 页面函数里的 resolveXhs 保持一致。
+  function resolveCommentScroller(note) {
+    if (!note || typeof getComputedStyle !== "function") return note;
+    const page = document.scrollingElement || document.documentElement;
+    const styled = (element) => /(auto|scroll|overlay)/.test(getComputedStyle(element).overflowY);
+    const overflowing = (element) => element.scrollHeight > element.clientHeight + 4;
+    let firstStyled = null;
+    let insideFixed = false;
+    for (let node = note; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+      if (styled(node)) {
+        if (overflowing(node)) return node;
+        firstStyled = firstStyled || node;
+      }
+      if (getComputedStyle(node).position === "fixed") insideFixed = true;
+    }
+    if (!insideFixed && page && overflowing(page)) return page;
+    return firstStyled || note;
+  }
+
   async function loadTopLevelComments(root, limit, archiveFrames = null) {
-    const scroller = await waitForCommentScroller(root, TIMING.commentAreaWaitMs);
-    if (!scroller) return { loaded: 0, reason: "comment_scroller_missing" };
+    const note = await waitForCommentScroller(root, TIMING.commentAreaWaitMs);
+    if (!note) return { loaded: 0, reason: "comment_scroller_missing" };
+    const scroller = resolveCommentScroller(note);
 
     const originalScrollTop = scroller.scrollTop;
     // 一条评论都没出现过时不急着判「到底了」：新开的页签里评论接口可能还没返回

@@ -419,12 +419,63 @@
   // —— 注入帖文页执行的函数（必须自包含） ——
 
   // 滚到 target（null 表示不滚），等可见图片加载，再量截取区域与吸顶/底栏遮挡。
-  // 小红书：截取帖文弹窗右侧的 .note-scroller；微博：页面整体滚动，截取正文所在的那一栏。
+  // 小红书：截取帖文所在的滚动区域（宽窗口是弹窗右侧的 .note-scroller；窄窗口上下排列时是外层容器或整个页面）；
+  // 微博：页面整体滚动，截取正文所在的那一栏。
+  // 返回的 scrollTop 是「截取区域上沿对应的滚动内容坐标」，target 也按这个坐标给。
   async function pageMeasure(mode, target) {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const isXhs = mode === "xhs";
-    const scroller = isXhs ? document.querySelector(".note-scroller") : document.scrollingElement;
-    if (!scroller) return { error: "页面上找不到帖文滚动区域" };
+    // 找真正在滚的区域：宽窗口下是 .note-scroller 自己；窗口变窄、帖文改成上下排列后，.note-scroller 不再滚动，
+    // 滚的是外层容器或整个页面。取自身或祖先中第一个设了滚动且内容超出的；都没有时，帖文不在固定定位的弹层里
+    // 就用页面；再不然退回第一个设了滚动的（内容没超出、不用滚）。本段在各页面函数里保持一致（页面函数必须自包含）。
+    const resolveXhs = () => {
+      const note = document.querySelector(".note-scroller");
+      if (!note) return null;
+      const page = document.scrollingElement || document.documentElement;
+      const styled = (element) => /(auto|scroll|overlay)/.test(getComputedStyle(element).overflowY);
+      const overflowing = (element) => element.scrollHeight > element.clientHeight + 4;
+      let firstStyled = null;
+      let insideFixed = false;
+      for (let node = note; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+        if (styled(node)) {
+          if (overflowing(node)) return { note, scroller: node, isPage: false };
+          firstStyled = firstStyled || node;
+        }
+        if (getComputedStyle(node).position === "fixed") insideFixed = true;
+      }
+      if (!insideFixed && page && overflowing(page)) return { note, scroller: page, isPage: true };
+      return { note, scroller: firstStyled || note, isPage: false };
+    };
+    // 截取区域：横向取帖文那一栏，纵向取滚动区域在屏幕上看得见的部分；originTop 是滚动内容坐标 0 在屏幕上的位置
+    const xhsFrame = ({ note, scroller, isPage }) => {
+      const viewWidth = document.documentElement.clientWidth;
+      const viewHeight = document.documentElement.clientHeight;
+      let originTop = 0;
+      let top = 0;
+      let bottom = viewHeight;
+      let left = 0;
+      let right = viewWidth;
+      if (!isPage) {
+        const box = scroller.getBoundingClientRect();
+        originTop = box.top + scroller.clientTop;
+        top = Math.max(0, originTop);
+        bottom = Math.min(viewHeight, originTop + scroller.clientHeight);
+        left = box.left + scroller.clientLeft;
+        right = left + scroller.clientWidth;
+      }
+      if (scroller !== note) {
+        const noteBox = note.getBoundingClientRect();
+        left = Math.max(left, noteBox.left);
+        right = Math.min(right, noteBox.right);
+      }
+      left = Math.max(0, left);
+      right = Math.min(viewWidth, right);
+      return {
+        rect: { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) },
+        originTop,
+        scrollTop: isPage ? window.scrollY : scroller.scrollTop
+      };
+    };
     const weiboColumn = () => {
       const tab = document.querySelector(".wbpro-tab3");
       const article = document.querySelector("article");
@@ -433,10 +484,19 @@
       while (node && node !== document.body && !node.contains(article)) node = node.parentElement;
       return node && node !== document.body ? node : null;
     };
+    const found = isXhs ? resolveXhs() : null;
+    if (isXhs && !found) return { error: "页面上找不到帖文滚动区域" };
+
     if (target != null) {
       if (isXhs) {
-        scroller.scrollTop = target;
-        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        const before = xhsFrame(found);
+        const value = Math.max(0, target - (before.rect.top - before.originTop));
+        if (found.isPage) {
+          window.scrollTo(0, value);
+        } else {
+          found.scroller.scrollTop = value;
+          found.scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        }
       } else {
         window.scrollTo(0, target);
       }
@@ -446,11 +506,14 @@
     let rect;
     let contentEnd;
     let column = null;
+    let originTop = 0;
+    let rawScrollTop = window.scrollY;
     if (isXhs) {
-      const box = scroller.getBoundingClientRect();
-      rect = { left: box.left + scroller.clientLeft, top: box.top + scroller.clientTop,
-        width: scroller.clientWidth, height: scroller.clientHeight };
-      contentEnd = scroller.scrollHeight;
+      const frame = xhsFrame(found);
+      rect = frame.rect;
+      originTop = frame.originTop;
+      rawScrollTop = frame.scrollTop;
+      contentEnd = found.scroller.scrollHeight;
     } else {
       const viewWidth = document.documentElement.clientWidth;
       const viewHeight = document.documentElement.clientHeight;
@@ -462,11 +525,11 @@
         contentEnd = box.bottom + window.scrollY;
       } else {
         rect = { left: 0, top: 0, width: viewWidth, height: viewHeight };
-        contentEnd = scroller.scrollHeight;
+        contentEnd = document.scrollingElement.scrollHeight;
       }
     }
 
-    const scope = isXhs ? scroller : (column || document.body);
+    const scope = isXhs ? found.note : (column || document.body);
     const deadline = Date.now() + 1500;
     while (Date.now() < deadline) {
       const pending = Array.from(scope.querySelectorAll("img")).some((img) => {
@@ -479,7 +542,8 @@
 
     // 吸顶/底栏：横跨截取区域一半以上、贴着上沿（或彼此相连）的固定元素都算遮挡
     const overlays = [];
-    for (const element of (isXhs ? scroller : document.body).querySelectorAll("*")) {
+    const overlayScope = isXhs && !found.isPage ? found.scroller : document.body;
+    for (const element of overlayScope.querySelectorAll("*")) {
       const position = getComputedStyle(element).position;
       if (position !== "sticky" && position !== "fixed") continue;
       const box = element.getBoundingClientRect();
@@ -499,6 +563,21 @@
         bottomInset = Math.max(bottomInset, rect.height - item.top);
       }
     }
+    // 弹层自己的顶栏、底栏不在滚动容器里，上面那步扫不到：按点命中找出盖在截取区域上下沿的东西
+    if (isXhs && !found.isPage && typeof document.elementFromPoint === "function") {
+      const xs = [0.3, 0.5, 0.7].map((fraction) => rect.left + rect.width * fraction);
+      const covered = (y) => xs.every((x) => {
+        const hit = document.elementFromPoint(x, y);
+        return Boolean(hit) && !found.scroller.contains(hit);
+      });
+      const limit = rect.height * 0.4;
+      let top = 0;
+      while (top < limit && covered(rect.top + top + 1)) top += 4;
+      let bottom = 0;
+      while (bottom < limit && covered(rect.top + rect.height - bottom - 2)) bottom += 4;
+      if (top < limit) inset = Math.max(inset, top);
+      if (bottom < limit) bottomInset = Math.max(bottomInset, bottom);
+    }
     if (inset + bottomInset >= rect.height * 0.8) {
       inset = 0;
       bottomInset = 0;
@@ -506,16 +585,16 @@
     // 锚点：评论区顶部与每条一级评论顶部的位置。边加载边截图时用来核对截图之后页面有没有错位
     let anchors = null;
     if (isXhs) {
-      const toY = (value) => value - rect.top + scroller.scrollTop;
-      const commentsBox = scroller.querySelector(".comments-container") || scroller.querySelector(".comments-el");
+      const toY = (value) => value - originTop + rawScrollTop;
+      const commentsBox = found.note.querySelector(".comments-container") || found.note.querySelector(".comments-el");
       anchors = {
         box: commentsBox ? toY(commentsBox.getBoundingClientRect().top) : null,
-        items: Array.from(scroller.querySelectorAll(".parent-comment")).slice(0, 80)
+        items: Array.from(found.note.querySelectorAll(".parent-comment")).slice(0, 80)
           .map((element) => toY(element.getBoundingClientRect().top))
       };
     }
     return {
-      scrollTop: isXhs ? scroller.scrollTop : window.scrollY,
+      scrollTop: isXhs ? rect.top - originTop + rawScrollTop : window.scrollY,
       contentEnd,
       rect,
       inset,
@@ -525,36 +604,196 @@
     };
   }
 
+  // 截图前后记下并恢复滚动位置（容器自身的 scrollTop，不经坐标换算）
   function pageScrollPosition(mode) {
-    if (mode === "xhs") return document.querySelector(".note-scroller")?.scrollTop ?? null;
-    return window.scrollY;
+    if (mode !== "xhs") return window.scrollY;
+    // 找真正在滚的区域：宽窗口下是 .note-scroller 自己；窗口变窄、帖文改成上下排列后，.note-scroller 不再滚动，
+    // 滚的是外层容器或整个页面。取自身或祖先中第一个设了滚动且内容超出的；都没有时，帖文不在固定定位的弹层里
+    // 就用页面；再不然退回第一个设了滚动的（内容没超出、不用滚）。本段在各页面函数里保持一致（页面函数必须自包含）。
+    const resolveXhs = () => {
+      const note = document.querySelector(".note-scroller");
+      if (!note) return null;
+      const page = document.scrollingElement || document.documentElement;
+      const styled = (element) => /(auto|scroll|overlay)/.test(getComputedStyle(element).overflowY);
+      const overflowing = (element) => element.scrollHeight > element.clientHeight + 4;
+      let firstStyled = null;
+      let insideFixed = false;
+      for (let node = note; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+        if (styled(node)) {
+          if (overflowing(node)) return { note, scroller: node, isPage: false };
+          firstStyled = firstStyled || node;
+        }
+        if (getComputedStyle(node).position === "fixed") insideFixed = true;
+      }
+      if (!insideFixed && page && overflowing(page)) return { note, scroller: page, isPage: true };
+      return { note, scroller: firstStyled || note, isPage: false };
+    };
+    // 截取区域：横向取帖文那一栏，纵向取滚动区域在屏幕上看得见的部分；originTop 是滚动内容坐标 0 在屏幕上的位置
+    const xhsFrame = ({ note, scroller, isPage }) => {
+      const viewWidth = document.documentElement.clientWidth;
+      const viewHeight = document.documentElement.clientHeight;
+      let originTop = 0;
+      let top = 0;
+      let bottom = viewHeight;
+      let left = 0;
+      let right = viewWidth;
+      if (!isPage) {
+        const box = scroller.getBoundingClientRect();
+        originTop = box.top + scroller.clientTop;
+        top = Math.max(0, originTop);
+        bottom = Math.min(viewHeight, originTop + scroller.clientHeight);
+        left = box.left + scroller.clientLeft;
+        right = left + scroller.clientWidth;
+      }
+      if (scroller !== note) {
+        const noteBox = note.getBoundingClientRect();
+        left = Math.max(left, noteBox.left);
+        right = Math.min(right, noteBox.right);
+      }
+      left = Math.max(0, left);
+      right = Math.min(viewWidth, right);
+      return {
+        rect: { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) },
+        originTop,
+        scrollTop: isPage ? window.scrollY : scroller.scrollTop
+      };
+    };
+    const found = resolveXhs();
+    if (!found) return null;
+    return found.isPage ? window.scrollY : found.scroller.scrollTop;
   }
 
   function pageRestoreScroll(mode, value) {
-    if (mode === "xhs") {
-      const scroller = document.querySelector(".note-scroller");
-      if (!scroller) return false;
-      scroller.scrollTop = value;
-      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    if (mode !== "xhs") {
+      window.scrollTo(0, value);
       return true;
     }
-    window.scrollTo(0, value);
+    // 找真正在滚的区域：宽窗口下是 .note-scroller 自己；窗口变窄、帖文改成上下排列后，.note-scroller 不再滚动，
+    // 滚的是外层容器或整个页面。取自身或祖先中第一个设了滚动且内容超出的；都没有时，帖文不在固定定位的弹层里
+    // 就用页面；再不然退回第一个设了滚动的（内容没超出、不用滚）。本段在各页面函数里保持一致（页面函数必须自包含）。
+    const resolveXhs = () => {
+      const note = document.querySelector(".note-scroller");
+      if (!note) return null;
+      const page = document.scrollingElement || document.documentElement;
+      const styled = (element) => /(auto|scroll|overlay)/.test(getComputedStyle(element).overflowY);
+      const overflowing = (element) => element.scrollHeight > element.clientHeight + 4;
+      let firstStyled = null;
+      let insideFixed = false;
+      for (let node = note; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+        if (styled(node)) {
+          if (overflowing(node)) return { note, scroller: node, isPage: false };
+          firstStyled = firstStyled || node;
+        }
+        if (getComputedStyle(node).position === "fixed") insideFixed = true;
+      }
+      if (!insideFixed && page && overflowing(page)) return { note, scroller: page, isPage: true };
+      return { note, scroller: firstStyled || note, isPage: false };
+    };
+    // 截取区域：横向取帖文那一栏，纵向取滚动区域在屏幕上看得见的部分；originTop 是滚动内容坐标 0 在屏幕上的位置
+    const xhsFrame = ({ note, scroller, isPage }) => {
+      const viewWidth = document.documentElement.clientWidth;
+      const viewHeight = document.documentElement.clientHeight;
+      let originTop = 0;
+      let top = 0;
+      let bottom = viewHeight;
+      let left = 0;
+      let right = viewWidth;
+      if (!isPage) {
+        const box = scroller.getBoundingClientRect();
+        originTop = box.top + scroller.clientTop;
+        top = Math.max(0, originTop);
+        bottom = Math.min(viewHeight, originTop + scroller.clientHeight);
+        left = box.left + scroller.clientLeft;
+        right = left + scroller.clientWidth;
+      }
+      if (scroller !== note) {
+        const noteBox = note.getBoundingClientRect();
+        left = Math.max(left, noteBox.left);
+        right = Math.min(right, noteBox.right);
+      }
+      left = Math.max(0, left);
+      right = Math.min(viewWidth, right);
+      return {
+        rect: { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) },
+        originTop,
+        scrollTop: isPage ? window.scrollY : scroller.scrollTop
+      };
+    };
+    const found = resolveXhs();
+    if (!found) return false;
+    if (found.isPage) {
+      window.scrollTo(0, value);
+    } else {
+      found.scroller.scrollTop = value;
+      found.scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
     return true;
   }
 
   // 评论区在滚动内容里的范围：从评论区顶部到第 limit 条一级评论底部（不足 limit 条时到评论区底部）
   function xhsCommentRange(limit) {
-    const scroller = document.querySelector(".note-scroller");
-    const box = scroller?.querySelector(".comments-container") || scroller?.querySelector(".comments-el");
-    if (!scroller || !box) return { error: "页面上找不到评论区" };
-    const scrollerBox = scroller.getBoundingClientRect();
-    const toY = (value) => value - scrollerBox.top - scroller.clientTop + scroller.scrollTop;
+    // 找真正在滚的区域：宽窗口下是 .note-scroller 自己；窗口变窄、帖文改成上下排列后，.note-scroller 不再滚动，
+    // 滚的是外层容器或整个页面。取自身或祖先中第一个设了滚动且内容超出的；都没有时，帖文不在固定定位的弹层里
+    // 就用页面；再不然退回第一个设了滚动的（内容没超出、不用滚）。本段在各页面函数里保持一致（页面函数必须自包含）。
+    const resolveXhs = () => {
+      const note = document.querySelector(".note-scroller");
+      if (!note) return null;
+      const page = document.scrollingElement || document.documentElement;
+      const styled = (element) => /(auto|scroll|overlay)/.test(getComputedStyle(element).overflowY);
+      const overflowing = (element) => element.scrollHeight > element.clientHeight + 4;
+      let firstStyled = null;
+      let insideFixed = false;
+      for (let node = note; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+        if (styled(node)) {
+          if (overflowing(node)) return { note, scroller: node, isPage: false };
+          firstStyled = firstStyled || node;
+        }
+        if (getComputedStyle(node).position === "fixed") insideFixed = true;
+      }
+      if (!insideFixed && page && overflowing(page)) return { note, scroller: page, isPage: true };
+      return { note, scroller: firstStyled || note, isPage: false };
+    };
+    // 截取区域：横向取帖文那一栏，纵向取滚动区域在屏幕上看得见的部分；originTop 是滚动内容坐标 0 在屏幕上的位置
+    const xhsFrame = ({ note, scroller, isPage }) => {
+      const viewWidth = document.documentElement.clientWidth;
+      const viewHeight = document.documentElement.clientHeight;
+      let originTop = 0;
+      let top = 0;
+      let bottom = viewHeight;
+      let left = 0;
+      let right = viewWidth;
+      if (!isPage) {
+        const box = scroller.getBoundingClientRect();
+        originTop = box.top + scroller.clientTop;
+        top = Math.max(0, originTop);
+        bottom = Math.min(viewHeight, originTop + scroller.clientHeight);
+        left = box.left + scroller.clientLeft;
+        right = left + scroller.clientWidth;
+      }
+      if (scroller !== note) {
+        const noteBox = note.getBoundingClientRect();
+        left = Math.max(left, noteBox.left);
+        right = Math.min(right, noteBox.right);
+      }
+      left = Math.max(0, left);
+      right = Math.min(viewWidth, right);
+      return {
+        rect: { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) },
+        originTop,
+        scrollTop: isPage ? window.scrollY : scroller.scrollTop
+      };
+    };
+    const found = resolveXhs();
+    const box = found?.note.querySelector(".comments-container") || found?.note.querySelector(".comments-el");
+    if (!found || !box) return { error: "页面上找不到评论区" };
+    const frame = xhsFrame(found);
+    const toY = (value) => value - frame.originTop + frame.scrollTop;
     const startY = toY(box.getBoundingClientRect().top);
-    const parents = Array.from(scroller.querySelectorAll(".parent-comment"));
+    const parents = Array.from(found.note.querySelectorAll(".parent-comment"));
     const endY = parents.length > limit
       ? toY(parents[limit - 1].getBoundingClientRect().bottom) + 16
       : toY(box.getBoundingClientRect().bottom);
-    return { startY, endY: Math.min(endY, scroller.scrollHeight), comments: Math.min(parents.length, limit) };
+    return { startY, endY: Math.min(endY, found.scroller.scrollHeight), comments: Math.min(parents.length, limit) };
   }
 
   function weiboCommentRange() {
@@ -642,7 +881,12 @@
         const canvas = new OffscreenCanvas(plan.width, part.height);
         const context = canvas.getContext("2d");
         for (const draw of part.draws) {
-          context.drawImage(decoded[draw.index].bitmap, draw.sx, draw.sy, draw.sw, draw.sh, 0, draw.dy, draw.sw, draw.sh);
+          const bitmap = decoded[draw.index].bitmap;
+          // 截取位置超出这一屏画面：说明测量出错，报错而不是静默拼出空白图
+          if (draw.sy < -1 || draw.sx < -1 || draw.sy + draw.sh > bitmap.height + 1 || draw.sx + draw.sw > bitmap.width + 1) {
+            throw new Error("评论区截取位置超出画面，未能拼接长截图。");
+          }
+          context.drawImage(bitmap, draw.sx, draw.sy, draw.sw, draw.sh, 0, draw.dy, draw.sw, draw.sh);
         }
         blobs.push(await canvas.convertToBlob({ type: "image/png" }));
       }

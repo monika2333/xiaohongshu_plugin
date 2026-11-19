@@ -257,6 +257,106 @@ async function settle(rounds = 20) {
     assert.equal(commentRange().startY, 811);
   }
 
+  // —— 页面测量：小红书窄窗口上下排列，.note-scroller 不再滚动，滚的是外层弹层 ——
+  {
+    const box = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+    const mask = {
+      style: { overflowY: "auto", position: "fixed" },
+      scrollTop: 0,
+      scrollHeight: 4000,
+      clientHeight: 900,
+      clientWidth: 885,
+      clientLeft: 0,
+      clientTop: 0,
+      getBoundingClientRect: () => box(0, 0, 900, 900),
+      dispatchEvent() {},
+      querySelectorAll: () => [],
+      contains: (node) => node === mask || node === note || node === inside
+    };
+    const commentsBox = { getBoundingClientRect: () => box(40, 1500 - mask.scrollTop, 820, 1000) };
+    const comments = [1600, 1700].map((top) => ({ getBoundingClientRect: () => box(40, top - mask.scrollTop, 820, 90) }));
+    const note = {
+      style: { overflowY: "visible", position: "static" },
+      scrollHeight: 3900,
+      clientHeight: 3900,
+      parentElement: mask,
+      getBoundingClientRect: () => box(40, 60 - mask.scrollTop, 820, 3900),
+      querySelector: (selector) => (selector === ".comments-container" ? commentsBox : null),
+      querySelectorAll: (selector) => (selector === ".parent-comment" ? comments : [])
+    };
+    const inside = {};
+    const header = { style: { position: "fixed" } };
+    const body = { querySelectorAll: () => [] };
+    mask.parentElement = body;
+    const pageContext = {
+      document: {
+        body,
+        documentElement: { clientWidth: 900, clientHeight: 900 },
+        scrollingElement: { scrollHeight: 900, clientHeight: 900 },
+        querySelector: (selector) => (selector === ".note-scroller" ? note : null),
+        // 弹层自带的顶栏（0–56px）盖在滚动区域上沿，不在滚动容器里
+        elementFromPoint: (x, y) => (y < 56 ? header : inside)
+      },
+      window: { scrollY: 0, innerWidth: 900, scrollTo() {} },
+      getComputedStyle: (node) => node.style || { overflowY: "visible", position: "static" },
+      Event: class {},
+      Date,
+      Math,
+      Array,
+      setTimeout
+    };
+    const { Archive } = loadArchive({});
+    vm.createContext(pageContext);
+    const measure = vm.runInContext(`(${Archive.pageMeasure.toString()})`, pageContext);
+    const geometry = await measure("xhs", 1000);
+    assert.equal(mask.scrollTop, 1000, "应滚动外层弹层");
+    deepEqual(geometry.rect, { left: 40, top: 0, width: 820, height: 900 });
+    assert.equal(geometry.scrollTop, 1000);
+    assert.equal(geometry.contentEnd, 4000);
+    assert.equal(geometry.inset, 56, "弹层顶栏盖住的部分算遮挡");
+    assert.equal(geometry.bottomInset, 0);
+    deepEqual(geometry.anchors, { box: 1500, items: [1600, 1700] });
+    const range = vm.runInContext(`(${Archive.xhsCommentRange.toString()})`, pageContext)(50);
+    deepEqual(range, { startY: 1500, endY: 2500, comments: 2 });
+
+    // 宽窗口：.note-scroller 自己在滚，照旧截它
+    note.scrollHeight = 5000;
+    note.clientHeight = 700;
+    note.clientWidth = 400;
+    note.clientLeft = 0;
+    note.clientTop = 0;
+    note.style = { overflowY: "auto", position: "static" };
+    note.scrollTop = 0;
+    note.dispatchEvent = () => {};
+    note.getBoundingClientRect = () => box(500, 100, 410, 700);
+    mask.scrollTop = 0;
+    pageContext.document.elementFromPoint = () => inside;
+    mask.contains = () => true;
+    note.contains = () => true;
+    const wide = await measure("xhs", 300);
+    assert.equal(note.scrollTop, 300);
+    assert.equal(mask.scrollTop, 0);
+    deepEqual(wide.rect, { left: 500, top: 100, width: 400, height: 700 });
+    assert.equal(wide.scrollTop, 300);
+  }
+
+  // —— 拼接防护：截取位置超出这一屏画面时报错，不再静默拼出空白图 ——
+  {
+    class FakeCanvas {
+      getContext() { return { drawImage() {} }; }
+      async convertToBlob() { return new Blob(["png"]); }
+    }
+    const { Archive } = loadArchive({}, {
+      createImageBitmap: async () => ({ width: 1000, height: 800, close() {} }),
+      OffscreenCanvas: FakeCanvas
+    });
+    const tall = { left: 0, top: 0, width: 500, height: 3000 };
+    await assert.rejects(
+      Archive.composeCommentFiles([{ dataUrl: PNG_DATA_URL, from: 0, to: 2000, scrollTop: 0, rect: tall, innerWidth: 500 }]),
+      /超出画面/
+    );
+  }
+
   // —— 截图流程：初始屏 + 评论区按屏截取拼接，结束后恢复滚动位置 ——
   async function runCapture({ activeAfter = Infinity, permission = true, rangeError = null } = {}) {
     const calls = { executed: [], captures: 0, restored: null, draws: [] };

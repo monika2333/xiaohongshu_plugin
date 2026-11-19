@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-19（v0.21.1 小红书截图存档改为边加载评论边截图，只滚一遍）
+> 最近更新：2026-11-19（v0.21.2 修窄窗口上下排列时评论只加载一页、评论区长截图全黑）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送、可选的截图存档（帖文页截图与配图存到用户自选文件夹）。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.21.1。更早的演进见 `git log`。
+- 当前版本：0.21.2。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -76,7 +76,7 @@
 - **截图原帖链接挂在暂存卡上**：暂存区有截图时，素材输入框一出现小红书链接（`input` 事件，含粘贴），或加完截图时输入框里已有链接，`maybeOfferShotLink` 就用链接选择区问「下面这组截图的原帖链接 / 另一条帖文，识别它」（`pendingLinkChoice.mode = "shot"`）；回车或「识别链接」在此状态下也先问、不解析。截图帖文没有帖子 ID，程序无从比对，所以只能让用户说，不按「同时摆着」去猜。截图全部移除时链接放回输入框。识别后才拿到的链接：解析出的 ID 对不上任何帖文、又有没链接的截图条目（含识别中的批次）时，`handleMaterialLink` 列出它们让用户选（`mode = "attach"`），不直接当新帖打开。
 - **截图加入合并的占位条目**：「识别并加入合并」点下去就把暂存截图搬进 `pendingShots`（面板内存，后台不知道），在合并概括末尾渲染「识别中…」条目，暂存区立刻清空；每批一个任务 `shot:merge:<pendingId>`，可并行。成功后后台返回新条目 `id`，识别期间才选定的链接用它补写；失败的条目可重试、放回暂存区或丢弃。有占位条目时合并按钮置灰（`refreshButtons` 与 `runMergeSummarize` 都判断 `pendingShots.length`），条数与 5 条名额都算上识别中的批次（面板 `MERGE_ITEM_LIMIT` 必须等于后台 `MAX_MERGE_ITEMS`，有测试断言）。后台合并条目的增删改都经 `withMergeBasketLock` 串行，避免并行识别完一起落地时读-改-写互相覆盖；测试的存储 mock 返回拷贝，才测得出这种覆盖。
 - **历史**：`chrome.storage.local`，最多 100 条，只存概括全文与元信息，不存评论和图片证据。
-- **截图存档**：一份存档对应一次采集，键为 `平台|帖子ID或shot-截图ID|exportedAt`（`archive.js` 的 `captureKey` 与 `service-worker.js` 的 `archiveCaptureKey` 同格式，测试对齐）。设置 `xhsAiArchiveSettingsV1`、索引 `xhsAiArchiveIndexV1`（`folder`、`key`、`files`、`historyIds`）、目录句柄在 IndexedDB `shuye-archive`。重新生成复用同一存档、只追加 historyId；合并结果带 `captureKeys` 关联各帖存档。存档只在有概括记录时写入（`flushArchiveJob` 无 historyId 时只置 `awaiting-summary`），因此索引里每个文件夹都至少关联过一条历史；删除历史按 `foldersToRelease` 只删不再被现存记录引用的文件夹；自动淘汰不删。微博评论区截图 10 屏封顶。截图只截前台页签，每屏前后都查 `tabs.get().active`，切走即停（不要放宽，否则会把别的页面存进存档）。文件夹授权必须在用户点击当下申请（`primeArchiveFolder`），浏览器重启后会再要一次。小红书截 `.note-scroller`，微博靠 `.wbpro-tab3` + `article` 定位正文栏。
+- **截图存档**：一份存档对应一次采集，键为 `平台|帖子ID或shot-截图ID|exportedAt`（`archive.js` 的 `captureKey` 与 `service-worker.js` 的 `archiveCaptureKey` 同格式，测试对齐）。设置 `xhsAiArchiveSettingsV1`、索引 `xhsAiArchiveIndexV1`（`folder`、`key`、`files`、`historyIds`）、目录句柄在 IndexedDB `shuye-archive`。重新生成复用同一存档、只追加 historyId；合并结果带 `captureKeys` 关联各帖存档。存档只在有概括记录时写入（`flushArchiveJob` 无 historyId 时只置 `awaiting-summary`），因此索引里每个文件夹都至少关联过一条历史；删除历史按 `foldersToRelease` 只删不再被现存记录引用的文件夹；自动淘汰不删。微博评论区截图 10 屏封顶。截图只截前台页签，每屏前后都查 `tabs.get().active`，切走即停（不要放宽，否则会把别的页面存进存档）。文件夹授权必须在用户点击当下申请（`primeArchiveFolder`），浏览器重启后会再要一次。小红书截「真正在滚的区域」：宽窗口是 `.note-scroller` 自己，窗口变窄帖文上下排列后 `.note-scroller` 不再滚动，滚的是外层弹层或页面——`content-script.js` 的 `resolveCommentScroller` 与 `archive.js` 页面函数里的 `resolveXhs` 用同一规则找它（页面函数必须自包含，`resolveXhs` 在四个页面函数里各有一份，改时要一起改）；截取区域横向取帖文那一栏、纵向取滚动区域在屏幕上看得见的部分，弹层自带的顶栏底栏靠 `elementFromPoint` 命中测试排除。拼接时截取位置超出画面直接报错，不再拼出空白图。微博靠 `.wbpro-tab3` + `article` 定位正文栏。
 - **消息来源校验**：`EXTENSION_PAGE_MESSAGES` 只接受插件页面发出的消息，内容脚本消息只接受来自帖文页的。新增消息要加入对应集合。`XHS_ARCHIVE_PAGE_READY` 与 `XHS_ARCHIVE_FRAME` 由面板直接接收（后台不处理），面板按发送页签与登记的 pageSessionId 校验；`XHS_ARCHIVE_FRAME` 只有发起采集的面板才回复（异步 sendResponse），其他面板不回。
 - **帖子 ID**：小红书为 24 位十六进制，取自 `/explore/<id>` 或 `/discovery/item/<id>`。微博为 `mblogid`；URL 路径是纯数字 mid 时视为无法解析。
 - **短链**：只支持 `xhslink.cn`。后台解析时不携带登录信息（`credentials: "omit"`），实测落到登录页，帖子 ID 在 `redirectPath` 参数里。
