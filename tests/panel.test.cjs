@@ -320,8 +320,8 @@ for (const id of [
   assert.match(panelHtml, new RegExp(`id="${id}"`), `panel.html 缺少 #${id}`);
 }
 // 面板的截图张数上限必须与后台一致：长截图切段后会按多张计算。
-assert.match(source, /const SCREENSHOT_BATCH_LIMIT = 8;/, "面板应声明截图张数上限 8");
-assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_SCREENSHOT_IMAGES = 8;/, "后台截图张数上限应与面板一致");
+assert.match(source, /const SCREENSHOT_BATCH_LIMIT = 20;/, "面板应声明截图张数上限 20");
+assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_SCREENSHOT_IMAGES = 20;/, "后台截图张数上限应与面板一致");
 // 识别中的截图批次也占合并名额：面板的上限必须与后台一致
 assert.match(source, /const MERGE_ITEM_LIMIT = 5;/, "面板应声明合并条目上限 5");
 assert.match(fs.readFileSync(path.join(__dirname, "..", "service-worker.js"), "utf8"), /const MAX_MERGE_ITEMS = 5;/, "后台合并条目上限应与面板一致");
@@ -2305,13 +2305,37 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   await switchChromeTab(7);
 
   // —— 长截图自动切段：按原分辨率切、相邻段有重叠；普通截图保持原样 ——
-  // 切段数学边界：2.5 倍宽高比、8192 像素高兜底、单张 8 段上限
+  // 切段数学边界：2.5 倍宽高比、单边 4096 像素上限（DeepSeek 一次 15 张及以上时的上限）、单张 20 段上限
+  const sliceOutputsWithin4096 = (slices) => slices.every((slice) => slice.outputWidth <= 4096 && slice.outputHeight <= 4096);
+  const sliceCoversTo = (slices, height) => slices[0].y === 0 && slices[slices.length - 1].y + slices[slices.length - 1].height === height;
   assert.equal(context.planScreenshotSlices(1080, 2700), null);
+  assert.equal(context.planScreenshotSlices(1080, 2400), null, "普通手机截图不切也不缩");
+  assert.equal(context.planScreenshotSlices(4096, 4096), null, "两边都在 4096 以内且不够长时不处理");
   assert.equal(context.planScreenshotSlices(1080, 2701).length, 2);
-  assert.equal(context.planScreenshotSlices(4000, 9000).length, 2, "宽高比不到 2.5 但高度超过 8192 也应切");
-  assert.equal(context.planScreenshotSlices(1080, 64024).length, 8, "单张最多切 8 段");
-  assert.throws(() => context.planScreenshotSlices(1080, 64025), /每段仍超过 8192 像素/);
-  assert.equal(context.planScreenshotSlices(9000, 5000), null, "宽图不切段，由暂存层单独拦下");
+  const tallTablet = context.planScreenshotSlices(2000, 4500);
+  assert.equal(tallTablet.length, 2, "宽高比不到 2.5 但高度超过 4096 也应切");
+  assert.ok(sliceOutputsWithin4096(tallTablet) && sliceCoversTo(tallTablet, 4500));
+  const tallWide = context.planScreenshotSlices(4000, 9000);
+  assert.equal(tallWide.length, 3);
+  assert.ok(sliceOutputsWithin4096(tallWide) && sliceCoversTo(tallWide, 9000));
+  // 1080 宽的长图约 7.8 万像素以内切满 20 段仍按原分辨率输出
+  const longest = context.planScreenshotSlices(1080, 77816);
+  assert.equal(longest.length, 20, "单张最多切 20 段");
+  assert.ok(longest.every((slice) => slice.outputWidth === 1080 && slice.outputHeight === slice.height), "段高在 4096 以内时不缩放");
+  assert.ok(sliceCoversTo(longest, 77816));
+  // 再长一点：段数已封顶，每段等比缩到 4096 以内，不报错、不要求用户拆图
+  const overLongest = context.planScreenshotSlices(1080, 77817);
+  assert.equal(overLongest.length, 20);
+  assert.ok(sliceOutputsWithin4096(overLongest) && sliceCoversTo(overLongest, 77817));
+  assert.deepEqual(
+    { height: overLongest[0].height, outputHeight: overLongest[0].outputHeight },
+    { height: 4097, outputHeight: 4096 },
+    "段数封顶后超出上限的段应等比缩小"
+  );
+  // 宽度超过 4096 但不够长：单段等比缩到 4096 宽
+  const wideOnly = context.planScreenshotSlices(9000, 5000);
+  assert.equal(wideOnly.length, 1);
+  assert.deepEqual({ ...wideOnly[0] }, { y: 0, height: 5000, outputWidth: 4096, outputHeight: 2276 });
 
   const longShotFile = {
     name: "long.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332,
@@ -2336,7 +2360,7 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
     assert.ok(drawnSlices[index].sy < drawnSlices[index - 1].sy + drawnSlices[index - 1].sh, "相邻两段应有重叠");
   }
   for (const slice of drawnSlices) {
-    assert.ok(slice.sh <= 8192, "每段高度不应超过模型单边上限");
+    assert.ok(slice.sh <= 4096, "每段高度不应超过模型单边上限");
     assert.equal(slice.sx, 0);
     assert.equal(slice.sw, 1080);
     assert.equal(slice.canvasWidth, 1080, "画布宽度应为原图宽度");
@@ -2441,48 +2465,75 @@ function basketItem(id, title, { kind = "live_page", platform = "xiaohongshu", l
   });
   context.createImageBitmap = savedCreateImageBitmap;
 
-  // 超长图切段后每段仍超过单边上限：暂存阶段直接提示，不进入识别
+  // 超长图切满 20 段后每段仍超过单边上限：各段等比缩到 4096 以内，照常暂存，不提示用户拆图
   drawnSlices.length = 0;
   elements["#material-file-input"].files = [{
-    name: "giant.png", type: "image/png", size: 1000, width: 1080, height: 70000,
+    name: "giant.png", type: "image/png", size: 1000, width: 1080, height: 100000,
     dataUrl: "data:image/png;base64,GIANT"
   }];
   await elements["#material-file-input"].listeners.change();
-  await settle(12);
-  assert.match(elements["#material-feedback"].textContent, /每段仍超过 8192 像素/);
+  await settle(40);
+  assert.equal(elements["#material-staging"].hidden, false);
+  assert.match(elements["#material-staging"].innerHTML, /长图 · 20 段/);
+  assert.match(elements["#material-feedback"].textContent, /识别时会自动切成 20 段上传/);
+  assert.equal(drawnSlices.length, 20);
+  assert.equal(drawnSlices[drawnSlices.length - 1].sy + drawnSlices[drawnSlices.length - 1].sh, 100000, "缩放后仍应覆盖到图片底部");
+  for (const slice of drawnSlices) {
+    assert.equal(slice.sw, 1080, "从源图取整行宽度");
+    assert.ok(slice.canvasWidth < 1080 && slice.canvasHeight <= 4096, "输出画布应等比缩到 4096 以内");
+  }
+  const giantId = elements["#material-staging"].innerHTML.match(/data-id="([^"]+)"/)[1];
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: giantId } } : null }
+  });
   assert.equal(elements["#material-staging"].hidden, true);
 
-  // 宽度超过单边上限的图无法靠纵向切段解决：暂存阶段直接提示缩小
+  // 宽度超过单边上限的图：等比缩到 4096 宽，仍是一张普通截图，不提示用户
+  drawnSlices.length = 0;
+  elements["#material-feedback"].textContent = "";
   elements["#material-file-input"].files = [{
     name: "wide.png", type: "image/png", size: 1000, width: 9000, height: 4000,
     dataUrl: "data:image/png;base64,WIDE"
   }];
   await elements["#material-file-input"].listeners.change();
   await settle();
-  assert.match(elements["#material-feedback"].textContent, /宽 9000 像素.*超过图片模型单边 8192 像素上限/);
+  assert.equal(elements["#material-staging"].hidden, false);
+  assert.doesNotMatch(elements["#material-staging"].innerHTML, /staging-part/);
+  assert.match(elements["#material-staging"].innerHTML, /data:image\/png;base64,SLICE-1/, "缩小后的图仍以 PNG 输出");
+  assert.equal(elements["#material-feedback"].textContent, "", "超宽图缩小不提示");
+  assert.equal(drawnSlices.length, 1);
+  assert.deepEqual(
+    { sw: drawnSlices[0].sw, sh: drawnSlices[0].sh, canvasWidth: drawnSlices[0].canvasWidth, canvasHeight: drawnSlices[0].canvasHeight },
+    { sw: 9000, sh: 4000, canvasWidth: 4096, canvasHeight: 1820 }
+  );
+  const wideId = elements["#material-staging"].innerHTML.match(/data-id="([^"]+)"/)[1];
+  elements["#material-staging"].listeners.click({
+    target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id: wideId } } : null }
+  });
   assert.equal(elements["#material-staging"].hidden, true);
 
-  // 切段后暂存超过单次上限 8 张：暂存时提示，提交前拦下且不发请求
+  // 切段后暂存超过单次上限 20 张：暂存时提示，提交前拦下且不发请求
   drawnSlices.length = 0;
   elements["#material-file-input"].files = [
-    { name: "long-a.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332, dataUrl: "data:image/jpeg;base64,A" },
-    { name: "long-b.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332, dataUrl: "data:image/jpeg;base64,B" },
+    { name: "long-a.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 20000, dataUrl: "data:image/jpeg;base64,A" },
+    { name: "long-b.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 20000, dataUrl: "data:image/jpeg;base64,B" },
+    { name: "long-c.jpg", type: "image/jpeg", size: 2000, width: 1080, height: 8332, dataUrl: "data:image/jpeg;base64,C" },
     { name: "normal2.png", type: "image/png", size: 1000, width: 1080, height: 2400, dataUrl: "data:image/png;base64,NORMAL2" }
   ];
   await elements["#material-file-input"].listeners.change();
-  await settle(20);
-  assert.match(elements["#shot-summarize-button"].textContent, /识别这 3 张截图并概括/);
-  assert.match(elements["#material-feedback"].textContent, /单次最多识别 8 张截图（长图自动切段后共 9 段）/);
+  await settle(40);
+  assert.match(elements["#shot-summarize-button"].textContent, /识别这 4 张截图并概括/);
+  assert.match(elements["#material-feedback"].textContent, /单次最多识别 20 张截图（长图自动切段后共 21 段）/);
   setRuntime(async () => ({ ok: true }));
   const overLimitClick = elements["#shot-summarize-button"].listeners.click();
   await settle();
   assert.equal(findRuntime("XHS_AI_SCREENSHOT_RECOGNIZE").length, 0);
   assert.equal(elements["#status-title"].textContent, "截图识别失败");
-  assert.match(elements["#status-detail"].textContent, /单次最多识别 8 张截图/);
+  assert.match(elements["#status-detail"].textContent, /单次最多识别 20 张截图/);
   await overLimitClick;
   await settle();
   const overLimitIds = [...elements["#material-staging"].innerHTML.matchAll(/data-id="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(overLimitIds.length, 3, "长截图按原图显示为一张卡片，普通截图各一张");
+  assert.equal(overLimitIds.length, 4, "长截图按原图显示为一张卡片，普通截图各一张");
   for (const id of overLimitIds) {
     elements["#material-staging"].listeners.click({
       target: { closest: (selector) => selector === ".staging-remove" ? { dataset: { id } } : null }

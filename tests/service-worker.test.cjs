@@ -83,11 +83,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.19.0");
+assert.equal(manifest.version, "0.20.0");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.19.0");
+assert.equal(packageJson.version, "0.20.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -1037,6 +1037,18 @@ const payload = {
   assert.equal(mergeDoneWorkflow.status, "done");
   assert.equal(mergeDoneWorkflow.result, null);
   assert.match(mergeDoneWorkflow.progress.detail, /3 条一级评论/);
+
+  // —— 截图单次上限 20 张（与面板 SCREENSHOT_BATCH_LIMIT 一致），超出时在调用模型前拦下 ——
+  const overLimitShots = await context.recognizeScreenshots({
+    images: Array.from({ length: 21 }, () => "data:image/png;base64,QUJD")
+  }).catch((error) => error);
+  assert.match(overLimitShots.message, /单次最多识别 20 张截图/);
+  // 截图识别超时随张数放宽：8 张以内 120 秒，每多一张加 10 秒，最多 240 秒
+  assert.equal(context.XhsAi.screenshotTimeoutMs(1), 120000);
+  assert.equal(context.XhsAi.screenshotTimeoutMs(8), 120000);
+  assert.equal(context.XhsAi.screenshotTimeoutMs(14), 180000);
+  assert.equal(context.XhsAi.screenshotTimeoutMs(20), 240000);
+  assert.equal(context.XhsAi.screenshotTimeoutMs(40), 240000);
 
   // —— 单条视图：截图识别后直接概括 ——
   await context.clearMergeBasket();

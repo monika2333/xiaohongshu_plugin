@@ -2136,24 +2136,39 @@ const SCREENSHOT_MESSAGE_MAX_CHARS = 32 * 1024 * 1024;
 
 // —— 长截图自动切段 ——
 // 图片模型推理前会把整张图缩到约 1300×1300 总像素，整张超长截图里的文字会被缩到看不清；
-// 常见图片接口（含 README 推荐的 DeepSeek）还限制单边最长 8192 像素，超过会直接拒收。
-// 所以高度超过宽度 2.5 倍（或高度超过 8192 像素）的截图在本地按原分辨率切成有重叠的几段，
+// 所以高度超过宽度 2.5 倍的截图在本地按原分辨率切成有重叠的几段（每段约一屏高），
 // 复用截图提示词已有的「多张按顺序拼接、去掉重叠」规则；普通截图保持原样上传。
+// DeepSeek 单边上限为 8192 像素，但同一请求达到 15 张及以上时降到 4096；暂存时还不知道本批最终几张，
+// 所以每段一律控制在 4096 以内：先多切几段，切到单张段数上限仍超出（或宽度本身超出）时才等比缩小该段。
+// 这一步缩小不损失可见信息：模型推理前本来就会把每张图缩到约 1300×1300 总像素，远小于 4096 边长。
 const SCREENSHOT_SPLIT_RATIO = 2.5;
-const SCREENSHOT_MAX_SIDE = 8192;
+const SCREENSHOT_MAX_SIDE = 4096;
 const SCREENSHOT_SPLIT_OVERLAP_RATIO = 0.08;
 const SCREENSHOT_SPLIT_OVERLAP_MIN = 120;
 // 与 service-worker.js 的 MAX_SCREENSHOT_IMAGES 保持一致：长截图切段后会占多张。
-const SCREENSHOT_BATCH_LIMIT = 8;
+const SCREENSHOT_BATCH_LIMIT = 20;
 // 与后台 MAX_MERGE_ITEMS 一致：识别中的截图批次也算名额，避免识别完才发现放不下
 const MERGE_ITEM_LIMIT = 5;
 
-// 返回每段的起始 y 与高度；不需要切段时返回 null。段间按比例重叠，避免文字行正好被切断。
+// 返回每段的源图起始 y、源图高度和输出尺寸；不需要处理时返回 null。段间按比例重叠，避免文字行正好被切断。
+// 只缩不切的情况（宽度超过上限、高度不长）返回单段。
 function planScreenshotSlices(width, height) {
   if (!(width > 0) || !(height > 0)) return null;
-  if (height <= SCREENSHOT_MAX_SIDE && height <= width * SCREENSHOT_SPLIT_RATIO) return null;
+  const isLong = height > width * SCREENSHOT_SPLIT_RATIO;
+  if (!isLong && width <= SCREENSHOT_MAX_SIDE && height <= SCREENSHOT_MAX_SIDE) return null;
 
-  const targetHeight = Math.max(1, Math.min(SCREENSHOT_MAX_SIDE, Math.round(width * SCREENSHOT_SPLIT_RATIO)));
+  // 宽度超过上限时整张按比例缩到上限宽，切段在源图上算，段高上限也按同一比例换算回源图像素。
+  const widthScale = Math.min(1, SCREENSHOT_MAX_SIDE / width);
+  const sourceMaxHeight = widthScale < 1 ? width : SCREENSHOT_MAX_SIDE;
+  const outputSize = (partHeight, scale) => ({
+    outputWidth: Math.max(1, Math.min(SCREENSHOT_MAX_SIDE, Math.round(width * scale))),
+    outputHeight: Math.max(1, Math.min(SCREENSHOT_MAX_SIDE, Math.round(partHeight * scale)))
+  });
+  if (height <= sourceMaxHeight && !isLong) {
+    return [{ y: 0, height, ...outputSize(height, widthScale) }];
+  }
+
+  const targetHeight = Math.max(1, Math.min(sourceMaxHeight, Math.round(width * SCREENSHOT_SPLIT_RATIO)));
   const overlap = Math.min(
     Math.max(SCREENSHOT_SPLIT_OVERLAP_MIN, Math.round(targetHeight * SCREENSHOT_SPLIT_OVERLAP_RATIO)),
     Math.floor(targetHeight / 3)
@@ -2162,17 +2177,16 @@ function planScreenshotSlices(width, height) {
   // 单张长图最多占满一批；切段再多也会超过后台的单次张数上限，反而无法提交。
   if (count > SCREENSHOT_BATCH_LIMIT) count = SCREENSHOT_BATCH_LIMIT;
   const sliceHeight = Math.ceil((height + (count - 1) * overlap) / count);
-  if (sliceHeight > SCREENSHOT_MAX_SIDE) {
-    throw new Error(`这张长图高 ${height} 像素，按单次最多 ${SCREENSHOT_BATCH_LIMIT} 段切分后每段仍超过 ${SCREENSHOT_MAX_SIDE} 像素，请先用其他工具拆分后再上传。`);
-  }
+  // 段数封顶后每段仍超过上限：各段等比缩小到上限内，不再要求用户自己拆图。
+  const scale = Math.min(widthScale, SCREENSHOT_MAX_SIDE / sliceHeight);
   const slices = [];
   for (let index = 0; index < count; index += 1) {
     const y = index * (sliceHeight - overlap);
     const partHeight = Math.min(sliceHeight, height - y);
     if (partHeight <= 0) break;
-    slices.push({ y, height: partHeight });
+    slices.push({ y, height: partHeight, ...outputSize(partHeight, scale) });
   }
-  return slices.length > 1 ? slices : null;
+  return slices;
 }
 
 async function loadScreenshotBitmap(file) {
@@ -2203,16 +2217,22 @@ async function splitScreenshotFile(file, bitmap, slices) {
   if (!context) throw new Error("当前浏览器无法切分长截图，请先把长图拆小后再上传。");
   const dataUrls = [];
   for (const slice of slices) {
-    canvas.width = bitmap.width;
-    canvas.height = slice.height;
+    const outputWidth = slice.outputWidth || bitmap.width;
+    const outputHeight = slice.outputHeight || slice.height;
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    // 画布尺寸变化会重置上下文状态，每段都要重新设置；只在需要缩小时才用到插值质量。
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
     // JPEG 不支持透明，先铺白底，避免透明区域变黑；PNG 保留原始透明通道。
     if (mime === "image/jpeg") {
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, canvas.width, canvas.height);
     }
-    context.drawImage(bitmap, 0, slice.y, bitmap.width, slice.height, 0, 0, bitmap.width, slice.height);
+    context.drawImage(bitmap, 0, slice.y, bitmap.width, slice.height, 0, 0, outputWidth, outputHeight);
     const blob = await canvasToBlob(canvas, mime, quality);
-    dataUrls.push(await readImageFile(blob, `${file.name || "剪贴板图片"}（第 ${dataUrls.length + 1}/${slices.length} 段）`));
+    const partLabel = slices.length > 1 ? `（第 ${dataUrls.length + 1}/${slices.length} 段）` : "";
+    dataUrls.push(await readImageFile(blob, `${file.name || "剪贴板图片"}${partLabel}`));
   }
   return dataUrls;
 }
@@ -2263,11 +2283,12 @@ async function prepareScreenshotStaging(file) {
   const bitmap = await loadScreenshotBitmap(file);
   if (bitmap) {
     try {
-      // 自动切段只沿高度切；宽度超过单边上限时纵向切段帮不上忙，直接给出可操作的提示。
-      if (bitmap.width > SCREENSHOT_MAX_SIDE) {
-        throw new Error(`图片宽 ${bitmap.width} 像素，超过图片模型单边 ${SCREENSHOT_MAX_SIDE} 像素上限；自动切段只能沿高度切，请先缩小图片后再上传。`);
-      }
       const slices = planScreenshotSlices(bitmap.width, bitmap.height);
+      // 只超宽、不够长的图：等比缩到单边上限内，仍是一张普通截图，不提示用户。
+      if (slices?.length === 1) {
+        const [dataUrl] = await splitScreenshotFile(file, bitmap, slices);
+        return { items: [makeStagedScreenshot(label, dataUrl)], split: null };
+      }
       if (slices) {
         const dataUrls = await splitScreenshotFile(file, bitmap, slices);
         const groupId = `shot-group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;

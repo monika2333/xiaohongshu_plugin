@@ -5,6 +5,11 @@
   const VISION_BATCH_SIZE = 3;
   // 与内容脚本的采集上限一致：进入模型证据的评论条数兜底上限。
   const COMMENT_LIMIT = 50;
+  // 截图识别一次请求要抄录整批截图，张数多时输出长、耗时长：8 张以内沿用 120 秒，每多一张加 10 秒，
+  // 最多 240 秒（MV3 后台处理单条消息约 5 分钟会被终止，留出余量）。
+  const SCREENSHOT_TIMEOUT_BASE_MS = 120000;
+  const SCREENSHOT_TIMEOUT_PER_EXTRA_IMAGE_MS = 10000;
+  const SCREENSHOT_TIMEOUT_MAX_MS = 240000;
 
   // 模型连接测试用的 32×32 纯红色 PNG：用来确认模型能否看图（只回答颜色）。
   const VISION_TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR42mO4IydHU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAJI2YD30P/0LAAAAAElFTkSuQmCC";
@@ -597,6 +602,11 @@
     return `发帖日期按上传当天换算为 ${resolved.display}`;
   }
 
+  function screenshotTimeoutMs(imageCount) {
+    const extra = Math.max(0, (Number(imageCount) || 0) - 8);
+    return Math.min(SCREENSHOT_TIMEOUT_MAX_MS, SCREENSHOT_TIMEOUT_BASE_MS + extra * SCREENSHOT_TIMEOUT_PER_EXTRA_IMAGE_MS);
+  }
+
   async function analyzeScreenshots(dataUrls, config, apiKey) {
     if (!Array.isArray(dataUrls) || !dataUrls.length) throw new Error("没有可识别的截图。");
     const prompts = resolvePrompts(config);
@@ -614,7 +624,8 @@
         { role: "system", content: prompts.screenshotSystem },
         { role: "user", content }
       ],
-      temperature: 0
+      temperature: 0,
+      timeoutMs: screenshotTimeoutMs(dataUrls.length)
     });
     return normalizeScreenshotExtraction(parseJsonResponse(raw), dataUrls.length);
   }
@@ -1211,6 +1222,7 @@
     buildScreenshotPayload,
     screenshotDateNotice,
     analyzeScreenshots,
+    screenshotTimeoutMs,
     visionCacheKey,
     textCacheKey,
     mergedTextCacheKey,
