@@ -104,6 +104,8 @@ const archiveState = {
   capturing: null,
   captureQueue: Promise.resolve(),
   priming: null,
+  // tabId → 边加载边截的截图会话（小红书）：采集脚本每滚一步请求截一帧
+  live: new Map(),
   // 采集响应先于截图信号到达时暂存（「加入清单」没有模型调用，响应可能很快），信号到了再收尾
   pendingFinalize: new Map()
 };
@@ -3293,12 +3295,137 @@ function handleArchiveReady(message, sender) {
   const key = Archive.captureKey(message.payload);
   if (!key) return;
   const job = createArchiveJob(key, message.payload, tabId, { fromBasket: expected.fromBasket });
-  job.screenshotPromise = queueArchiveScreens(job);
+  const live = archiveState.live.get(tabId);
+  if (live && live.pageSessionId === message.pageSessionId) {
+    // 小红书：截图已经在加载评论的那一遍里做了，这里等拼接结果
+    archiveState.live.delete(tabId);
+    if (!live.closed) failLiveCapture(live, new Error("截图被中断。回到帖文页签后可点「重新截图」。"));
+    job.screenshotPromise = live.done.then((outcome) => {
+      job.screens = outcome.files;
+      job.warnings = outcome.warnings || [];
+      job.screenshotError = outcome.error || null;
+      if (job.state === "capturing") job.state = job.finalized ? "saving" : "captured";
+      renderArchiveStatus();
+    });
+  } else {
+    // 微博（采集不滚动页面），或边加载边截没能启动：单独滚一遍截图
+    job.screenshotPromise = queueArchiveScreens(job);
+  }
   const pending = archiveState.pendingFinalize.get(key);
   if (pending) {
     archiveState.pendingFinalize.delete(key);
     void finalizeArchive(pending.payload, pending.result);
   }
+}
+
+// —— 边加载边截（小红书） ——
+// 采集脚本加载评论时每滚一步发 XHS_ARCHIVE_FRAME：start（截初始屏）→ frame（原地截一帧）→ end（核对错位、补截缺口）。
+// 侧边栏截完才回复，采集脚本收到回复才继续滚动；拼接在回复 end 之后进行，不耽误采集。
+function handleArchiveFrame(message, sender, sendResponse) {
+  const tabId = sender?.tab?.id;
+  if (!Archive || !Number.isInteger(tabId) || typeof sendResponse !== "function") return false;
+  if (sender?.id && chrome.runtime?.id && sender.id !== chrome.runtime.id) return false;
+  const expected = archiveState.expected.get(tabId);
+  if (!expected || expected.pageSessionId !== message.pageSessionId) return false;
+  runLiveCapturePhase(tabId, message)
+    .then((response) => sendResponse(response), () => sendResponse({ ok: false }));
+  return true;
+}
+
+// 占住截图队列，直到本次会话结束（同一时间只能截一个前台页签）
+function acquireCaptureSlot() {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const ready = archiveState.captureQueue.then(() => {});
+  archiveState.captureQueue = ready.then(() => held);
+  return ready.then(() => release);
+}
+
+function closeLiveCapture(live) {
+  if (live.closed) return;
+  live.closed = true;
+  live.release?.();
+  if (archiveState.capturing?.key === live.key) archiveState.capturing = null;
+  renderArchiveBanner();
+}
+
+function failLiveCapture(live, error) {
+  closeLiveCapture(live);
+  live.resolveDone({ files: live.files.slice(), warnings: live.warnings, error: error?.message || "截图失败。" });
+}
+
+async function runLiveCapturePhase(tabId, message) {
+  if (message.phase === "start") {
+    const stale = archiveState.live.get(tabId);
+    if (stale && !stale.closed) failLiveCapture(stale, new Error("截图被新的采集打断。"));
+    let resolveDone;
+    const live = {
+      key: `live:${tabId}`,
+      tabId,
+      pageSessionId: message.pageSessionId,
+      frames: [],
+      files: [],
+      warnings: [],
+      closed: false,
+      release: null,
+      done: new Promise((resolve) => { resolveDone = resolve; }),
+      resolveDone: null
+    };
+    live.resolveDone = resolveDone;
+    archiveState.live.set(tabId, live);
+    live.release = await acquireCaptureSlot();
+    setArchiveCapturing(live, "正在截取帖文初始屏");
+    try {
+      const first = await Archive.liveStart(tabId);
+      live.files.push(first.file);
+      live.frames.push(first.frame);
+      setArchiveCapturing(live, "正在边加载评论边截图");
+      return { ok: true };
+    } catch (error) {
+      failLiveCapture(live, error);
+      return { ok: false };
+    }
+  }
+
+  const live = archiveState.live.get(tabId);
+  if (!live || live.closed || live.pageSessionId !== message.pageSessionId) return { ok: false };
+  if (message.phase === "frame") {
+    try {
+      live.frames.push(await Archive.liveFrame(tabId));
+      setArchiveCapturing(live, `正在边加载评论边截图（第 ${live.frames.length} 屏）`);
+      return { ok: true };
+    } catch (error) {
+      failLiveCapture(live, error);
+      return { ok: false };
+    }
+  }
+  if (message.phase === "end") {
+    let finished;
+    try {
+      setArchiveCapturing(live, "正在核对评论区截图");
+      finished = await Archive.liveFinish(tabId, live.frames, LIMIT,
+        (screen) => setArchiveCapturing(live, `正在补截评论区（第 ${screen} 屏）`));
+    } catch (error) {
+      failLiveCapture(live, error);
+      return { ok: false };
+    }
+    closeLiveCapture(live);
+    // 页面上的活已经干完：先回复让采集脚本恢复滚动、继续概括，再在侧边栏里拼接
+    void (async () => {
+      try {
+        const commentFiles = await Archive.composeCommentFiles(finished.segments);
+        live.resolveDone({ files: [...live.files, ...commentFiles], warnings: finished.warnings, error: null });
+      } catch (error) {
+        live.resolveDone({
+          files: live.files.slice(),
+          warnings: finished.warnings,
+          error: `拼接评论区长截图失败：${error?.message || "未知错误"}`
+        });
+      }
+    })();
+    return { ok: true };
+  }
+  return { ok: false };
 }
 
 // 同一时间只能截一个页签（截的是前台画面），多个任务排队
@@ -3406,6 +3533,11 @@ async function finalizeArchive(payload, result = null) {
 // 采集成功但概括失败：截图与配图先留在内存，重新生成成功、有了概括记录后再写入
 function finalizeArchiveForTab(tabId) {
   archiveState.expected.delete(tabId);
+  const live = archiveState.live.get(tabId);
+  if (live) {
+    archiveState.live.delete(tabId);
+    if (!live.closed) failLiveCapture(live, new Error("采集未完成，截图已停止。"));
+  }
   for (const job of archiveState.jobs.values()) {
     if (job.tabId === tabId && !job.finalizing) void finalizeArchive(job.payload, null);
   }
@@ -3701,6 +3833,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "XHS_ARCHIVE_PAGE_READY") {
     handleArchiveReady(message, sender);
     return false;
+  }
+  if (message?.type === "XHS_ARCHIVE_FRAME") {
+    return handleArchiveFrame(message, sender, sendResponse);
   }
   if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
   if (message?.type === "XHS_AI_MERGE_PROGRESS" && tasks.has("merge")) {

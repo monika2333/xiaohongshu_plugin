@@ -551,7 +551,42 @@
     return scroller;
   }
 
-  async function loadTopLevelComments(root, limit) {
+  // 截图存档开启时，加载评论的同一遍滚动里顺带截图：每滚一步、等过新评论后请侧边栏截一帧，
+  // 侧边栏截完才回复，避免截图时页面还在动。侧边栏没回应、截图出错或超时就停止请求，评论照常加载。
+  const ARCHIVE_TIMEOUTS = { start: 30000, frame: 15000, end: 90000 };
+
+  function createArchiveFrameHook(rawOptions) {
+    if (!rawOptions?.archive) return null;
+    let active = false;
+    let ended = false;
+    async function send(phase) {
+      try {
+        const response = await Promise.race([
+          chrome.runtime.sendMessage({ type: "XHS_ARCHIVE_FRAME", pageSessionId: PAGE_SESSION_ID, phase }),
+          sleep(ARCHIVE_TIMEOUTS[phase]).then(() => null)
+        ]);
+        return Boolean(response?.ok);
+      } catch {
+        return false;
+      }
+    }
+    return {
+      async start() {
+        active = await send("start");
+      },
+      async frame() {
+        if (active && !ended) active = await send("frame");
+      },
+      // 收尾时侧边栏会补截缺口，必须在恢复滚动位置之前完成
+      async end() {
+        if (ended) return;
+        ended = true;
+        if (active) await send("end");
+      }
+    };
+  }
+
+  async function loadTopLevelComments(root, limit, archiveFrames = null) {
     const scroller = await waitForCommentScroller(root, TIMING.commentAreaWaitMs);
     if (!scroller) return { loaded: 0, reason: "comment_scroller_missing" };
 
@@ -583,6 +618,7 @@
         scroller.scrollTop = nextScrollTop;
         scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
         await sleep(TIMING.scrollWaitMs + (stableRounds > 1 ? 450 : 0));
+        if (archiveFrames) await archiveFrames.frame();
 
         const atBottom = maxScrollTop - scroller.scrollTop < 8;
         if (atBottom && stableRounds >= 4) {
@@ -596,6 +632,7 @@
       if (loaded < limit && reason === "limit_reached") reason = "round_limit";
       return { loaded, reason };
     } finally {
+      if (archiveFrames) await archiveFrames.end();
       scroller.scrollTop = originalScrollTop;
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     }
@@ -693,7 +730,11 @@
     // 再分发图片识别与滚动读评论，避免把「还没加载出来」当成「没有」。
     await waitForInteractionEvidence(root, TIMING.interactionReadyWaitMs);
     if (typeof onVisionSeed === "function") onVisionSeed(buildVisionSeed(root, videoEvidence));
-    const loadingResult = await loadTopLevelComments(root, options.limit);
+    const archiveFrames = createArchiveFrameHook(rawOptions);
+    if (archiveFrames) await archiveFrames.start();
+    const loadingResult = await loadTopLevelComments(root, options.limit, archiveFrames);
+    // 找不到评论区时 loadTopLevelComments 不会走到收尾，这里补一次，让侧边栏结束截图
+    if (archiveFrames) await archiveFrames.end();
     await sendProgress("正在整理证据", "汇总正文、互动数据、媒体和评论", Math.min(options.limit, loadingResult.loaded));
 
     const payload = extractNote(root, options, loadingResult, videoEvidence);

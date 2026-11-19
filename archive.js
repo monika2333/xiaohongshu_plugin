@@ -130,6 +130,51 @@
     return { width, height, parts };
   }
 
+  // 边加载边截的一帧是否还能用：截图时位于这一帧底边以上的锚点（评论区顶部、各条评论顶部），
+  // 到最后都必须原地不动。上方内容变高（图片晚加载等）会让它们整体下移，这一帧就作废、改为补截。
+  function frameStillValid(frame, finalAnchors, tolerance = 1.5) {
+    const bottom = frame.scrollTop + frame.rect.height;
+    const checks = [];
+    if (frame.anchors?.box != null) checks.push([frame.anchors.box, finalAnchors?.box]);
+    (frame.anchors?.items || []).forEach((y, index) => checks.push([y, finalAnchors?.items?.[index]]));
+    for (const [captured, final] of checks) {
+      if (captured > bottom + 1) continue;
+      if (final == null || Math.abs(final - captured) > tolerance) return false;
+    }
+    return true;
+  }
+
+  // 用已有的帧覆盖 [startY, endY]：每一段取能看到该位置、且往下看得最远的那一帧；
+  // 没有帧覆盖的部分记为缺口，由调用方补截。
+  function planCoverage(frames, startY, endY) {
+    const views = (frames || []).map((frame, index) => ({
+      index,
+      top: frame.scrollTop + (frame.inset || 0),
+      bottom: frame.scrollTop + frame.rect.height - (frame.bottomInset || 0)
+    }));
+    const segments = [];
+    const gaps = [];
+    let y = startY;
+    while (y < endY - 0.5) {
+      let best = null;
+      for (const view of views) {
+        if (view.top <= y + 0.5 && view.bottom > y + 0.5 && (!best || view.bottom > best.bottom)) best = view;
+      }
+      if (best) {
+        const to = Math.min(best.bottom, endY);
+        segments.push({ index: best.index, from: y, to });
+        y = to;
+        continue;
+      }
+      const next = views.filter((view) => view.top > y + 0.5)
+        .reduce((nearest, view) => Math.min(nearest, view.top), endY);
+      const gapEnd = Math.min(next, endY);
+      gaps.push({ from: y, to: gapEnd });
+      y = gapEnd;
+    }
+    return { segments, gaps };
+  }
+
   // 删除历史后哪些存档文件夹可以删：被删记录引用、且不再被任何现存记录引用的才删。
   // 只被已自动淘汰的旧记录引用的文件夹不在此列（淘汰时保留存档）。
   function foldersToRelease(index, removedIds, existingIds) {
@@ -458,13 +503,25 @@
       inset = 0;
       bottomInset = 0;
     }
+    // 锚点：评论区顶部与每条一级评论顶部的位置。边加载边截图时用来核对截图之后页面有没有错位
+    let anchors = null;
+    if (isXhs) {
+      const toY = (value) => value - rect.top + scroller.scrollTop;
+      const commentsBox = scroller.querySelector(".comments-container") || scroller.querySelector(".comments-el");
+      anchors = {
+        box: commentsBox ? toY(commentsBox.getBoundingClientRect().top) : null,
+        items: Array.from(scroller.querySelectorAll(".parent-comment")).slice(0, 80)
+          .map((element) => toY(element.getBoundingClientRect().top))
+      };
+    }
     return {
       scrollTop: isXhs ? scroller.scrollTop : window.scrollY,
       contentEnd,
       rect,
       inset,
       bottomInset,
-      innerWidth: window.innerWidth
+      innerWidth: window.innerWidth,
+      anchors
     };
   }
 
@@ -595,6 +652,84 @@
     }
   }
 
+  // —— 边加载边截（小红书）：采集脚本每滚一步请侧边栏截一帧，收尾时核对错位、补截缺口 ——
+
+  function frameFromGeometry(geometry, dataUrl) {
+    return {
+      dataUrl,
+      scrollTop: geometry.scrollTop,
+      rect: geometry.rect,
+      inset: geometry.inset,
+      bottomInset: geometry.bottomInset,
+      innerWidth: geometry.innerWidth,
+      anchors: geometry.anchors
+    };
+  }
+
+  // 开始：滚到顶截帖文初始屏，这一屏同时作为第一帧
+  async function liveStart(tabId) {
+    if (!(await hasCapturePermission())) throw new Error(PERMISSION_MESSAGE);
+    const geometry = await inPage(tabId, pageMeasure, ["xhs", 0]);
+    if (!geometry || geometry.error) throw new Error(geometry?.error || "无法测量页面");
+    const dataUrl = await captureTab(tabId);
+    return {
+      file: { name: FILE_NAMES.firstScreen, blob: await dataUrlToBlob(dataUrl) },
+      frame: frameFromGeometry(geometry, dataUrl)
+    };
+  }
+
+  // 采集脚本滚完一步、等过新评论之后：不再滚动，原地截一帧
+  async function liveFrame(tabId) {
+    const geometry = await inPage(tabId, pageMeasure, ["xhs", null]);
+    if (!geometry || geometry.error) throw new Error(geometry?.error || "无法测量页面");
+    return frameFromGeometry(geometry, await captureTab(tabId));
+  }
+
+  // 收尾（评论已加载完、采集脚本还没恢复滚动位置）：定评论区范围，丢掉错位的帧，补截缺口
+  async function liveFinish(tabId, frames, limit = 50, onTopUp) {
+    const warnings = [];
+    const range = await inPage(tabId, xhsCommentRange, [limit]);
+    if (!range || range.error) {
+      return { segments: [], warnings: [`评论区未截取：${range?.error || "页面没有返回评论区位置"}`], topUp: 0, reused: 0 };
+    }
+    if (range.endY - range.startY < 4) return { segments: [], warnings: ["该帖没有可截取的评论。"], topUp: 0, reused: 0 };
+    const final = await inPage(tabId, pageMeasure, ["xhs", null]);
+    if (!final || final.error) throw new Error(final?.error || "无法测量页面");
+    const valid = (frames || []).filter((frame) => frameStillValid(frame, final.anchors));
+    const plan = planCoverage(valid, range.startY, range.endY);
+    const segments = plan.segments.map((segment) => {
+      const frame = valid[segment.index];
+      return {
+        dataUrl: frame.dataUrl,
+        from: segment.from,
+        to: segment.to,
+        scrollTop: frame.scrollTop,
+        rect: frame.rect,
+        innerWidth: frame.innerWidth
+      };
+    });
+    let topUp = 0;
+    for (const gap of plan.gaps) {
+      const long = await captureLong(tabId, "xhs", gap.from, gap.to, MAX_XHS_COMMENT_SCREENS, () => {
+        topUp += 1;
+        if (typeof onTopUp === "function") onTopUp(topUp);
+      });
+      segments.push(...long.segments);
+      if (long.endY < gap.to - 0.5) warnings.push("评论区有一段没有截到。");
+    }
+    segments.sort((a, b) => a.from - b.from);
+    return { segments, warnings, topUp, reused: plan.segments.length };
+  }
+
+  async function composeCommentFiles(segments) {
+    if (!segments?.length) return [];
+    const parts = await composeLong(segments, segments[0].from, segments[segments.length - 1].to);
+    return parts.map((blob, index) => ({
+      name: parts.length === 1 ? `${FILE_NAMES.comments}.png` : `${FILE_NAMES.comments}-${index + 1}.png`,
+      blob
+    }));
+  }
+
   // 截帖文初始屏与评论区长截图。评论已由采集脚本加载好，这里只滚动与截取，结束后恢复滚动位置。
   async function captureScreens({ tabId, platform, limit = 50, onProgress } = {}) {
     if (!(await hasCapturePermission())) throw new Error(PERMISSION_MESSAGE);
@@ -662,6 +797,8 @@
     planComposite,
     foldersToRelease,
     entriesForHistory,
+    frameStillValid,
+    planCoverage,
     isSupported,
     getSettings,
     setSettings,
@@ -682,6 +819,10 @@
     collectMediaFiles,
     screenshotFiles,
     captureScreens,
+    liveStart,
+    liveFrame,
+    liveFinish,
+    composeCommentFiles,
     // 以下供测试使用
     pageMeasure,
     xhsCommentRange,

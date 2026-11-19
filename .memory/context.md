@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-19（v0.21.0 截图存档：帖文初始屏、评论区长截图与配图原图存到自选文件夹）
+> 最近更新：2026-11-19（v0.21.1 小红书截图存档改为边加载评论边截图，只滚一遍）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送、可选的截图存档（帖文页截图与配图存到用户自选文件夹）。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.21.0。更早的演进见 `git log`。
+- 当前版本：0.21.1。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -45,7 +45,7 @@
 2. **合并**：清单条目的 payload 存在 `chrome.storage.session`，合并时按发帖时间排序后一次性交给文字模型，再由 `renderMergedSummary` 渲染；运行中改过清单链接时同样先 deferred，面板按当前清单原地重渲染后再推送一次。
 3. **截图**：普通截图以原始文件、原始尺寸、原始格式上传；长截图（高度超过宽度 ×2.5 或高度超过 4096 像素）在面板暂存时按原分辨率带重叠切段（单张最多 20 段；PNG 源仍出 PNG，JPEG / WebP 转高质量 JPEG），段间重叠交给截图提示词已有的「多张按顺序拼接、去掉重叠」规则；单边超过 4096 的段或截图等比缩小，不提示用户。切段后的一批受源文件单张 12 MB、本批 data URL 总长 32 MB、单次最多 20 张限制，识别超时随张数放宽（`screenshotTimeoutMs`，最多 240 秒） → 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板只带暂存卡上挂着的链接（`stagedShotLink`，随消息 `sourceUrl` 带入，落到 payload 的 `source.url`），不再从输入框顺带读取；微博链接挂不上（截图管线只覆盖小红书）。
 4. **链接**：`XHS_AI_RESOLVE_LINK` 把链接解析为「平台 + 帖子 ID」→ 与当前页签、清单条目比对 → 命中就补链接，没命中就开新页签采集，解析失败就让用户手动选择。新页签只在 `detailReady`（标题渲染）后就开采集，因此小红书采集端自带就绪等待（`content-script.js` 的 `TIMING`，测试可用 `__XHS_CAPTURE_TIMING__` 缩短）：互动数或评论总数出现才继续，评论区挂载与首条评论各有等待上限；「共 0 条评论」立即结束，超时记 `comment_load_timeout` 并向 `uncertainties` 写「评论未能读取」。
-5. **存档**（设置开启时）：面板发采集消息带 `options.archive` 并登记 tabId → pageSessionId；内容脚本采集完（评论已加载、滚动位置已恢复）发 `XHS_ARCHIVE_PAGE_READY`（含 payload）后照常进入概括，面板只响应自己登记过的信号，排队截图（与模型调用并行）→ 采集响应后下载配图 → 有了概括记录（单条完成 / 合并完成按 `captureKeys` / 重新生成）才写入 `<存放文件夹>/<时间_平台_标题_ID尾>/` → 索引记 `historyIds`。加入清单与概括失败的存档在内存里等待（`awaiting-summary`），移出或清空清单即丢弃。
+5. **存档**（设置开启时）：面板发采集消息带 `options.archive` 并登记 tabId → pageSessionId。小红书边加载边截：`content-script.js` 加载评论前发 `XHS_ARCHIVE_FRAME` start（面板滚到顶截初始屏，兼作第一帧），每滚一步、等过新评论后发 frame（面板原地截一帧并记锚点），收尾在恢复滚动位置前发 end（面板按锚点丢掉错位帧、补截缺口，回复后再拼接）；每步都等面板回复才继续，面板不回或出错就停止请求、评论照常加载。采集完发 `XHS_ARCHIVE_PAGE_READY`（含 payload）后照常进入概括；面板只响应自己登记过的页签，有边加载边截的结果就直接用，否则（微博、或没能启动）排队单独滚一遍截图（与模型调用并行）→ 采集响应后下载配图 → 有了概括记录（单条完成 / 合并完成按 `captureKeys` / 重新生成）才写入 `<存放文件夹>/<时间_平台_标题_ID尾>/` → 索引记 `historyIds`。加入清单与概括失败的存档在内存里等待（`awaiting-summary`），移出或清空清单即丢弃。
 
 ## 关键约定（改代码前必读）
 
@@ -77,7 +77,7 @@
 - **截图加入合并的占位条目**：「识别并加入合并」点下去就把暂存截图搬进 `pendingShots`（面板内存，后台不知道），在合并概括末尾渲染「识别中…」条目，暂存区立刻清空；每批一个任务 `shot:merge:<pendingId>`，可并行。成功后后台返回新条目 `id`，识别期间才选定的链接用它补写；失败的条目可重试、放回暂存区或丢弃。有占位条目时合并按钮置灰（`refreshButtons` 与 `runMergeSummarize` 都判断 `pendingShots.length`），条数与 5 条名额都算上识别中的批次（面板 `MERGE_ITEM_LIMIT` 必须等于后台 `MAX_MERGE_ITEMS`，有测试断言）。后台合并条目的增删改都经 `withMergeBasketLock` 串行，避免并行识别完一起落地时读-改-写互相覆盖；测试的存储 mock 返回拷贝，才测得出这种覆盖。
 - **历史**：`chrome.storage.local`，最多 100 条，只存概括全文与元信息，不存评论和图片证据。
 - **截图存档**：一份存档对应一次采集，键为 `平台|帖子ID或shot-截图ID|exportedAt`（`archive.js` 的 `captureKey` 与 `service-worker.js` 的 `archiveCaptureKey` 同格式，测试对齐）。设置 `xhsAiArchiveSettingsV1`、索引 `xhsAiArchiveIndexV1`（`folder`、`key`、`files`、`historyIds`）、目录句柄在 IndexedDB `shuye-archive`。重新生成复用同一存档、只追加 historyId；合并结果带 `captureKeys` 关联各帖存档。存档只在有概括记录时写入（`flushArchiveJob` 无 historyId 时只置 `awaiting-summary`），因此索引里每个文件夹都至少关联过一条历史；删除历史按 `foldersToRelease` 只删不再被现存记录引用的文件夹；自动淘汰不删。微博评论区截图 10 屏封顶。截图只截前台页签，每屏前后都查 `tabs.get().active`，切走即停（不要放宽，否则会把别的页面存进存档）。文件夹授权必须在用户点击当下申请（`primeArchiveFolder`），浏览器重启后会再要一次。小红书截 `.note-scroller`，微博靠 `.wbpro-tab3` + `article` 定位正文栏。
-- **消息来源校验**：`EXTENSION_PAGE_MESSAGES` 只接受插件页面发出的消息，内容脚本消息只接受来自帖文页的。新增消息要加入对应集合。`XHS_ARCHIVE_PAGE_READY` 由面板直接接收（后台不处理），面板按发送页签与登记的 pageSessionId 校验。
+- **消息来源校验**：`EXTENSION_PAGE_MESSAGES` 只接受插件页面发出的消息，内容脚本消息只接受来自帖文页的。新增消息要加入对应集合。`XHS_ARCHIVE_PAGE_READY` 与 `XHS_ARCHIVE_FRAME` 由面板直接接收（后台不处理），面板按发送页签与登记的 pageSessionId 校验；`XHS_ARCHIVE_FRAME` 只有发起采集的面板才回复（异步 sendResponse），其他面板不回。
 - **帖子 ID**：小红书为 24 位十六进制，取自 `/explore/<id>` 或 `/discovery/item/<id>`。微博为 `mblogid`；URL 路径是纯数字 mid 时视为无法解析。
 - **短链**：只支持 `xhslink.cn`。后台解析时不携带登录信息（`credentials: "omit"`），实测落到登录页，帖子 ID 在 `redirectPath` 参数里。
 

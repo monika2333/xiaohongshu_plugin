@@ -360,6 +360,81 @@ async function settle(rounds = 20) {
     assert.match(result.warnings[0], /评论区未截取：页面上找不到评论区/);
   }
 
+  // —— 边加载边截：帧校验、覆盖规划与收尾补截 ——
+  {
+    const { Archive } = loadArchive({});
+    const rect = { left: 600, top: 80, width: 400, height: 700 };
+    // 截图后上方没变：有效；截图时可见的评论在最后下移了 50px：作废；截图时还没出现的评论不影响
+    const frame = { scrollTop: 800, rect, anchors: { box: 900, items: [1000, 1300, 1600] } };
+    assert.equal(Archive.frameStillValid(frame, { box: 900, items: [1000, 1300, 1600, 1900] }), true);
+    assert.equal(Archive.frameStillValid(frame, { box: 900, items: [1000, 1350, 1650] }), false);
+    assert.equal(Archive.frameStillValid({ ...frame, anchors: { box: 900, items: [1000, 1300, 2600] } }, { box: 900, items: [1000, 1300, 2700] }), true,
+      "截图时位于这一帧下方的评论移动不影响这一帧");
+    assert.equal(Archive.frameStillValid(frame, { box: 950, items: [1050, 1350, 1650] }), false, "评论区整体下移，这一帧作废");
+    assert.equal(Archive.frameStillValid(frame, { box: 900, items: [1000] }), false, "截图时可见的评论消失了，这一帧作废");
+
+    const plan = Archive.planCoverage([
+      { scrollTop: 800, rect, inset: 0, bottomInset: 0 },
+      { scrollTop: 1300, rect, inset: 0, bottomInset: 0 },
+      { scrollTop: 2400, rect, inset: 0, bottomInset: 0 }
+    ], 900, 3000);
+    deepEqual(plan.segments, [
+      { index: 0, from: 900, to: 1500 },
+      { index: 1, from: 1500, to: 2000 },
+      { index: 2, from: 2400, to: 3000 }
+    ]);
+    deepEqual(plan.gaps, [{ from: 2000, to: 2400 }]);
+    deepEqual(Archive.planCoverage([], 900, 1200).gaps, [{ from: 900, to: 1200 }]);
+  }
+
+  {
+    // 收尾：A、C 两帧仍有效，B 截完后上方评论下移了 50px（作废），B 的位置补截一屏
+    const rect = { left: 600, top: 80, width: 400, height: 700 };
+    const finalAnchors = { box: 900, items: [1000, 1300, 1650, 2050] };
+    const frames = [
+      { dataUrl: "A", scrollTop: 800, rect, inset: 0, bottomInset: 0, innerWidth: 1000, anchors: { box: 900, items: [1000, 1300] } },
+      { dataUrl: "B", scrollTop: 1374, rect, inset: 0, bottomInset: 0, innerWidth: 1000, anchors: { box: 900, items: [1000, 1300, 1600] } },
+      { dataUrl: "C", scrollTop: 1948, rect, inset: 0, bottomInset: 0, innerWidth: 1000, anchors: { box: 900, items: [1000, 1300, 1650, 2050] } }
+    ];
+    let captures = 0;
+    let scrollTop = 1948;
+    const chromeMock = {
+      permissions: { contains: async () => true },
+      windows: { get: async () => ({ state: "normal" }) },
+      tabs: {
+        get: async (tabId) => ({ id: tabId, windowId: 1, active: true }),
+        captureVisibleTab: async () => { captures += 1; return PNG_DATA_URL; }
+      },
+      scripting: {
+        executeScript: async ({ func, args }) => {
+          if (func.name === "xhsCommentRange") return [{ result: { startY: 900, endY: 2600, comments: 4 } }];
+          if (func.name === "pageMeasure") {
+            if (args[1] != null) scrollTop = Math.max(0, Math.min(3000 - 700, args[1]));
+            return [{ result: { scrollTop, contentEnd: 3000, rect, inset: 0, bottomInset: 0, innerWidth: 1000, anchors: finalAnchors } }];
+          }
+          return [{ result: null }];
+        }
+      }
+    };
+    const { Archive } = loadArchive(chromeMock);
+    const topUps = [];
+    const finished = await Archive.liveFinish(7, frames, 50, (screen) => topUps.push(screen));
+    assert.equal(finished.reused, 2);
+    assert.equal(finished.topUp, 1);
+    deepEqual(topUps, [1]);
+    assert.equal(captures, 1, "只补截作废那一帧的位置");
+    deepEqual(finished.segments.map((segment) => [segment.dataUrl === PNG_DATA_URL ? "补" : segment.dataUrl, segment.from, segment.to]), [
+      ["A", 900, 1500], ["补", 1500, 1948], ["C", 1948, 2600]
+    ]);
+    deepEqual(finished.warnings, []);
+
+    // 帧都有效时一屏都不补
+    captures = 0;
+    const allValid = await Archive.liveFinish(7, [frames[0], { ...frames[1], anchors: { box: 900, items: [1000, 1300, 1650] } }, frames[2]], 50);
+    assert.equal(allValid.topUp, 0);
+    assert.equal(captures, 0);
+  }
+
   // —— 写文件、重名、删除与索引 ——
   {
     const storage = createStorage();
@@ -431,6 +506,14 @@ async function settle(rounds = 20) {
     let tabsRemoved = null;
     let mergeCaptureCount = 0;
     let failNextSummary = false;
+    let liveNext = false;
+    const liveCalls = [];
+    const livePayload = { ...payload, exportedAt: "2026-11-19T08:00:00.000Z" };
+    const askFrame = (phase, sender = { tab: { id: 7 } }) => new Promise((resolve) => {
+      const keep = runtimeListener({ type: "XHS_ARCHIVE_FRAME", pageSessionId: "ps-7", phase }, sender, resolve);
+      if (keep !== true) resolve(null);
+    });
+    const framePhases = [];
     const RETRY_TEXT = ["★ 重试标题", "重试正文"].join("\n");
     const retryPayload = { ...payload, exportedAt: "2026-11-19T07:00:00.000Z" };
     let lastMergeKey = null;
@@ -483,6 +566,14 @@ async function settle(rounds = 20) {
               // 重新生成：复用失败时留下的 payload，不再采集
               return { ok: true, result: { ...result, text: RETRY_TEXT, historyId: "hist-retry" }, capture: message.payload };
             }
+            if (message.type === "XHS_CAPTURE_AND_SUMMARIZE" && liveNext) {
+              liveNext = false;
+              // 小红书采集脚本：加载评论时每滚一步请侧边栏截一帧，收尾后才恢复滚动、发截图信号
+              assert.equal(await askFrame("frame", { tab: { id: 8 } }), null, "别的页签的截图请求不响应");
+              for (const phase of ["start", "frame", "frame", "end"]) framePhases.push([phase, (await askFrame(phase))?.ok]);
+              runtimeListener({ type: "XHS_ARCHIVE_PAGE_READY", pageSessionId: "ps-7", payload: livePayload }, { tab: { id: 7 } }, () => {});
+              return { ok: true, result: { ...result, historyId: "hist-live" }, capture: livePayload };
+            }
             if (message.type === "XHS_CAPTURE_AND_SUMMARIZE" && failNextSummary) {
               failNextSummary = false;
               runtimeListener({ type: "XHS_ARCHIVE_PAGE_READY", pageSessionId: "ps-7", payload: retryPayload }, { tab: { id: 7 } }, () => {});
@@ -532,7 +623,20 @@ async function settle(rounds = 20) {
           warnings: []
         };
       },
-      collectMediaFiles: async () => ({ files: [{ name: "配图-01.jpg", blob: new Blob(["img"]) }], failed: 0 })
+      collectMediaFiles: async () => ({ files: [{ name: "配图-01.jpg", blob: new Blob(["img"]) }], failed: 0 }),
+      liveStart: async (tabId) => {
+        liveCalls.push(["start", tabId]);
+        return { file: { name: real.FILE_NAMES.firstScreen, blob: new Blob(["first"]) }, frame: { scrollTop: 0 } };
+      },
+      liveFrame: async (tabId) => {
+        liveCalls.push(["frame", tabId]);
+        return { scrollTop: liveCalls.length * 500 };
+      },
+      liveFinish: async (tabId, frames) => {
+        liveCalls.push(["finish", tabId, frames.length]);
+        return { segments: [{ from: 900, to: 1500 }], warnings: [], topUp: 0, reused: 1 };
+      },
+      composeCommentFiles: async (segments) => [{ name: `${real.FILE_NAMES.comments}.png`, blob: new Blob([`long-${segments.length}`]) }]
     };
     await storage.local.set({ [real.SETTINGS_KEY]: { enabled: true } });
     vm.runInContext(fs.readFileSync(path.join(root, "panel.js"), "utf8"), context, { filename: "panel.js" });
@@ -649,6 +753,26 @@ async function settle(rounds = 20) {
     deepEqual(retryIndex.historyIds, ["hist-retry"]);
     const retryFolder = rootDir.entries.get(retryIndex.folder);
     assert.equal(await retryFolder.entries.get("概括.txt").data.text(), RETRY_TEXT);
+
+    // 小红书边加载边截：截图在加载评论那一遍完成，不再单独滚一遍
+    tabsRemoved(7);
+    await tabsActivated({ tabId: 7 });
+    await settle();
+    liveNext = true;
+    const secondPassBefore = captureCalls.length;
+    await elements["#extract-button"].listeners.click();
+    await settle(40);
+    deepEqual(framePhases, [["start", true], ["frame", true], ["frame", true], ["end", true]]);
+    deepEqual(liveCalls, [["start", 7], ["frame", 7], ["frame", 7], ["finish", 7, 3]]);
+    assert.equal(captureCalls.length, secondPassBefore, "边加载边截时不再单独滚一遍截图");
+    const liveIndex = (await real.getIndex()).find((entry) => entry.key.endsWith(livePayload.exportedAt));
+    deepEqual(liveIndex.historyIds, ["hist-live"]);
+    const liveFolder = rootDir.entries.get(liveIndex.folder);
+    deepEqual([...liveFolder.entries.keys()].sort(), [
+      "01-帖文初始屏.png", "02-评论区长截图.png", "概括.txt", "配图-01.jpg", "采集数据.json"
+    ].sort());
+    assert.equal(await liveFolder.entries.get("02-评论区长截图.png").data.text(), "long-1");
+    assert.equal(elements["#archive-banner"].hidden, true);
   }
 
   // —— 关闭存档：采集消息不带 archive 标记，不截图 ——

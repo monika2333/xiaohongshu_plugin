@@ -446,9 +446,11 @@ function createDelayedDetailRoot({
 }
 
 // 与 captureFromPage 同构，但使用延迟挂载的详情根，并记录采集进度与耗时
-function captureFromDelayedPage(detailRoot, timing = {}) {
+function captureFromDelayedPage(detailRoot, timing = {}, archiveRespond = null) {
   let messageListener;
   const progressMessages = [];
+  const runtimeTypes = [];
+  const archiveMessages = [];
   const document = {
     title: "清华听涛园食堂异物 - 小红书",
     querySelector: (selector) => selector === "#noteContainer" ? detailRoot : null
@@ -457,7 +459,12 @@ function captureFromDelayedPage(detailRoot, timing = {}) {
     runtime: {
       onMessage: { addListener(listener) { messageListener = listener; } },
       sendMessage: async (message) => {
+        runtimeTypes.push(message.type);
         if (message.type === "XHS_EXPORT_PROGRESS") progressMessages.push(message);
+        if (message.type === "XHS_ARCHIVE_FRAME") {
+          archiveMessages.push({ phase: message.phase, scrollTop: detailRoot.querySelector(".note-scroller")?.scrollTop ?? null });
+          return archiveRespond ? archiveRespond(message) : { ok: true };
+        }
         return { ok: true };
       }
     },
@@ -491,11 +498,11 @@ function captureFromDelayedPage(detailRoot, timing = {}) {
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("delayed capture response timed out")), 8000);
         const keepChannelOpen = messageListener(
-          { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: options?.limit ?? 1 } },
+          { type: "XHS_CAPTURE_FOR_MERGE", options: { limit: options?.limit ?? 1, ...(options?.archive ? { archive: true } : {}) } },
           {},
           (response) => {
             clearTimeout(timeout);
-            resolve({ response, progressMessages, elapsedMs: Date.now() - startedAt });
+            resolve({ response, progressMessages, runtimeTypes, archiveMessages, elapsedMs: Date.now() - startedAt });
           }
         );
         assert.equal(keepChannelOpen, true);
@@ -597,6 +604,33 @@ function captureFromDelayedPage(detailRoot, timing = {}) {
   assert.equal(slowRun.response.payload.uncertainties, undefined);
   assert.ok(slowRun.progressMessages.some((message) => message.detail === "已加载 0 条一级评论"), "等待期间应如实上报 0 条");
   assert.ok(slowRun.progressMessages.some((message) => message.detail === "已加载 1 条一级评论"));
+
+  // 5) 截图存档开启：加载评论的同一遍滚动里请侧边栏截图——先 start，每滚一步 frame，
+  //    收尾 end 在恢复滚动位置之前，最后才发截图信号与采集结果
+  const archived = captureFromDelayedPage(createDelayedDetailRoot({ commentsDelayMs: 300 }), { scrollWaitMs: 30 });
+  const archivedRun = await archived.run({ archive: true });
+  assert.equal(archivedRun.response.ok, true);
+  const phases = archivedRun.archiveMessages.map((item) => item.phase);
+  assert.equal(phases[0], "start");
+  assert.equal(phases[phases.length - 1], "end");
+  assert.ok(phases.filter((phase) => phase === "frame").length >= 1, "每滚一步都应请求截一帧");
+  assert.equal(phases.filter((phase) => phase === "end").length, 1);
+  const endMessage = archivedRun.archiveMessages[archivedRun.archiveMessages.length - 1];
+  const lastFrame = archivedRun.archiveMessages.filter((item) => item.phase === "frame").pop();
+  assert.equal(endMessage.scrollTop, lastFrame.scrollTop, "收尾时还没恢复滚动位置（侧边栏要在这时补截）");
+  const types = archivedRun.runtimeTypes;
+  assert.ok(types.lastIndexOf("XHS_ARCHIVE_FRAME") < types.indexOf("XHS_ARCHIVE_PAGE_READY"), "截图信号在收尾之后");
+
+  // 6) 侧边栏没接（start 未获 ok）：不再请求截图，评论照常加载
+  const declined = captureFromDelayedPage(createDelayedDetailRoot({ commentsDelayMs: 300 }), { scrollWaitMs: 30 }, () => ({ ok: false }));
+  const declinedRun = await declined.run({ archive: true });
+  assert.equal(declinedRun.response.ok, true);
+  assert.equal(declinedRun.response.payload.commentExport.extractedTopLevelCount, 1);
+  assert.deepEqual(declinedRun.archiveMessages.map((item) => item.phase), ["start"]);
+
+  // 7) 未开启存档：不发任何截图请求
+  const plainRun = await captureFromDelayedPage(createDelayedDetailRoot({ commentsDelayMs: 300 }), { scrollWaitMs: 30 }).run();
+  assert.equal(plainRun.archiveMessages.length, 0);
 
   console.log("content-script tests passed");
 })().catch((error) => {

@@ -83,14 +83,14 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.0");
+assert.equal(manifest.version, "0.21.1");
 // v0.21.0 截图存档：「所有网站」只作为可选权限，开启存档时才申请；安装时的权限不变
 assert.ok(manifest.optional_host_permissions.includes("<all_urls>"), "截图存档需要可选的 <all_urls>");
 assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能出现在安装时的 host_permissions");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.0");
+assert.equal(packageJson.version, "0.21.1");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
