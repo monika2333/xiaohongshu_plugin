@@ -59,6 +59,13 @@
       }).catch(() => null);
     }
 
+    // 侧边栏开启了截图存档：采集（含评论加载）一结束就通知它开始截图，与随后的模型调用并行。
+    // 只通知、不等待；携带 payload 是为了概括失败时侧边栏也能把截图与配图存下来。
+    function announceArchiveReady(rawOptions, payload) {
+      if (!rawOptions?.archive || !payload?.source) return;
+      chrome.runtime.sendMessage({ type: "XHS_ARCHIVE_PAGE_READY", pageSessionId, payload }).catch(() => {});
+    }
+
     async function runCaptureAndSummarize(rawOptions, suppliedPayload, force, givenUrl) {
       let payload = suppliedPayload || null;
       let visionPreparationPromise = null;
@@ -68,6 +75,7 @@
         payload = (await runCapture(rawOptions, (visionSeed) => {
           visionPreparationPromise = startVisionPreparation(visionSeed);
         })).payload;
+        announceArchiveReady(rawOptions, payload);
       }
       // 链接概括流：概括输出与历史沿用用户提供的链接（如 xhslink.cn 短链），
       // 页面自身的 location.href 保留在 source.url，供后台校验与页签匹配使用。
@@ -94,6 +102,7 @@
       const captured = await runCapture(rawOptions, (visionSeed) => {
         visionPreparationPromise = startVisionPreparation(visionSeed);
       });
+      announceArchiveReady(rawOptions, captured.payload);
       if (visionPreparationPromise) await visionPreparationPromise;
 
       const payload = captured.payload;

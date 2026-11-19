@@ -83,11 +83,14 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.20.0");
+assert.equal(manifest.version, "0.21.0");
+// v0.21.0 截图存档：「所有网站」只作为可选权限，开启存档时才申请；安装时的权限不变
+assert.ok(manifest.optional_host_permissions.includes("<all_urls>"), "截图存档需要可选的 <all_urls>");
+assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能出现在安装时的 host_permissions");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.20.0");
+assert.equal(packageJson.version, "0.21.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -966,6 +969,8 @@ const payload = {
   assert.equal(shotAdded.basket[1].hasUrl, true);
   assert.equal(shotAdded.warnings.length, 1);
   assert.equal(shotAdded.warnings[0], "右上角互动数字被遮挡");
+  // v0.18.0：截图加入清单的响应带上 payload，侧边栏要用它生成存档
+  assert.equal(shotAdded.payload?.source?.origin, "user_screenshot");
 
   const listed = await context.listMergeBasket();
   assert.equal(listed.basket.length, 2);
@@ -975,6 +980,13 @@ const payload = {
   const mergedResponse = await context.summarizeMergeBasket({ force: true });
   assert.equal(mergedResponse.ok, true);
   assert.equal(mergedResponse.result.postCount, 2);
+  // v0.18.0：合并结果带各条目的存档键（与 archive.js 的 captureKey 同格式），用于关联存档文件夹
+  assert.equal(mergedResponse.result.captureKeys.length, 2);
+  assert.equal(
+    mergedResponse.result.captureKeys[0],
+    `xiaohongshu|${textOnlyPayload.source.noteId}|${textOnlyPayload.exportedAt}`
+  );
+  assert.match(mergedResponse.result.captureKeys[1], /^xiaohongshu\|shot-[^|]+\|\d{4}-/);
   assert.equal(mergeTextCalls, 1);
   assert.equal(lastMergeRequest.messages[0].content, context.XhsPrompts.mergeSystem);
   const mergedEvidence = lastMergeRequest.messages[1].content;

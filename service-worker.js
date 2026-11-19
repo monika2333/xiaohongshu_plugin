@@ -1125,7 +1125,18 @@ async function addScreenshotToBasket(message) {
   }
   const recognized = await recognizeScreenshots(message);
   const added = await addToMergeBasket(recognized.payload);
-  return { ...added, warnings: recognized.warnings, dateNotice: recognized.dateNotice };
+  // payload 随响应返回：侧边栏截图存档要用它生成存档键与采集数据文件
+  return { ...added, payload: recognized.payload, warnings: recognized.warnings, dateNotice: recognized.dateNotice };
+}
+
+// 一次采集的身份：平台 + 帖子（或截图）ID + 采集时刻。与 archive.js 的 captureKey 同格式，
+// 合并结果带上各条目的键，侧边栏据此把合并历史关联到各帖文的存档文件夹。
+function archiveCaptureKey(payload) {
+  const source = payload?.source || {};
+  if (!payload?.exportedAt) return null;
+  const platform = source.platform === "weibo" ? "weibo" : "xiaohongshu";
+  const id = source.origin === "user_screenshot" ? `shot-${source.screenshotId || ""}` : (source.noteId || "");
+  return `${platform}|${id}|${payload.exportedAt}`;
 }
 
 async function summarizeMergeBasket(message) {
@@ -1165,6 +1176,7 @@ async function summarizeMergeBasket(message) {
     postCount: payloads.length,
     // 生成时的清单条目顺序，换链接后只有集合未变才允许原地重渲染
     itemIds: items.map((item) => item.id),
+    captureKeys: payloads.map(archiveCaptureKey).filter(Boolean),
     createdAt: Date.now()
   };
   const boundedCache = Object.fromEntries(Object.entries(updatedCache).slice(-MAX_CACHE_ENTRIES));

@@ -18,6 +18,8 @@
         <button id="settings-button" class="settings-button" type="button" title="模型设置">设置</button>
       </header>
 
+      <p id="archive-banner" class="archive-banner" role="status" aria-live="polite" hidden></p>
+
       <section id="task-strip" class="task-strip" hidden aria-label="进行中的概括任务">
         <div class="merge-heading">
           <h2>进行中的概括</h2>
@@ -39,6 +41,7 @@
             </button>
             <button id="merge-add-button" class="secondary-button add-basket-button" type="button">＋ 加入合并</button>
           </div>
+          <p id="archive-hint" class="archive-hint" hidden>已开启截图存档：提取时请停留在帖文页签，截图完成前不要切换。</p>
           <section id="status-card" class="status-card" aria-live="polite">
             <div class="status-topline">
               <span class="status-dot"></span>
@@ -166,6 +169,13 @@
           </div>
           <p id="feishu-feedback" class="feishu-feedback" hidden></p>
           <p id="feishu-stale-hint" class="feishu-stale-hint" hidden></p>
+          <div id="archive-status" class="archive-status" hidden>
+            <p id="archive-status-text" class="archive-status-text"></p>
+            <div class="archive-status-actions">
+              <button id="archive-grant-button" class="secondary-button archive-action" type="button" hidden>授权文件夹并保存</button>
+              <button id="archive-retry-button" class="secondary-button archive-action" type="button" hidden>重新截图</button>
+            </div>
+          </div>
           <details class="evidence-panel">
             <summary>证据</summary>
             <p id="evidence-summary">尚未提取。</p>
@@ -191,6 +201,7 @@
         <span>密钥默认仅存本机</span>
       </footer>
     </main>
+    <script src="archive.js"></script>
     <script src="panel.js"></script>
   </body>
 </html>

@@ -370,6 +370,19 @@ h1 { margin-bottom: 0; font-size: 25px; line-height: 1; letter-spacing: .04em; }
 .icon-button:disabled { cursor: wait; }
 #result-add-basket-button:disabled { cursor: default; }
 
+/* —— 截图存档：截图期间的醒目提示条、提取按钮下的提醒、结果卡上的存档状态 —— */
+.archive-banner { position: sticky; top: 0; z-index: 5; margin: 12px 0 0; padding: 9px 11px; color: var(--paper-soft); background: var(--red-dark); border: 1px solid var(--ink); box-shadow: 3px 3px 0 var(--ink); font-size: 11px; font-weight: 700; line-height: 1.55; }
+.archive-hint { margin: 8px 0 0; color: var(--red-dark); font-size: 10px; font-weight: 700; line-height: 1.5; }
+.archive-status { margin-top: 9px; padding: 8px 10px; background: rgba(255, 252, 245, .68); border: 1px solid var(--line); }
+.archive-status[data-state="error"] { border-color: var(--red-dark); }
+.archive-status-text { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; white-space: pre-line; word-break: break-all; }
+.archive-status[data-state="error"] .archive-status-text { color: var(--red-dark); font-weight: 700; }
+.archive-status[data-state="done"] .archive-status-text { color: var(--green); }
+.archive-status-actions { display: flex; gap: 6px; }
+.archive-status-actions:has(button:not([hidden])) { margin-top: 7px; }
+.archive-action { min-height: 28px; padding: 0 10px; cursor: pointer; font-size: 10px; font-weight: 700; }
+.archive-action:disabled { cursor: wait; opacity: .55; }
+
 .evidence-panel { margin-top: 11px; border-top: 1px dashed var(--line); }
 .evidence-panel summary { padding: 10px 0 6px; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; }
 .evidence-panel p { margin-bottom: 7px; color: var(--muted); font-size: 9px; line-height: 1.55; }

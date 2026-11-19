@@ -407,4 +407,85 @@ document.querySelectorAll(".test-button[data-provider]").forEach((button) => {
   });
 });
 
+// —— 截图存档：开关与存放文件夹即时生效，不走「保存全部设置」 ——
+const archiveEnabledInput = document.querySelector("#archive-enabled");
+const archiveFolderButton = document.querySelector("#archive-folder-button");
+const archiveFolderStatus = document.querySelector("#archive-folder-status");
+const archiveStatus = document.querySelector("#archive-status");
+const Archive = globalThis.XhsArchive || null;
+
+function setArchiveStatus(text, state = "") {
+  if (!archiveStatus) return;
+  archiveStatus.textContent = text;
+  archiveStatus.dataset.state = state;
+}
+
+async function refreshArchiveUi() {
+  if (!Archive || !archiveEnabledInput) return;
+  const settings = await Archive.getSettings();
+  const enabled = settings.enabled && (await Archive.hasCapturePermission());
+  archiveEnabledInput.checked = enabled;
+  const root = await Archive.getRootHandle().catch(() => null);
+  if (!root) {
+    archiveFolderStatus.textContent = "尚未选择存放文件夹";
+    archiveFolderStatus.dataset.state = enabled ? "error" : "";
+    return;
+  }
+  const permission = await Archive.permissionState(root);
+  archiveFolderStatus.textContent = permission === "granted"
+    ? `存放在「${root.name}」`
+    : `存放在「${root.name}」，下次存档时需再点一次「允许」`;
+  archiveFolderStatus.dataset.state = permission === "granted" ? "ok" : "";
+}
+
+if (Archive && archiveEnabledInput && archiveFolderButton) {
+  if (!Archive.isSupported()) {
+    archiveEnabledInput.disabled = true;
+    archiveFolderButton.disabled = true;
+    setArchiveStatus("当前浏览器不支持写入本地文件夹，无法使用截图存档。", "error");
+  }
+
+  archiveEnabledInput.addEventListener("change", async () => {
+    try {
+      if (!archiveEnabledInput.checked) {
+        await Archive.setSettings({ enabled: false });
+        setArchiveStatus("截图存档已关闭，之后提取帖文不再截图。");
+        return;
+      }
+      const granted = await Archive.requestCapturePermission().catch(() => false);
+      if (!granted) {
+        archiveEnabledInput.checked = false;
+        await Archive.setSettings({ enabled: false });
+        setArchiveStatus("没有获得截图所需的「访问所有网站」权限，截图存档保持关闭。", "error");
+        return;
+      }
+      await Archive.setSettings({ enabled: true });
+      const root = await Archive.getRootHandle().catch(() => null);
+      setArchiveStatus(root
+        ? "截图存档已开启。提醒：截图期间请停留在帖文页签，不要切换。"
+        : "截图存档已开启，请再选择存放文件夹。提醒：截图期间请停留在帖文页签，不要切换。", root ? "ok" : "error");
+    } catch (error) {
+      setArchiveStatus(error?.message || "设置未能保存。", "error");
+    } finally {
+      await refreshArchiveUi().catch(() => {});
+    }
+  });
+
+  archiveFolderButton.addEventListener("click", async () => {
+    try {
+      const handle = await globalThis.showDirectoryPicker({ id: "shuye-archive", mode: "readwrite" });
+      await Archive.setRootHandle(handle);
+      await Archive.setSettings({ folderName: handle.name });
+      setArchiveStatus(`已选择「${handle.name}」，之后的存档都写入这个文件夹。`, "ok");
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setArchiveStatus(`没能选择文件夹：${error?.message || "未知错误"}`, "error");
+    } finally {
+      await refreshArchiveUi().catch(() => {});
+    }
+  });
+
+  refreshArchiveUi().catch(() => {});
+}
+
 restoreSettings().catch((error) => setSaveStatus(error?.message || "无法读取设置。", "error"));

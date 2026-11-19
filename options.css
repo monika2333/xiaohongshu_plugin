@@ -405,6 +405,28 @@ input:focus {
 .test-button:hover { color: var(--paper); background: var(--ink); }
 .test-button:disabled { cursor: wait; opacity: .58; }
 
+/* —— 截图存档卡：开关、切页签提醒与存放文件夹 —— */
+.archive-body {
+  grid-column: 3;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.archive-body .card-actions { grid-column: auto; margin-top: 0; }
+.archive-body .field-help { margin: 0; }
+
+.archive-warning {
+  margin: 0;
+  padding: 9px 11px;
+  color: var(--red-dark);
+  background: rgba(215, 44, 37, .07);
+  border-left: 3px solid var(--red);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
 /* —— 模型卡：默认共用一组设置，开启「分开配置」后展开图片模型那组 —— */
 .model-body {
   grid-column: 3;
@@ -529,7 +551,7 @@ input:focus {
   .credential-row { align-items: flex-start; flex-direction: column; }
   .credential-hint { margin-left: 0; }
   .provider-card { grid-template-columns: 34px 1fr; }
-  .fields, .card-actions, .notification-settings, .model-body { grid-column: 2; }
+  .fields, .card-actions, .notification-settings, .model-body, .archive-body { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {

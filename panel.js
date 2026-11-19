@@ -81,7 +81,31 @@ const elements = {
   historyList: document.querySelector("#history-list"),
   historyClearButton: document.querySelector("#history-clear-button"),
   openSourceButton: document.querySelector("#open-source-button"),
-  evidenceSummary: document.querySelector("#evidence-summary")
+  evidenceSummary: document.querySelector("#evidence-summary"),
+  archiveBanner: document.querySelector("#archive-banner"),
+  archiveHint: document.querySelector("#archive-hint"),
+  archiveStatus: document.querySelector("#archive-status"),
+  archiveStatusText: document.querySelector("#archive-status-text"),
+  archiveGrantButton: document.querySelector("#archive-grant-button"),
+  archiveRetryButton: document.querySelector("#archive-retry-button")
+};
+
+// 截图存档的模块与运行状态（逻辑见文件后部「截图存档」一节）
+const Archive = globalThis.XhsArchive || null;
+const MAX_ARCHIVE_JOBS = 20;
+const archiveState = {
+  enabled: false,
+  root: null,
+  rootPermission: "none",
+  index: [],
+  jobs: new Map(),
+  // tabId → { pageSessionId, fromBasket }：只有发起采集的这个侧边栏才响应截图信号
+  expected: new Map(),
+  capturing: null,
+  captureQueue: Promise.resolve(),
+  priming: null,
+  // 采集响应先于截图信号到达时暂存（「加入清单」没有模型调用，响应可能很快），信号到了再收尾
+  pendingFinalize: new Map()
 };
 
 let basketItems = [];
@@ -257,6 +281,7 @@ function renderResult(result) {
   elements.resultCard.hidden = false;
   hideFeishuFeedback();
   refreshFeishuButton();
+  renderArchiveStatus();
 }
 
 function hideResultCard() {
@@ -267,6 +292,7 @@ function hideResultCard() {
   resultLinkEditing = false;
   hideFeishuFeedback();
   refreshFeishuButton();
+  renderArchiveStatus();
 }
 
 function renderFocus() {
@@ -712,14 +738,29 @@ async function prepareCurrentPage() {
 }
 
 async function sendCaptureAndSummarize(page, payload, force, givenUrl = null) {
-  const response = await chrome.tabs.sendMessage(page.tabId, {
-    type: "XHS_CAPTURE_AND_SUMMARIZE",
-    options: { limit: LIMIT },
-    payload,
-    force,
-    givenUrl
-  });
-  if (!response?.ok) throw new Error(response?.error || "概括未完成。");
+  // 重新采集时才截图存档；重新生成（复用 payload）只把新历史关联到原来的存档
+  const archive = !payload && expectArchive(page);
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(page.tabId, {
+      type: "XHS_CAPTURE_AND_SUMMARIZE",
+      options: archive ? { limit: LIMIT, archive: true } : { limit: LIMIT },
+      payload,
+      force,
+      givenUrl
+    });
+  } catch (error) {
+    if (archive) finalizeArchiveForTab(page.tabId);
+    throw error;
+  }
+  if (!response?.ok) {
+    if (archive) finalizeArchiveForTab(page.tabId);
+    throw new Error(response?.error || "概括未完成。");
+  }
+  if (archive) void finalizeArchive(response.capture, response.result);
+  else if (payload && Archive) {
+    void linkArchiveHistory([Archive.captureKey(payload)], response.result?.historyId, response.result?.text);
+  }
   return response;
 }
 
@@ -794,6 +835,7 @@ async function waitLinkTabPage(tabId) {
 // 结果与状态挂在打开的页签槽位上，页签保留不关闭。
 async function runLinkWorkflow(explicitUrl = null) {
   if (tasks.has("link")) return;
+  primeArchiveFolder();
   const givenUrl = explicitUrl || extractPostUrl(elements.materialInput.value);
   if (!givenUrl) {
     showMaterialFeedback("输入里没有找到小红书或微博帖文链接。", "error");
@@ -945,6 +987,7 @@ function applyWorkflowState(workflow) {
 }
 
 async function runFullWorkflow() {
+  primeArchiveFolder();
   focus = { kind: "tab" };
   if (historyVisible) {
     historyVisible = false;
@@ -1580,6 +1623,7 @@ function showLinkChoice(url) {
 }
 
 async function handleMaterialLink({ skipShotOffer = false } = {}) {
+  primeArchiveFolder();
   const raw = elements.materialInput.value;
   const url = extractPostUrl(raw);
   if (!url) {
@@ -1713,6 +1757,7 @@ async function applyLinkToBasketItemByMatch(id, url, verified) {
 }
 
 async function chooseLinkTarget(choice) {
+  primeArchiveFolder();
   const pending = pendingLinkChoice;
   if (!pending) return;
   const url = pending.url;
@@ -1920,6 +1965,7 @@ function payloadWithPendingLink(payload, slot) {
 // 当前帖文「加入清单」：已有采集数据就直接复用，没有才重新采集。
 async function addCurrentPostToBasket() {
   if (activeTabId == null) return;
+  primeArchiveFolder();
   const tabId = activeTabId;
   const slot = pageSlots.get(tabId);
   if (slot?.capture) {
@@ -1957,12 +2003,23 @@ async function addCurrentPostToBasket() {
   }
   if (tasks.has(pageTaskKey(page.tabId))) return;
   writePageStatus(page.tabId, { state: "working", title: "正在采集帖文", detail: "读取正文与评论，图片识别将同步进行…", percent: 5 });
+  const archive = expectArchive(page, { fromBasket: true });
   try {
-    const response = await chrome.tabs.sendMessage(page.tabId, {
-      type: "XHS_CAPTURE_FOR_MERGE",
-      options: { limit: LIMIT }
-    });
-    if (!response?.ok || !response.payload) throw new Error(response?.error || "采集未完成。");
+    let response;
+    try {
+      response = await chrome.tabs.sendMessage(page.tabId, {
+        type: "XHS_CAPTURE_FOR_MERGE",
+        options: archive ? { limit: LIMIT, archive: true } : { limit: LIMIT }
+      });
+    } catch (error) {
+      if (archive) finalizeArchiveForTab(page.tabId);
+      throw error;
+    }
+    if (!response?.ok || !response.payload) {
+      if (archive) finalizeArchiveForTab(page.tabId);
+      throw new Error(response?.error || "采集未完成。");
+    }
+    if (archive) void finalizeArchive(response.payload, null);
     const currentSlot = pageSlots.get(page.tabId);
     const payload = payloadWithPendingLink(response.payload, currentSlot);
     const added = await addPayloadToBasket(payload);
@@ -2012,6 +2069,7 @@ async function removeBasketItem(id) {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_REMOVE", id });
     if (!response?.ok) throw new Error(response?.error || "移除失败。");
     basketItems = response.basket || [];
+    dropBasketArchives([id]);
     if (basketLinkEditingId === id) closeBasketLinkEditor();
     renderBasket();
     refreshButtons();
@@ -2036,6 +2094,7 @@ async function clearBasket() {
   pendingShots = pendingShots.filter((item) => item.status === "working");
   basketItems = [];
   basketLinkEditingId = null;
+  dropBasketArchives();
   renderBasket();
   refreshButtons();
 }
@@ -2077,6 +2136,7 @@ async function runMergeSummarize(force = false) {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_MERGE_SUMMARIZE", force: Boolean(force) });
     if (!response?.ok) throw new Error(response?.error || "合并概括未完成。");
     mergeSlot.result = response.result;
+    void linkArchiveHistory(response.result?.captureKeys, response.result?.historyId);
     if (mergeSlot.result?.notification?.status === "deferred") {
       // 合并期间改过条目链接：先用当前清单原地重渲染，再推送最终文本（只发一条）
       let rerender = null;
@@ -2277,6 +2337,22 @@ function screenshotBatchLimitMessage() {
   return `单次最多识别 ${SCREENSHOT_BATCH_LIMIT} 张截图${splitNote}，当前暂存 ${groups.length} 张，请先移除部分截图（长截图会整组移除）。`;
 }
 
+// 截图存档保存用户上传的原始文件：切段或缩放过的暂存项取原文件（同一张长图只存一次），其余取原样读出的 data URL
+function shotArchiveSources(staged) {
+  const sources = [];
+  const seenFiles = new Set();
+  for (const item of staged || []) {
+    if (item.sourceFile) {
+      if (seenFiles.has(item.sourceFile)) continue;
+      seenFiles.add(item.sourceFile);
+      sources.push(item.sourceFile);
+    } else if (item.dataUrl) {
+      sources.push(item.dataUrl);
+    }
+  }
+  return sources;
+}
+
 // 单张文件 → 一条或多条暂存项。长图返回切段后的多张，并带上切段信息供界面提示。
 async function prepareScreenshotStaging(file) {
   const label = file.name || "剪贴板图片";
@@ -2287,7 +2363,7 @@ async function prepareScreenshotStaging(file) {
       // 只超宽、不够长的图：等比缩到单边上限内，仍是一张普通截图，不提示用户。
       if (slices?.length === 1) {
         const [dataUrl] = await splitScreenshotFile(file, bitmap, slices);
-        return { items: [makeStagedScreenshot(label, dataUrl)], split: null };
+        return { items: [{ ...makeStagedScreenshot(label, dataUrl), sourceFile: file }], split: null };
       }
       if (slices) {
         const dataUrls = await splitScreenshotFile(file, bitmap, slices);
@@ -2296,6 +2372,7 @@ async function prepareScreenshotStaging(file) {
           items: dataUrls.map((dataUrl, index) => ({
             ...makeStagedScreenshot(`${label}（第 ${index + 1}/${dataUrls.length} 段）`, dataUrl),
             groupId,
+            sourceFile: file,
             sourceName: label,
             partIndex: index + 1,
             partCount: dataUrls.length
@@ -2389,7 +2466,7 @@ function screenshotRecognitionError(recognized) {
   return message.includes("模型请求失败") ? `${message}。可把长截图拆成几张再上传。` : message;
 }
 
-async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
+async function summarizeScreenshotImages(images, writeStatus, sourceUrl, archiveSources = images) {
   const recognized = await chrome.runtime.sendMessage({
     type: "XHS_AI_SCREENSHOT_RECOGNIZE",
     images,
@@ -2397,14 +2474,19 @@ async function summarizeScreenshotImages(images, writeStatus, sourceUrl) {
   });
   if (!recognized?.ok || !recognized.payload) throw new Error(screenshotRecognitionError(recognized));
   shotSlot.capture = recognized.payload;
+  startShotArchive(recognized.payload, archiveSources);
   writeStatus({ state: "working", title: "正在撰写概括", detail: "截图证据已就绪，正在生成概括…", percent: 66 });
   const response = await chrome.runtime.sendMessage({
     type: "XHS_AI_SUMMARIZE",
     payload: recognized.payload,
     force: false
   });
-  if (!response?.ok) throw new Error(response?.error || "概括未完成。");
+  if (!response?.ok) {
+    void finalizeArchive(recognized.payload, null);
+    throw new Error(response?.error || "概括未完成。");
+  }
   shotSlot.result = response.result;
+  void finalizeArchive(recognized.payload, response.result);
   const dateNote = recognized.dateNotice ? `；${recognized.dateNotice}` : "";
   const warningNote = recognized.warnings?.length
     ? `；${recognized.warnings.length} 项信息未能完全识别（如时间、互动数）`
@@ -2480,6 +2562,9 @@ async function runPendingShot(pending) {
       ...(pending.sentLink ? { sourceUrl: pending.sentLink } : {})
     });
     if (!response?.ok) throw new Error(screenshotRecognitionError(response));
+    if (startShotArchive(response.payload, shotArchiveSources(pending.staged), { fromBasket: true })) {
+      void finalizeArchive(response.payload, null);
+    }
     pendingShots = pendingShots.filter((item) => item !== pending);
     basketItems = response.basket || [];
     // 识别期间才补上的链接：条目落地后按普通补链接写进去
@@ -2529,6 +2614,7 @@ function handlePendingShotAction(id, action) {
 }
 
 async function commitStagedScreenshots(mode) {
+  primeArchiveFolder();
   if (mode === "basket") {
     commitScreenshotsToMerge();
     return;
@@ -2561,7 +2647,12 @@ async function commitStagedScreenshots(mode) {
   const givenLink = stagedShotLink;
   try {
     checkScreenshotBatch(stagedScreenshots);
-    await summarizeScreenshotImages(stagedScreenshots.map((item) => item.dataUrl), writeStatus, givenLink);
+    await summarizeScreenshotImages(
+      stagedScreenshots.map((item) => item.dataUrl),
+      writeStatus,
+      givenLink,
+      shotArchiveSources(stagedScreenshots)
+    );
     // 只移除本次提交的截图：识别期间新贴入的图片保留在暂存区
     stagedScreenshots = stagedScreenshots.filter((item) => !committedIds.has(item.id));
     if (givenLink && stagedShotLink === givenLink) stagedShotLink = null;
@@ -2970,6 +3061,7 @@ function renderHistoryResult(item) {
   elements.resultCard.hidden = false;
   hideFeishuFeedback();
   refreshFeishuButton();
+  renderArchiveStatus();
 }
 
 function showHistoryEntry(item) {
@@ -2982,6 +3074,7 @@ function clearViewedHistoryEntry() {
   historyEntry = null;
   elements.resultCard.hidden = true;
   elements.resultText.value = "";
+  renderArchiveStatus();
 }
 
 async function openHistory() {
@@ -3004,18 +3097,41 @@ function closeHistory() {
   renderFocus();
 }
 
-function flashHistoryError(detail) {
+function flashHistoryError(detail, { error = true, durationMs = 3000 } = {}) {
   if (!elements.historyHint) return;
   clearTimeout(historyHintResetTimer);
   elements.historyHint.textContent = detail;
-  elements.historyHint.dataset.error = "true";
+  elements.historyHint.dataset.error = error ? "true" : "false";
   historyHintResetTimer = setTimeout(() => {
     elements.historyHint.dataset.error = "false";
     elements.historyHint.textContent = HISTORY_HINT_TEXT;
-  }, 3000);
+  }, durationMs);
+}
+
+// 删除历史后报告存档文件夹的去向：删不掉的（未授权、被占用）点名让用户手动处理
+function reportArchiveRelease(released) {
+  if (!released || (!released.deleted && !released.failed.length)) return;
+  if (released.failed.length) {
+    flashHistoryError(
+      `记录已删除，但 ${released.failed.length} 个存档文件夹未能删除（存放文件夹未授权或文件被占用），可到存放文件夹手动删除：${released.failed.join("、")}`,
+      { durationMs: 12000 }
+    );
+    return;
+  }
+  flashHistoryError(`已一并删除 ${released.deleted} 个存档文件夹。`, { error: false });
 }
 
 async function removeHistoryItem(id) {
+  const remainingIds = historyItems.filter((item) => item.id !== id).map((item) => item.id);
+  const archiveCount = await previewArchiveRelease([id], remainingIds);
+  if (archiveCount) {
+    primeArchiveFolder();
+    const ask = globalThis.confirm;
+    if (typeof ask === "function" &&
+      !ask(`这条记录关联 ${archiveCount} 个存档文件夹，删除记录会一并删除里面的截图、配图与文本，确定删除吗？`)) {
+      return;
+    }
+  }
   try {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_REMOVE", id });
     if (!response?.ok) throw new Error(response?.error || "删除失败。");
@@ -3024,7 +3140,9 @@ async function removeHistoryItem(id) {
     renderHistory();
   } catch (error) {
     flashHistoryError(error?.message || "删除失败。");
+    return;
   }
+  reportArchiveRelease(await releaseHistoryArchives([id], remainingIds));
 }
 
 function resetHistoryClearButton() {
@@ -3042,9 +3160,16 @@ async function clearHistoryRecords() {
     elements.historyClearButton.textContent = "再点一次确认清空";
     clearTimeout(historyClearResetTimer);
     historyClearResetTimer = setTimeout(resetHistoryClearButton, 3000);
+    // 有关联存档时在确认按钮上说明会一并删除
+    const archiveCount = await previewArchiveRelease(historyItems.map((item) => item.id), []);
+    if (archiveCount && elements.historyClearButton.dataset.confirming === "true") {
+      elements.historyClearButton.textContent = `再点一次确认清空（含 ${archiveCount} 个存档文件夹）`;
+    }
     return;
   }
   resetHistoryClearButton();
+  primeArchiveFolder();
+  const removedIds = historyItems.map((item) => item.id);
   try {
     const response = await chrome.runtime.sendMessage({ type: "XHS_AI_HISTORY_CLEAR" });
     if (!response?.ok) throw new Error(response?.error || "清空失败。");
@@ -3053,7 +3178,492 @@ async function clearHistoryRecords() {
     renderHistory();
   } catch (error) {
     flashHistoryError(error?.message || "清空失败。");
+    return;
   }
+  reportArchiveRelease(await releaseHistoryArchives(removedIds, []));
+}
+
+// —— 截图存档 ——
+// 开启后，每次网页采集都截帖文初始屏与评论区长截图，连同配图原图、采集数据与概括文本，
+// 写入设置页选定的文件夹（截图、拼接与写文件见 archive.js）。截图与模型调用并行进行；
+// 存档只在这次采集有了概括记录时才写入文件夹：单条概括完成即写入；加入清单的帖文等合并概括后才写入，
+// 移出或清空清单就丢弃；概括失败的先留在内存，重新生成成功后再写入。侧边栏关闭时未写入的存档随之丢弃。
+// 存档按「采集」计：重新生成复用同一份存档，只把新历史关联上去。
+
+async function refreshArchiveSettings() {
+  if (!Archive) return;
+  try {
+    const settings = await Archive.getSettings();
+    archiveState.enabled = settings.enabled;
+    archiveState.root = await Archive.getRootHandle().catch(() => null);
+    archiveState.rootPermission = await Archive.permissionState(archiveState.root);
+    archiveState.index = await Archive.getIndex();
+  } catch {
+    archiveState.enabled = false;
+  }
+  renderArchiveHint();
+  renderArchiveStatus();
+}
+
+function renderArchiveHint() {
+  if (elements.archiveHint) elements.archiveHint.hidden = !archiveState.enabled;
+}
+
+// 文件夹授权要在用户点击的那一刻申请：浏览器重启后第一次存档时会弹一次「允许」
+function primeArchiveFolder() {
+  const root = archiveState.root;
+  if (!Archive || !archiveState.enabled || !root || archiveState.rootPermission === "granted" || archiveState.priming) {
+    return archiveState.priming;
+  }
+  let request;
+  try {
+    request = root.requestPermission({ mode: "readwrite" });
+  } catch {
+    return null;
+  }
+  archiveState.priming = Promise.resolve(request)
+    .then((state) => {
+      archiveState.rootPermission = state;
+      return state;
+    })
+    .catch(() => "denied")
+    .finally(() => {
+      archiveState.priming = null;
+      renderArchiveStatus();
+    });
+  return archiveState.priming;
+}
+
+function expectArchive(page, { fromBasket = false } = {}) {
+  if (!Archive || !archiveState.enabled || !Number.isInteger(page?.tabId)) return false;
+  archiveState.expected.set(page.tabId, { pageSessionId: page.pageSessionId, fromBasket });
+  return true;
+}
+
+function archiveItemId(meta) {
+  if (meta.origin === "screenshot") return `shot:${meta.screenshotId || ""}`;
+  return `${meta.platform === "weibo" ? "wbnote" : "note"}:${meta.noteId || ""}`;
+}
+
+function createArchiveJob(key, payload, tabId = null, { fromBasket = false } = {}) {
+  const meta = Archive.captureMeta(payload);
+  const job = {
+    key,
+    payload,
+    meta,
+    itemId: archiveItemId(meta),
+    fromBasket,
+    tabId,
+    createdAt: Date.now(),
+    state: "capturing",
+    detail: "",
+    screens: [],
+    extras: [],
+    warnings: [],
+    screenshotError: null,
+    mediaFailed: 0,
+    mediaCollected: false,
+    summaryText: "",
+    historyIds: new Set(),
+    folder: null,
+    files: [],
+    writeError: null,
+    finalized: false,
+    finalizing: null,
+    screenshotPromise: Promise.resolve()
+  };
+  archiveState.jobs.set(key, job);
+  // 只在内存里留最近的若干份（含截图数据）：先淘汰已写入文件夹的（界面改从索引读取），
+  // 都还没写入时才淘汰最旧的
+  while (archiveState.jobs.size > MAX_ARCHIVE_JOBS) {
+    const written = [...archiveState.jobs.values()].find((item) => item.folder);
+    archiveState.jobs.delete(written ? written.key : archiveState.jobs.keys().next().value);
+  }
+  return job;
+}
+
+// 内容脚本采集完（评论已加载）发来信号：开始截图
+function handleArchiveReady(message, sender) {
+  const tabId = sender?.tab?.id;
+  if (!Archive || !Number.isInteger(tabId)) return;
+  if (sender?.id && chrome.runtime?.id && sender.id !== chrome.runtime.id) return;
+  const expected = archiveState.expected.get(tabId);
+  if (!expected || expected.pageSessionId !== message.pageSessionId) return;
+  archiveState.expected.delete(tabId);
+  const key = Archive.captureKey(message.payload);
+  if (!key) return;
+  const job = createArchiveJob(key, message.payload, tabId, { fromBasket: expected.fromBasket });
+  job.screenshotPromise = queueArchiveScreens(job);
+  const pending = archiveState.pendingFinalize.get(key);
+  if (pending) {
+    archiveState.pendingFinalize.delete(key);
+    void finalizeArchive(pending.payload, pending.result);
+  }
+}
+
+// 同一时间只能截一个页签（截的是前台画面），多个任务排队
+function queueArchiveScreens(job) {
+  const run = archiveState.captureQueue.then(() => runArchiveScreens(job));
+  archiveState.captureQueue = run.catch(() => {});
+  return run;
+}
+
+function setArchiveCapturing(job, text) {
+  archiveState.capturing = { key: job.key, text };
+  job.detail = text;
+  renderArchiveBanner();
+  renderArchiveStatus();
+}
+
+async function runArchiveScreens(job) {
+  job.state = "capturing";
+  job.screenshotError = null;
+  setArchiveCapturing(job, "准备截图");
+  try {
+    const captured = await Archive.captureScreens({
+      tabId: job.tabId,
+      platform: job.meta.platform,
+      limit: LIMIT,
+      onProgress: (text) => setArchiveCapturing(job, text)
+    });
+    job.screens = captured.files;
+    job.warnings = captured.warnings || [];
+  } catch (error) {
+    job.screenshotError = error?.message || "截图失败。";
+    // 截到一半失败：手上还没有截图时，先留下已截到的部分
+    if (!job.screens.length && error?.partialFiles?.length) job.screens = error.partialFiles;
+  } finally {
+    if (archiveState.capturing?.key === job.key) archiveState.capturing = null;
+    renderArchiveBanner();
+  }
+  if (job.state === "capturing") job.state = job.finalized ? "saving" : "captured";
+  renderArchiveStatus();
+}
+
+function renderArchiveBanner() {
+  const banner = elements.archiveBanner;
+  if (!banner) return;
+  const capturing = archiveState.capturing;
+  banner.hidden = !capturing;
+  banner.textContent = capturing
+    ? `正在截图存档：请停留在当前帖文页签，不要切换。${capturing.text ? `（${capturing.text}）` : ""}`
+    : "";
+}
+
+// 用户上传的截图本身就是原始画面：直接作为存档里的截图
+function startShotArchive(payload, images, { fromBasket = false } = {}) {
+  if (!Archive || !archiveState.enabled || !payload) return null;
+  const key = Archive.captureKey(payload);
+  if (!key) return null;
+  const job = createArchiveJob(key, payload, null, { fromBasket });
+  job.state = "captured";
+  job.screenshotPromise = Archive.screenshotFiles(images)
+    .then((files) => { job.screens = files; })
+    .catch((error) => { job.screenshotError = error?.message || "截图读取失败。"; });
+  return job;
+}
+
+// 采集结束（概括完成或失败）：等截图做完，下载配图，写入文件夹
+async function finalizeArchive(payload, result = null) {
+  if (!Archive || !payload) return;
+  const key = Archive.captureKey(payload);
+  if (!key) return;
+  const job = archiveState.jobs.get(key);
+  if (!job) {
+    if (archiveState.expected.size) {
+      archiveState.pendingFinalize.set(key, { payload, result });
+      while (archiveState.pendingFinalize.size > 10) {
+        archiveState.pendingFinalize.delete(archiveState.pendingFinalize.keys().next().value);
+      }
+    }
+    if (result?.historyId) await linkArchiveHistory([key], result.historyId);
+    return;
+  }
+  job.payload = payload;
+  if (result?.text) job.summaryText = result.text;
+  if (result?.historyId) job.historyIds.add(result.historyId);
+  if (job.finalizing) {
+    await job.finalizing;
+    if (result) await flushArchiveJob(job);
+    return;
+  }
+  job.finalizing = (async () => {
+    await job.screenshotPromise.catch(() => {});
+    if (!job.mediaCollected) {
+      job.state = "saving";
+      renderArchiveStatus();
+      const media = await Archive.collectMediaFiles(job.payload).catch(() => ({ files: [], failed: 0 }));
+      job.extras = media.files;
+      job.mediaFailed = media.failed;
+      job.mediaCollected = true;
+    }
+    job.finalized = true;
+    await flushArchiveJob(job);
+  })();
+  await job.finalizing;
+}
+
+// 采集成功但概括失败：截图与配图先留在内存，重新生成成功、有了概括记录后再写入
+function finalizeArchiveForTab(tabId) {
+  archiveState.expected.delete(tabId);
+  for (const job of archiveState.jobs.values()) {
+    if (job.tabId === tabId && !job.finalizing) void finalizeArchive(job.payload, null);
+  }
+}
+
+async function flushArchiveJob(job) {
+  if (!Archive || !job.finalized) return;
+  // 还没有概括记录（加入清单待合并、概括失败待重新生成）：先不写入文件夹
+  if (!job.historyIds.size) {
+    job.state = "awaiting-summary";
+    renderArchiveStatus();
+    return;
+  }
+  const root = archiveState.root;
+  if (!root) {
+    job.state = "no-folder";
+    renderArchiveStatus();
+    return;
+  }
+  if (archiveState.rootPermission !== "granted") archiveState.rootPermission = await Archive.permissionState(root);
+  if (archiveState.rootPermission !== "granted") {
+    job.state = "needs-permission";
+    renderArchiveStatus();
+    return;
+  }
+  const files = [...job.screens, ...job.extras, { name: Archive.FILE_NAMES.data, blob: Archive.jsonBlob(job.payload) }];
+  if (job.summaryText) files.push({ name: Archive.FILE_NAMES.summary, blob: Archive.textBlob(job.summaryText) });
+  job.state = "saving";
+  job.writeError = null;
+  renderArchiveStatus();
+  try {
+    if (!job.folder) job.folder = await Archive.createFolder(root, Archive.folderName(job.meta));
+    await Archive.writeFiles(root, job.folder, files);
+    job.files = files.map((file) => file.name);
+    archiveState.index = await Archive.upsertIndexEntry({
+      folder: job.folder,
+      key: job.key,
+      platform: job.meta.platform,
+      origin: job.meta.origin,
+      title: job.meta.title || job.meta.author || "",
+      createdAt: job.createdAt,
+      files: job.files,
+      historyIds: [...job.historyIds]
+    });
+    job.state = "saved";
+  } catch (error) {
+    job.state = "write-failed";
+    job.writeError = error?.message || "写入失败";
+  }
+  renderArchiveStatus();
+}
+
+// 把一条概括记录关联到存档；还在内存里等待概括记录的存档，此刻写入文件夹
+async function linkArchiveHistory(keys, historyId, summaryText = "") {
+  if (!Archive || !historyId || !Array.isArray(keys)) return;
+  for (const key of keys) {
+    if (!key) continue;
+    const job = archiveState.jobs.get(key);
+    if (job) {
+      job.historyIds.add(historyId);
+      if (summaryText && !job.folder) job.summaryText = summaryText;
+    }
+    if (!job || job.folder) {
+      const next = await Archive.linkIndexHistory(key, historyId).catch(() => null);
+      if (next) archiveState.index = next;
+    } else if (job.state === "awaiting-summary") {
+      await flushArchiveJob(job);
+    }
+  }
+  renderArchiveStatus();
+}
+
+// 移出或清空清单：丢弃这些帖文还没写入的存档（没合并，说明不需要存档）
+function dropBasketArchives(itemIds = null) {
+  const targets = itemIds ? new Set(itemIds) : null;
+  for (const job of [...archiveState.jobs.values()]) {
+    if (!job.fromBasket || job.folder || job.historyIds.size) continue;
+    if (targets && !targets.has(job.itemId)) continue;
+    archiveState.jobs.delete(job.key);
+  }
+  renderArchiveStatus();
+}
+
+// 结果卡对应的存档：内存里的任务优先（含进行中状态），否则读已写入的索引
+function archiveTargetForKey(key) {
+  if (!key) return null;
+  const job = archiveState.jobs.get(key);
+  if (job) return { job };
+  const entry = archiveState.index.slice().reverse().find((item) => item.key === key);
+  return entry ? { entry } : null;
+}
+
+function archiveTargets() {
+  if (!Archive) return [];
+  if (historyVisible) {
+    return historyEntry ? Archive.entriesForHistory(archiveState.index, historyEntry.id).map((entry) => ({ entry })) : [];
+  }
+  if (focus.kind === "merge") {
+    return (mergeSlot.result?.captureKeys || []).map(archiveTargetForKey).filter(Boolean);
+  }
+  const target = archiveTargetForKey(Archive.captureKey(focusedPayload()));
+  return target ? [target] : [];
+}
+
+function archiveProblems(job) {
+  const problems = [];
+  if (job.screenshotError) problems.push(`截图未完成：${job.screenshotError}`);
+  problems.push(...job.warnings);
+  if (job.mediaFailed) problems.push(`${job.mediaFailed} 张配图下载失败。`);
+  return problems;
+}
+
+function archiveFolderLabel(folder) {
+  return `「${archiveState.root?.name ? `${archiveState.root.name}/` : ""}${folder}」`;
+}
+
+function archiveJobLine(job) {
+  switch (job.state) {
+    case "capturing":
+      return { text: `存档：${job.detail || "正在截图"}，请不要切换页签。`, state: "working" };
+    case "captured":
+      return { text: "存档：截图完成，概括结束后一并保存配图与文本。", state: "working" };
+    case "saving":
+      return { text: "存档：正在保存…", state: "working" };
+    case "awaiting-summary":
+      return {
+        text: job.fromBasket
+          ? "存档：截图已完成，合并概括完成后才会写入存放文件夹；从合并概括里移出则不保存。"
+          : "存档：截图已完成，生成概括后才会写入存放文件夹。",
+        state: "working"
+      };
+    case "saved": {
+      const problems = archiveProblems(job);
+      return {
+        text: [`存档：已保存到${archiveFolderLabel(job.folder)}，共 ${job.files.length} 个文件。`, ...problems].join("\n"),
+        state: problems.length ? "error" : "done"
+      };
+    }
+    case "needs-permission":
+      return { text: "存档：内容已就绪，需要授权存放文件夹后才能写入。", state: "error", grant: "授权文件夹并保存" };
+    case "no-folder":
+      return { text: "存档：还没有选择存放文件夹。请到设置页选择后点「重新保存」。", state: "error", grant: "重新保存" };
+    case "write-failed":
+      return { text: `存档：写入失败（${job.writeError}）。`, state: "error", grant: "重新保存" };
+    default:
+      return { text: "存档：处理中…", state: "working" };
+  }
+}
+
+function renderArchiveStatus() {
+  const box = elements.archiveStatus;
+  if (!box) return;
+  const targets = elements.resultCard?.hidden ? [] : archiveTargets();
+  if (!targets.length) {
+    box.hidden = true;
+    return;
+  }
+  const lines = targets.map((target) => (target.job
+    ? archiveJobLine(target.job)
+    : { text: `存档：已保存到${archiveFolderLabel(target.entry.folder)}，共 ${(target.entry.files || []).length} 个文件。`, state: "done" }));
+  box.hidden = false;
+  box.dataset.state = lines.some((line) => line.state === "error")
+    ? "error"
+    : lines.some((line) => line.state === "working") ? "working" : "done";
+  if (elements.archiveStatusText) elements.archiveStatusText.textContent = lines.map((line) => line.text).join("\n");
+  const grantLine = lines.find((line) => line.grant);
+  if (elements.archiveGrantButton) {
+    elements.archiveGrantButton.hidden = !grantLine;
+    elements.archiveGrantButton.textContent = grantLine?.grant || "授权文件夹并保存";
+  }
+  if (elements.archiveRetryButton) {
+    elements.archiveRetryButton.hidden = !targets.some((target) => (
+      target.job?.screenshotError && Number.isInteger(target.job.tabId) && target.job.state !== "capturing"
+    ));
+  }
+}
+
+async function grantArchiveFolder() {
+  if (!Archive) return;
+  // 设置页可能刚选好文件夹：先重新读取句柄
+  if (!archiveState.root) await refreshArchiveSettings();
+  if (archiveState.root) {
+    archiveState.rootPermission = await Archive.permissionState(archiveState.root, { request: true });
+  }
+  for (const target of archiveTargets()) {
+    const job = target.job;
+    if (job && ["needs-permission", "no-folder", "write-failed"].includes(job.state)) await flushArchiveJob(job);
+  }
+  renderArchiveStatus();
+}
+
+// 截图被打断后补截：先把帖文页签切回前台，再按原流程截一遍并重新写入同一个文件夹
+async function retryArchiveScreens() {
+  if (!Archive) return;
+  for (const target of archiveTargets()) {
+    const job = target.job;
+    if (!job?.screenshotError || !Number.isInteger(job.tabId) || job.state === "capturing") continue;
+    if (!(await tabExists(job.tabId))) {
+      job.screenshotError = "帖文页签已关闭，无法重新截图。请重新打开帖文后再提取一次。";
+      renderArchiveStatus();
+      continue;
+    }
+    try {
+      await chrome.tabs.update(job.tabId, { active: true });
+      await sleep(500);
+    } catch {
+      // 切换失败时照常尝试，截图前会再次确认页签是否在前台
+    }
+    job.screenshotPromise = queueArchiveScreens(job).then(() => flushArchiveJob(job));
+    await job.screenshotPromise;
+  }
+}
+
+async function previewArchiveRelease(removedIds, remainingIds) {
+  if (!Archive) return 0;
+  try {
+    return Archive.foldersToRelease(await Archive.getIndex(), removedIds, remainingIds).release.length;
+  } catch {
+    return 0;
+  }
+}
+
+// 删除历史时一并删除只被这些记录引用的存档文件夹；删不掉的留在索引里（不再关联任何记录）
+async function releaseHistoryArchives(removedIds, remainingIds) {
+  if (!Archive) return null;
+  let index;
+  try {
+    index = await Archive.getIndex();
+  } catch {
+    return null;
+  }
+  for (const job of archiveState.jobs.values()) removedIds.forEach((id) => job.historyIds.delete(id));
+  const { release, keep } = Archive.foldersToRelease(index, removedIds, remainingIds);
+  const failed = [];
+  if (release.length) {
+    const root = archiveState.root;
+    if (root && archiveState.rootPermission !== "granted") {
+      archiveState.rootPermission = await Archive.permissionState(root, { request: true });
+    }
+    for (const entry of release) {
+      try {
+        if (!root || archiveState.rootPermission !== "granted") throw new Error("存放文件夹未授权");
+        await Archive.removeFolder(root, entry.folder);
+        for (const job of archiveState.jobs.values()) {
+          if (job.folder === entry.folder) archiveState.jobs.delete(job.key);
+        }
+      } catch {
+        failed.push(entry);
+      }
+    }
+  }
+  try {
+    archiveState.index = await Archive.saveIndex([...keep, ...failed.map((entry) => ({ ...entry, historyIds: [] }))]);
+  } catch {
+    // 索引写入失败不影响历史删除本身
+  }
+  renderArchiveStatus();
+  return { deleted: release.length - failed.length, failed: failed.map((entry) => entry.folder) };
 }
 
 // —— 消息与事件 ——
@@ -3084,9 +3694,13 @@ function answerPendingLinkQuery(message, sendResponse) {
   return false;
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "XHS_AI_QUERY_PENDING_LINK") {
     return answerPendingLinkQuery(message, sendResponse);
+  }
+  if (message?.type === "XHS_ARCHIVE_PAGE_READY") {
+    handleArchiveReady(message, sender);
+    return false;
   }
   if (message?.type === "XHS_AI_WORKFLOW_STATE") applyWorkflowState(message.workflow);
   if (message?.type === "XHS_AI_MERGE_PROGRESS" && tasks.has("merge")) {
@@ -3106,6 +3720,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // 设置页保存/清除飞书配置后，侧边栏无需重开即可更新发送图标
 chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
   if (!changes) return;
+  if (Archive && areaName === "local" && (Archive.SETTINGS_KEY in changes || Archive.INDEX_KEY in changes)) {
+    void refreshArchiveSettings();
+  }
   const relevant = areaName === "local"
     ? "xhsAiConfig" in changes || "xhsAiPersistentSecrets" in changes
     : areaName === "session" && "xhsAiSecrets" in changes;
@@ -3351,6 +3968,8 @@ elements.resultLinkHint.addEventListener("click", (event) => {
 });
 
 elements.historyClearButton.addEventListener("click", clearHistoryRecords);
+elements.archiveGrantButton?.addEventListener?.("click", () => { void grantArchiveFolder(); });
+elements.archiveRetryButton?.addEventListener?.("click", () => { void retryArchiveScreens(); });
 elements.historyList.addEventListener("click", (event) => {
   const row = event.target?.closest?.(".history-item");
   if (!row) return;
@@ -3448,6 +4067,7 @@ void (async () => {
   refreshBasket();
   refreshHistory();
   refreshFeishuStatus();
+  refreshArchiveSettings();
   refreshButtons();
   restoreCurrentWorkflow();
   hydrateWorkflows();

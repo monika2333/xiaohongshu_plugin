@@ -164,6 +164,32 @@
           </div>
         </section>
 
+        <section class="provider-card archive-card" aria-labelledby="archive-title">
+          <div class="card-number">C</div>
+          <div class="card-heading">
+            <p class="eyebrow">POST ARCHIVE</p>
+            <h2 id="archive-title">截图存档 <span class="recommendation">可选</span></h2>
+            <p>开启后，每次提取帖文都会把帖文初始屏截图、评论区长截图、配图原图、采集数据和概括文本存进你选定的文件夹，帖子日后被删也有原始画面可查。删除或清空概括历史时，对应的存档文件夹会一并删除。开关与文件夹即时生效，无需点保存。</p>
+          </div>
+          <div class="archive-body">
+            <label class="split-option">
+              <input id="archive-enabled" class="remember-input" type="checkbox">
+              <span class="remember-toggle" aria-hidden="true"></span>
+              <span class="split-copy">
+                <strong>截图存档</strong>
+                <small>开启时会申请「访问所有网站」权限，仅用于截取帖文页面画面</small>
+              </span>
+            </label>
+            <p class="archive-warning">截图期间请停留在帖文页签，不要切换。插件发现页签被切走会立即停止截图，避免截到别的页面；回到帖文页签后可在结果卡上点「重新截图」。</p>
+            <div class="card-actions">
+              <button id="archive-folder-button" class="test-button" type="button">选择存放文件夹</button>
+              <span id="archive-folder-status" class="test-status" aria-live="polite">尚未选择存放文件夹</span>
+            </div>
+            <p class="field-help">建议新建一个专用文件夹，例如「D:\舆情存档」。每条帖文会在里面单独建一个子文件夹。浏览器重启后第一次存档时，可能需要再点一次「允许」。</p>
+            <p id="archive-status" class="test-status" aria-live="polite"></p>
+          </div>
+        </section>
+
         <section class="workflow-strip" aria-label="处理顺序">
           <span>页面证据</span><b>→</b><span id="flow-vision">模型识别图片</span><b>→</b><span id="flow-text">模型编写简报</span><b>→</b><span>飞书（可选）</span>
         </section>
@@ -234,6 +260,7 @@
       </form>
     </main>
     <script src="prompts.js"></script>
+    <script src="archive.js"></script>
     <script src="options.js"></script>
   </body>
 </html>
