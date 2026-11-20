@@ -1,4 +1,4 @@
-importScripts("prompts.js", "ai-pipeline.js");
+importScripts("prompts.js", "media-access.js", "ai-pipeline.js");
 
 const CONFIG_KEY = "xhsAiConfig";
 const SECRETS_KEY = "xhsAiSecrets";

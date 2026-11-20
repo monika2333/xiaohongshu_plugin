@@ -75,6 +75,19 @@ for (const match of read("service-worker.js").matchAll(/importScripts\s*\(([^)]*
   for (const file of match[1].matchAll(/["']([^"']+)["']/g)) add(file[1]);
 }
 
+// v0.21.3 微博配图防盗链：media-access.js 必须同时在侧边栏页面与后台加载，
+// 否则取图前注册不进补 Referer 的规则，微博配图仍会 403（引用反查发现不了「少加载」）。
+assert.match(
+  read("panel.html"),
+  /<script\b[^>]*\bsrc\s*=\s*["']media-access\.js["']/i,
+  "panel.html 需要在主脚本之前加载 media-access.js"
+);
+assert.match(
+  read("service-worker.js"),
+  /importScripts\s*\([^)]*["']media-access\.js["']/,
+  "service-worker.js 需要 importScripts media-access.js"
+);
+
 // panel.js 里 chrome.scripting.executeScript 的 files
 for (const match of read("panel.js").matchAll(/\bfiles\s*:\s*\[([^\]]*)\]/g)) {
   for (const file of match[1].matchAll(/["']([^"']+)["']/g)) add(file[1]);

@@ -405,6 +405,8 @@
     if (typeof image?.dataUrl === "string" && image.dataUrl.startsWith("data:image/")) {
       return image.dataUrl;
     }
+    // 微博图床对没有 Referer 的请求返回 403：先确保 media-access.js 已注册补 Referer 的规则。
+    await globalThis.XhsMediaAccess?.ensureWeiboMediaReferer?.();
     const response = await fetch(image.url, { credentials: "omit" });
     if (!response.ok) throw new Error(`图片读取失败（HTTP ${response.status}）`);
     const buffer = await response.arrayBuffer();
@@ -1209,6 +1211,7 @@
     promptCacheTag,
     validateConfig,
     parseJsonResponse,
+    imageToDataUrl,
     platformLabel,
     resolvePublishedDate,
     normalizeVisionItem,

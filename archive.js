@@ -378,7 +378,9 @@
   }
 
   // 帖文配图：直接从图片服务器下载页面上的图片文件，不做任何处理；视频帖存截帧。
+  // 微博图床对没有 Referer 的请求返回 403：先确保 media-access.js 已注册补 Referer 的规则。
   async function collectMediaFiles(payload) {
+    await globalThis.XhsMediaAccess?.ensureWeiboMediaReferer?.();
     const images = Array.isArray(payload?.media?.images) ? payload.media.images : [];
     const isVideo = Boolean(payload?.media?.video);
     const files = [];

@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-19（v0.21.2 修窄窗口上下排列时评论只加载一页、评论区长截图全黑）
+> 最近更新：2026-11-20（v0.21.3 修微博配图下载与识别被图床防盗链挡住的 403）
 
 ## 产品概况
 
@@ -9,12 +9,12 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送、可选的截图存档（帖文页截图与配图存到用户自选文件夹）。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.21.2。更早的演进见 `git log`。
+- 当前版本：0.21.3。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
 - 不内置任何 API Key，模型 Key 由用户自行填写。
-- `host_permissions` 只列必要域名，不用 `<all_urls>`。模型 API 域名走 `optional_host_permissions`，保存或测试设置时按需申请。`<all_urls>` 只作为可选权限，用户开启截图存档时才申请（`captureVisibleTab` 只认它或 activeTab）。
+- `host_permissions` 只列必要域名，不用 `<all_urls>`。模型 API 域名走 `optional_host_permissions`，保存或测试设置时按需申请。`<all_urls>` 只作为可选权限，用户开启截图存档时才申请（`captureVisibleTab` 只认它或 activeTab）。`declarativeNetRequestWithHostAccess` 只用于给扩展自己的 `*.sinaimg.cn` 图片请求补 `Referer`（规则 `initiatorDomains` 限扩展 ID），依赖已声明的 host_permissions，不新增用户可见的权限提示。
 - 产品主名称不使用「小红书」「Xiaohongshu」，避免商标问题。
 - 商店描述要回应单一用途政策。
 - `PRIVACY_POLICY.md` 必须如实披露所有数据流向：模型 API、飞书、xhslink.cn 短链解析。
@@ -28,6 +28,7 @@
 | `panel.html` / `panel.css` / `panel.js` | 侧边栏：当前帖文、添加素材、合并概括、结果四区块，历史屏，任务条 |
 | `options.html` / `options.css` / `options.js` | 设置页：模型配置（共用 / 分开）与测试、飞书推送、截图存档开关与存放文件夹、密钥存储模式、概括提示词自定义 |
 | `archive.js` | 截图存档：初始屏与评论区长截图（截取、拼接）、配图下载、写入 / 删除存档文件夹、存档索引；侧边栏与设置页共用 |
+| `media-access.js` | 微博图床防盗链：`declarativeNetRequest` 动态规则只给本扩展自己发起的 `*.sinaimg.cn` 请求补 `Referer`；侧边栏与后台在图片 fetch 前 `await ensureWeiboMediaReferer()`（设置页不取图，不需要） |
 | `service-worker.js` | 后台：消息路由、配置与密钥、缓存、工作流状态、合并清单、历史、飞书推送、短链解析与补链接 |
 | `ai-pipeline.js` | 模型调用、证据构建、图片识别、文字概括、截图识别、结果渲染、缓存键 |
 | `prompts.js` | 全部内置提示词 |
@@ -77,6 +78,7 @@
 - **截图加入合并的占位条目**：「识别并加入合并」点下去就把暂存截图搬进 `pendingShots`（面板内存，后台不知道），在合并概括末尾渲染「识别中…」条目，暂存区立刻清空；每批一个任务 `shot:merge:<pendingId>`，可并行。成功后后台返回新条目 `id`，识别期间才选定的链接用它补写；失败的条目可重试、放回暂存区或丢弃。有占位条目时合并按钮置灰（`refreshButtons` 与 `runMergeSummarize` 都判断 `pendingShots.length`），条数与 5 条名额都算上识别中的批次（面板 `MERGE_ITEM_LIMIT` 必须等于后台 `MAX_MERGE_ITEMS`，有测试断言）。后台合并条目的增删改都经 `withMergeBasketLock` 串行，避免并行识别完一起落地时读-改-写互相覆盖；测试的存储 mock 返回拷贝，才测得出这种覆盖。
 - **历史**：`chrome.storage.local`，最多 100 条，只存概括全文与元信息，不存评论和图片证据。
 - **截图存档**：一份存档对应一次采集，键为 `平台|帖子ID或shot-截图ID|exportedAt`（`archive.js` 的 `captureKey` 与 `service-worker.js` 的 `archiveCaptureKey` 同格式，测试对齐）。设置 `xhsAiArchiveSettingsV1`、索引 `xhsAiArchiveIndexV1`（`folder`、`key`、`files`、`historyIds`）、目录句柄在 IndexedDB `shuye-archive`。重新生成复用同一存档、只追加 historyId；合并结果带 `captureKeys` 关联各帖存档。存档只在有概括记录时写入（`flushArchiveJob` 无 historyId 时只置 `awaiting-summary`），因此索引里每个文件夹都至少关联过一条历史；删除历史按 `foldersToRelease` 只删不再被现存记录引用的文件夹；自动淘汰不删。微博评论区截图 10 屏封顶。截图只截前台页签，每屏前后都查 `tabs.get().active`，切走即停（不要放宽，否则会把别的页面存进存档）。文件夹授权必须在用户点击当下申请（`primeArchiveFolder`），浏览器重启后会再要一次。小红书截「真正在滚的区域」：宽窗口是 `.note-scroller` 自己，窗口变窄帖文上下排列后 `.note-scroller` 不再滚动，滚的是外层弹层或页面——`content-script.js` 的 `resolveCommentScroller` 与 `archive.js` 页面函数里的 `resolveXhs` 用同一规则找它（页面函数必须自包含，`resolveXhs` 在四个页面函数里各有一份，改时要一起改）；截取区域横向取帖文那一栏、纵向取滚动区域在屏幕上看得见的部分，弹层自带的顶栏底栏靠 `elementFromPoint` 命中测试排除。拼接时截取位置超出画面直接报错，不再拼出空白图。微博靠 `.wbpro-tab3` + `article` 定位正文栏。
+- **微博图床防盗链**：`*.sinaimg.cn` 对带浏览器 UA、但没有 `weibo.com` Referer 的请求返回 403。扩展页面与后台发起的 fetch 不带 Referer，`fetch` 的 `referrer` 选项与 `XHR.setRequestHeader("Referer")` 都会被浏览器丢掉，只能用 `media-access.js` 的 `declarativeNetRequest` 动态规则补（`initiatorDomains` 用 `chrome.runtime.id`，只改本扩展自己的请求）。`archive.js` 的 `collectMediaFiles` 与 `ai-pipeline.js` 的 `imageToDataUrl` 在 fetch 前都 await 规则就绪；以后新增读取平台图片的入口也要先 await，否则微博配图会静默失败（图片识别失败只降级为纯文字概括，界面上看不出来）。
 - **消息来源校验**：`EXTENSION_PAGE_MESSAGES` 只接受插件页面发出的消息，内容脚本消息只接受来自帖文页的。新增消息要加入对应集合。`XHS_ARCHIVE_PAGE_READY` 与 `XHS_ARCHIVE_FRAME` 由面板直接接收（后台不处理），面板按发送页签与登记的 pageSessionId 校验；`XHS_ARCHIVE_FRAME` 只有发起采集的面板才回复（异步 sendResponse），其他面板不回。
 - **帖子 ID**：小红书为 24 位十六进制，取自 `/explore/<id>` 或 `/discovery/item/<id>`。微博为 `mblogid`；URL 路径是纯数字 mid 时视为无法解析。
 - **短链**：只支持 `xhslink.cn`。后台解析时不携带登录信息（`credentials: "omit"`），实测落到登录页，帖子 ID 在 `redirectPath` 参数里。

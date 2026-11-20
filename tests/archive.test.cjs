@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 const root = path.join(__dirname, "..");
 const archiveSource = fs.readFileSync(path.join(root, "archive.js"), "utf8");
+const mediaAccessSource = fs.readFileSync(path.join(root, "media-access.js"), "utf8");
 // vm 上下文里产生的数组/对象与本上下文原型不同，比较前转成普通 JSON
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const deepEqual = (actual, expected, message) => assert.deepEqual(plain(actual), plain(expected), message);
@@ -211,6 +212,116 @@ async function settle(rounds = 20) {
     deepEqual(released.keep.find((entry) => entry.folder === "B").historyIds, ["h2"]);
     deepEqual(Archive.foldersToRelease(index, ["h1", "h2", "h3"], []).release.map((entry) => entry.folder), ["A", "B", "C", "D"]);
     deepEqual(Archive.entriesForHistory(index, "h2").map((entry) => entry.folder), ["B"]);
+  }
+
+  // —— v0.21.3 微博配图防盗链：用 declarativeNetRequest 只给本扩展自己的 sinaimg 请求补 Referer ——
+  {
+    // 规则形状：改的是 Referer，条件是 sinaimg 的 XHR、发起方限本扩展（initiatorDomains 用扩展 ID）
+    const rules = [];
+    const chromeMock = {
+      runtime: { id: "testextensionid" },
+      declarativeNetRequest: {
+        async updateDynamicRules(options) {
+          rules.push(options);
+        }
+      }
+    };
+    const mediaContext = { chrome: chromeMock, console, Promise };
+    vm.createContext(mediaContext);
+    vm.runInContext(mediaAccessSource, mediaContext, { filename: "media-access.js" });
+    const Media = mediaContext.XhsMediaAccess;
+    const rule = plain(Media.weiboMediaRefererRule("testextensionid"));
+    assert.equal(rule.id, Media.RULE_ID);
+    deepEqual(rule.action.requestHeaders, [
+      { header: "Referer", operation: "set", value: "https://weibo.com/" }
+    ]);
+    deepEqual(rule.condition.requestDomains, ["sinaimg.cn"]);
+    deepEqual(rule.condition.resourceTypes, ["xmlhttprequest"]);
+    deepEqual(rule.condition.initiatorDomains, ["testextensionid"], "规则只能匹配本扩展发出的请求");
+
+    assert.equal(await Media.ensureWeiboMediaReferer(), true);
+    assert.equal(await Media.ensureWeiboMediaReferer(), true, "重复调用不能重复注册");
+    assert.equal(rules.length, 1, "规则只注册一次");
+    deepEqual(rules[0].removeRuleIds, [Media.RULE_ID]);
+    deepEqual(plain(rules[0].addRules), [rule]);
+
+    // 没有 declarativeNetRequest 权限时（Node 测试、旧版浏览器）安静返回 false，不抛错
+    const noApi = { chrome: {}, console, Promise };
+    vm.createContext(noApi);
+    vm.runInContext(mediaAccessSource, noApi, { filename: "media-access.js" });
+    assert.equal(await noApi.XhsMediaAccess.ensureWeiboMediaReferer(), false);
+
+    // 注册接口失败时不能挡住配图下载；失败不缓存（下次取图重试），只警告一次
+    let attempts = 0;
+    const warnings = [];
+    const brokenApi = {
+      chrome: {
+        runtime: { id: "testextensionid" },
+        declarativeNetRequest: {
+          async updateDynamicRules() {
+            attempts += 1;
+            throw new Error("rule failed");
+          }
+        }
+      },
+      console: { warn: (message) => warnings.push(String(message)) },
+      Promise
+    };
+    vm.createContext(brokenApi);
+    vm.runInContext(mediaAccessSource, brokenApi, { filename: "media-access.js" });
+    assert.equal(await brokenApi.XhsMediaAccess.ensureWeiboMediaReferer(), false);
+    assert.equal(await brokenApi.XhsMediaAccess.ensureWeiboMediaReferer(), false, "注册失败不缓存，下一次还要试");
+    assert.equal(attempts, 2, "注册失败后应重试而不是永久缓存失败结果");
+    assert.equal(warnings.length, 1, "注册失败只警告一次，避免每张图都刷警告");
+  }
+
+  // —— 存档下载配图：先注册补 Referer 的规则，再 fetch 图片；文件名按返回类型定扩展名 ——
+  {
+    const order = [];
+    const ruleDelayMs = 5;
+    const imageContext = {
+      chrome: {
+        runtime: { id: "testextensionid" },
+        declarativeNetRequest: {
+          // 故意异步完成：archive.js 若漏掉 await，fetch 会先于 rule 记录，断言能发现
+          async updateDynamicRules() {
+            await new Promise((resolve) => setTimeout(resolve, ruleDelayMs));
+            order.push("rule");
+          }
+        }
+      },
+      console,
+      Blob,
+      URL,
+      Date,
+      Math,
+      JSON,
+      Promise,
+      setTimeout,
+      clearTimeout,
+      structuredClone,
+      fetch: async (url) => {
+        order.push(`fetch:${url}`);
+        return { ok: true, blob: async () => new Blob(["img"], { type: "image/jpeg" }) };
+      }
+    };
+    vm.createContext(imageContext);
+    vm.runInContext(mediaAccessSource, imageContext, { filename: "media-access.js" });
+    vm.runInContext(archiveSource, imageContext, { filename: "archive.js" });
+    const media = await imageContext.XhsArchive.collectMediaFiles({
+      media: { images: [{ url: "https://wx3.sinaimg.cn/large/4aec4d76ly1ih0ock070wj20nx0tngp0.jpg" }] }
+    });
+    deepEqual(order, ["rule", "fetch:https://wx3.sinaimg.cn/large/4aec4d76ly1ih0ock070wj20nx0tngp0.jpg"], "补 Referer 的规则必须先于图片请求");
+    assert.equal(media.failed, 0);
+    deepEqual(media.files.map((file) => file.name), ["配图-01.jpg"]);
+
+    // 没加载 media-access.js 时（Node 测试、旧页面缓存）照旧下载，不因缺规则报错
+    const { Archive } = loadArchive({}, {
+      fetch: async () => ({ ok: true, blob: async () => new Blob(["img"], { type: "image/webp" }) })
+    });
+    const fallback = await Archive.collectMediaFiles({ media: { images: [{ url: "https://sns-webpic-qc.xhscdn.com/a.webp" }] } });
+    assert.equal(fallback.failed, 0);
+    deepEqual(fallback.files.map((file) => file.name), ["配图-01.webp"]);
   }
 
   // —— 页面测量：微博截取正文那一栏，顶部固定导航与吸顶返回栏连在一起算遮挡 ——

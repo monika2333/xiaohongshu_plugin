@@ -83,14 +83,21 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.2");
+assert.equal(manifest.version, "0.21.3");
+// v0.21.3 微博配图防盗链：扩展自己发起的请求不带 Referer，需要 declarativeNetRequest 补请求头。
+// 用 WithHostAccess 变体：只依赖已有的安装时 host_permissions，不新增用户可见的权限提示。
+assert.ok(
+  manifest.permissions.includes("declarativeNetRequestWithHostAccess"),
+  "微博配图下载与识别需要 declarativeNetRequestWithHostAccess 权限"
+);
+assert.ok(!manifest.permissions.includes("declarativeNetRequest"), "不要用会改所有网站请求的 declarativeNetRequest 权限");
 // v0.21.0 截图存档：「所有网站」只作为可选权限，开启存档时才申请；安装时的权限不变
 assert.ok(manifest.optional_host_permissions.includes("<all_urls>"), "截图存档需要可选的 <all_urls>");
 assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能出现在安装时的 host_permissions");
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.2");
+assert.equal(packageJson.version, "0.21.3");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -279,6 +286,52 @@ const payload = {
     context.XhsAi.selectVisionEvidence([ignoredImage, usefulImage]).map((item) => item.image_index).join(","),
     "2"
   );
+
+  // —— v0.21.3 图片识别取图前先注册微博图床补 Referer 的规则，否则微博配图识别会 403 ——
+  {
+    const order = [];
+    const imageContext = {
+      chrome: {},
+      console,
+      Promise,
+      URL,
+      Uint8Array,
+      TextEncoder,
+      btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+      setTimeout,
+      clearTimeout,
+      fetch: async (url) => {
+        order.push(`fetch:${url}`);
+        return {
+          ok: true,
+          headers: { get: () => "image/jpeg" },
+          arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer
+        };
+      }
+    };
+    imageContext.XhsMediaAccess = {
+      // 故意异步完成：imageToDataUrl 若漏掉 await，fetch 会先于 rule 记录
+      async ensureWeiboMediaReferer() {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        order.push("rule");
+        return true;
+      }
+    };
+    vm.createContext(imageContext);
+    for (const filename of ["prompts.js", "ai-pipeline.js"]) {
+      vm.runInContext(fs.readFileSync(path.join(__dirname, "..", filename), "utf8"), imageContext, { filename });
+    }
+    const dataUrl = await imageContext.XhsAi.imageToDataUrl({ url: "https://wx3.sinaimg.cn/large/abc.jpg" });
+    assert.equal(dataUrl, "data:image/jpeg;base64,AQID");
+    assert.deepEqual(order, ["rule", "fetch:https://wx3.sinaimg.cn/large/abc.jpg"], "必须先注册补 Referer 的规则再取图");
+    // 视频截帧本来就是 dataUrl，不走网络也不依赖规则
+    order.length = 0;
+    assert.equal(
+      await imageContext.XhsAi.imageToDataUrl({ dataUrl: "data:image/jpeg;base64,AAAA" }),
+      "data:image/jpeg;base64,AAAA"
+    );
+    assert.deepEqual(order, []);
+  }
 
   // —— 网页帖证据逐字锁定：配图文字规则只属于截图帖，网页帖证据结构不得漂移 ——
   const webVision = [
