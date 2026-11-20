@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const zlib = require("node:zlib");
 const { webcrypto } = require("node:crypto");
 
 const storageState = { local: {}, session: {} };
@@ -83,7 +84,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.3");
+assert.equal(manifest.version, "0.21.4");
 // v0.21.3 微博配图防盗链：扩展自己发起的请求不带 Referer，需要 declarativeNetRequest 补请求头。
 // 用 WithHostAccess 变体：只依赖已有的安装时 host_permissions，不新增用户可见的权限提示。
 assert.ok(
@@ -97,7 +98,7 @@ assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能�
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.3");
+assert.equal(packageJson.version, "0.21.4");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -456,6 +457,82 @@ const payload = {
     /尚未配置文字模型 API Key/
   );
 
+  // 内置的图片测试图必须能真解码：v0.17.0 起内嵌过一个结构损坏的 PNG（chunk 断裂、IDAT 解压失败），
+  // DeepSeek 直接回「invalid image … corrupted」，能看图的模型也被判成不支持（v0.21.4 修）。
+  // 这里按 PNG 规范逐块校验 CRC、解压像素，不能只检查 data URL 前缀。
+  function decodePngDataUrl(url) {
+    const prefix = "data:image/png;base64,";
+    assert.ok(url.startsWith(prefix), "内置测试图必须是 PNG data URL");
+    const bytes = Buffer.from(url.slice(prefix.length), "base64");
+    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    assert.ok(bytes.subarray(0, 8).equals(signature), "内置测试图缺少 PNG 签名");
+    const crcTable = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+    const crc32 = (buffer) => {
+      let c = 0xffffffff;
+      for (const byte of buffer) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    let header = null;
+    const idatChunks = [];
+    let offset = 8;
+    let sawEnd = false;
+    while (offset < bytes.length) {
+      assert.ok(offset + 12 <= bytes.length, "内置测试图 PNG chunk 被截断");
+      const length = bytes.readUInt32BE(offset);
+      const type = bytes.toString("ascii", offset + 4, offset + 8);
+      const dataEnd = offset + 8 + length;
+      assert.ok(dataEnd + 4 <= bytes.length, `内置测试图 PNG chunk ${type} 被截断`);
+      const data = bytes.subarray(offset + 8, dataEnd);
+      const expectedCrc = crc32(Buffer.concat([Buffer.from(type, "ascii"), data]));
+      assert.equal(bytes.readUInt32BE(dataEnd), expectedCrc, `内置测试图 PNG chunk ${type} 的 CRC 不对`);
+      if (type === "IHDR") header = data;
+      else if (type === "IDAT") idatChunks.push(data);
+      else if (type === "IEND") { sawEnd = true; break; }
+      else assert.fail(`内置测试图 PNG 出现意外 chunk：${type}`);
+      offset = dataEnd + 4;
+    }
+    assert.ok(header, "内置测试图 PNG 缺少 IHDR");
+    assert.ok(sawEnd, "内置测试图 PNG 缺少 IEND");
+    assert.ok(idatChunks.length > 0, "内置测试图 PNG 缺少 IDAT");
+    const width = header.readUInt32BE(0);
+    const height = header.readUInt32BE(4);
+    assert.equal(header[8], 8, "内置测试图应使用 8 位色深");
+    assert.equal(header[9], 2, "内置测试图应为无透明通道的 RGB PNG");
+    assert.equal(header[12], 0, "内置测试图不应使用隔行扫描");
+    const channels = 3;
+    const stride = width * channels;
+    const raw = zlib.inflateSync(Buffer.concat(idatChunks));
+    assert.equal(raw.length, (stride + 1) * height, "内置测试图 PNG 解码后的像素数据长度不对");
+    const paeth = (a, b, c) => {
+      const p = a + b - c;
+      const pa = Math.abs(p - a);
+      const pb = Math.abs(p - b);
+      const pc = Math.abs(p - c);
+      return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+    };
+    const pixels = Buffer.alloc(stride * height);
+    for (let row = 0; row < height; row++) {
+      const filter = raw[row * (stride + 1)];
+      const src = row * (stride + 1) + 1;
+      const dst = row * stride;
+      for (let i = 0; i < stride; i++) {
+        const left = i >= channels ? pixels[dst + i - channels] : 0;
+        const up = row > 0 ? pixels[dst - stride + i] : 0;
+        const upLeft = row > 0 && i >= channels ? pixels[dst - stride + i - channels] : 0;
+        const predictors = [0, left, up, Math.floor((left + up) / 2), paeth(left, up, upLeft)];
+        assert.ok(filter < predictors.length, `内置测试图 PNG 使用了未知过滤器 ${filter}`);
+        pixels[dst + i] = (raw[src + i] + predictors[filter]) & 0xff;
+      }
+    }
+    const rgb = [];
+    for (let i = 0; i < pixels.length; i += channels) rgb.push([pixels[i], pixels[i + 1], pixels[i + 2]]);
+    return { width, height, pixels: rgb };
+  }
+
   // 连接测试：shared 先测文字再发红色测试图；图片失败只标在 vision 上，不算整体失败
   const providerRequests = [];
   const savedFetch = context.fetch;
@@ -471,7 +548,11 @@ const payload = {
   assert.equal(providerRequests.length, 2);
   assert.equal(typeof providerRequests[0].body.messages[0].content, "string");
   const imageParts = providerRequests[1].body.messages[0].content;
-  assert.match(imageParts[0].image_url.url, /^data:image\/png;base64,/);
+  const visionTestImage = decodePngDataUrl(imageParts[0].image_url.url);
+  assert.deepEqual([visionTestImage.width, visionTestImage.height], [32, 32]);
+  visionTestImage.pixels.forEach(([r, g, b], index) => {
+    assert.ok(r === 255 && g === 0 && b === 0, `内置测试图第 ${index} 个像素不是纯红：${r},${g},${b}`);
+  });
   assert.equal(providerRequests[1].auth, "Bearer text-key");
 
   context.fetch = async (url, options) => {

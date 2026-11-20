@@ -12,7 +12,9 @@
   const SCREENSHOT_TIMEOUT_MAX_MS = 240000;
 
   // 模型连接测试用的 32×32 纯红色 PNG：用来确认模型能否看图（只回答颜色）。
-  const VISION_TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR42mO4IydHU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAJI2YD30P/0LAAAAAElFTkSuQmCC";
+  // 测试会真解码这串 base64 并校验像素（tests/service-worker.test.cjs），不要再手工改：
+  // v0.17.0 起这里曾内嵌一个结构损坏的 PNG，DeepSeek 直接回「invalid image…corrupted」。
+  const VISION_TEST_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQ0AAAgEoNP+nTWFDzcoQE1udQQCgUAgEAgEAsGTYAGjxAE/G/Q2tQAAAABJRU5ErkJggg==";
 
   const DEFAULT_CONFIG = Object.freeze({
     // shared：文字概括与图片识别共用 text 这一组设置；split：两组各自生效。
