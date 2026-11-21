@@ -84,7 +84,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.5");
+assert.equal(manifest.version, "0.21.6");
 // v0.21.3 微博配图防盗链：扩展自己发起的请求不带 Referer，需要 declarativeNetRequest 补请求头。
 // 用 WithHostAccess 变体：只依赖已有的安装时 host_permissions，不新增用户可见的权限提示。
 assert.ok(
@@ -98,7 +98,7 @@ assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能�
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.5");
+assert.equal(packageJson.version, "0.21.6");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -198,6 +198,10 @@ const payload = {
   // v0.16.6：发帖人评论区回复只在带来新事实时写入，没有就不提；其他网民评论不进单帖正文
   assert.match(context.XhsPrompts.textSystem, /发帖人在评论区的回复只在带来正文没有的新事实、事件进展、处理结果或更正时写入，没有就不提/);
   assert.match(context.XhsPrompts.textSystem, /其他网民的评论和提问不写进正文/);
+  // v0.21.6 图片文字与标题意思相同时不再单独复述（「所附文字同样在问……」），只并入多出来的信息
+  assert.match(context.XhsPrompts.textSystem, /图片证据和标题、正文同属这一条帖文，不是另一个信息源/);
+  assert.match(context.XhsPrompts.textSystem, /与标题、正文意思相同的部分不再复述/);
+  assert.doesNotMatch(context.XhsPrompts.textSystem, /图片证据是正文的补充/);
   assert.match(context.XhsPrompts.mergeSystem, /发帖人的补充说明只在带来新事实/);
   // 补充委托：合并正文点名发帖人，评论只进观点区，观点条要求与单帖对齐
   assert.match(context.XhsPrompts.mergeSystem, /以首帖发帖人引出（写法同上）/);
