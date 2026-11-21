@@ -84,7 +84,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.4");
+assert.equal(manifest.version, "0.21.5");
 // v0.21.3 微博配图防盗链：扩展自己发起的请求不带 Referer，需要 declarativeNetRequest 补请求头。
 // 用 WithHostAccess 变体：只依赖已有的安装时 host_permissions，不新增用户可见的权限提示。
 assert.ok(
@@ -98,7 +98,7 @@ assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能�
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.4");
+assert.equal(packageJson.version, "0.21.5");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -287,6 +287,42 @@ const payload = {
     context.XhsAi.selectVisionEvidence([ignoredImage, usefulImage]).map((item) => item.image_index).join(","),
     "2"
   );
+
+  // —— v0.21.5 图片里有字就交给文字模型：复述标题的文字卡片常被图片模型判成 none，
+  // 卡片里多出的学校简称（「北理」）随之丢掉，概括认不出涉事学校 ——
+  {
+    const titleCard = context.XhsAi.normalizeVisionItem({
+      image_index: 3,
+      has_text: true,
+      visible_text: "北理补发的国补和校补啥时候到账银行卡呢",
+      factual_description: "浅粉色背景的文字卡片",
+      summary_value: "none",
+      organizations: ["北理"]
+    }, 3);
+    const blankText = context.XhsAi.normalizeVisionItem({
+      image_index: 4,
+      has_text: true,
+      visible_text: "   ",
+      summary_value: "none"
+    }, 4);
+    assert.equal(titleCard.summary_value, "none");
+    assert.equal(titleCard.factual_description, "", "none 的画面描述仍然清空，只保留 OCR 文字");
+    assert.equal(
+      context.XhsAi.selectVisionEvidence([ignoredImage, usefulImage, titleCard, blankText])
+        .map((item) => item.image_index).join(","),
+      "2,3",
+      "有文字的 none 图要保留，无字或只有空白的 none 图仍然筛掉"
+    );
+    const cardEvidence = context.XhsAi.buildEvidence({
+      source: { platform: "xiaohongshu", noteId: "card", url: "https://www.xiaohongshu.com/explore/card" },
+      note: { title: "10月每月绑卡没收到，11月会补发吧？" },
+      media: { images: [{ url: "https://sns-webpic-qc.xhscdn.com/a" }] }
+    }, [titleCard], null);
+    assert.deepEqual(
+      cardEvidence.imageEvidence.map((item) => item.visible_text),
+      ["北理补发的国补和校补啥时候到账银行卡呢"]
+    );
+  }
 
   // —— v0.21.3 图片识别取图前先注册微博图床补 Referer 的规则，否则微博配图识别会 403 ——
   {

@@ -448,8 +448,13 @@
     };
   }
 
+  // 图片模型的 summary_value 只用来筛掉无字的自拍、风景等配图；图里有字就一律交给文字模型，
+  // 是否写进概括由文字模型判断。只把标题再写一遍的文字卡片常被判成「装饰封面」（none），
+  // 卡片里多出来的学校简称、事项名称会随之丢掉（v0.21.5 北理国补帖）。
   function selectVisionEvidence(vision) {
-    return (vision || []).filter((item) => ["essential", "supporting"].includes(item?.summary_value));
+    return (vision || []).filter((item) => (
+      ["essential", "supporting"].includes(item?.summary_value) || Boolean(cleanText(item?.visible_text))
+    ));
   }
 
   async function analyzeVisionBatch(images, startIndex, config, apiKey) {
