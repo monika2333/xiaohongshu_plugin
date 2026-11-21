@@ -84,7 +84,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "manifest
 assert.ok(manifest.permissions.includes("sidePanel"), "manifest 缺少 sidePanel 权限");
 assert.equal(manifest.side_panel?.default_path, "panel.html");
 assert.ok(!("default_popup" in manifest.action), "action 不应再定义 default_popup");
-assert.equal(manifest.version, "0.21.6");
+assert.equal(manifest.version, "0.22.0");
 // v0.21.3 微博配图防盗链：扩展自己发起的请求不带 Referer，需要 declarativeNetRequest 补请求头。
 // 用 WithHostAccess 变体：只依赖已有的安装时 host_permissions，不新增用户可见的权限提示。
 assert.ok(
@@ -98,7 +98,7 @@ assert.ok(!manifest.host_permissions.includes("<all_urls>"), "<all_urls> 不能�
 assert.ok(manifest.host_permissions.includes("https://xhslink.cn/*"));
 assert.ok(manifest.host_permissions.includes("https://*.xhslink.cn/*"));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
-assert.equal(packageJson.version, "0.21.6");
+assert.equal(packageJson.version, "0.22.0");
 
 // —— 0.13.1 仓库骨架：AGENTS/.memory 入库、交付说明不再放根目录、打包白名单 ——
 const repoRoot = path.join(__dirname, "..");
@@ -1856,6 +1856,22 @@ const payload = {
   assert.match(deferredWorkflow.progress.detail, /链接更新后会自动推送到飞书/);
   const deferredHistory = (await context.listHistory()).items.find((entry) => entry.id === pageDeferred.result.historyId);
   assert.equal(deferredHistory.result.notification.status, "deferred");
+
+  // v0.22.0 自动化入口：agent-api 标记为「本次不推送」的页签，概括照常、不查询面板、不请求飞书
+  assert.equal(typeof context.SHUYE_AGENT_API?.captureTab, "function", "后台应暴露自动化入口");
+  const realAgentApi = context.SHUYE_AGENT_API;
+  context.SHUYE_AGENT_API = { isQuiet: (tabId) => tabId === 61 };
+  const queriesBeforeQuiet = queriesSeen();
+  const quietResult = await context.summarizePagePayload({
+    payload: deferPayload,
+    force: true,
+    pageSessionId: "page-session-quiet"
+  }, { tab: { id: 61 }, url: textOnlyPayload.source.url });
+  assert.equal(quietResult.ok, true);
+  assert.equal(quietResult.result.notification, null, "自动化静默采集不应推送飞书");
+  assert.equal(feishuRequests.length, 0, "自动化静默采集不应请求飞书");
+  assert.equal(queriesSeen(), queriesBeforeQuiet, "跳过推送时不必查询面板待补链接");
+  context.SHUYE_AGENT_API = realAgentApi;
 
   // 补链接本身仍不推送：结果保持 deferred，只是文本换成短链
   const relinkedDeferred = await context.relinkResult({

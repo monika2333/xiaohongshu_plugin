@@ -1,7 +1,7 @@
 # 项目上下文
 
 > 本文件反映项目**当前**状态。事实变化时改写对应段落，不追加流水账。
-> 最近更新：2026-11-21（v0.21.6 单帖写作提示词：图片文字与标题意思相同时不再复述）
+> 最近更新：2026-11-21（v0.22.0 新增自动化入口 agent-api.js）
 
 ## 产品概况
 
@@ -9,7 +9,7 @@
 - 功能：采集小红书、微博帖文的正文、图片、视频字幕与前 50 条一级评论，调用用户自备的 OpenAI-compatible 模型（默认文字与图片共用一个模型、只填一份 Key，可在设置里分开配置），生成「★标题 + 一段正文 + 平台与链接」的固定格式舆情简报。
 - 支持：单条概括、最多 5 条跨平台合并概括、已删帖文的截图识别、分享短链自动识别、概括历史（本机 100 条）、飞书自动推送、可选的截图存档（帖文页截图与配图存到用户自选文件夹）。
 - 发布：已上架 Microsoft Edge Add-ons（扩展 ID `hiafnpkhaeignkaealneapnangmbjedj`）与 Chrome Web Store。
-- 当前版本：0.21.6。更早的演进见 `git log`。
+- 当前版本：0.22.0。更早的演进见 `git log`。
 
 ## 硬约束（合规与商店）
 
@@ -30,6 +30,7 @@
 | `archive.js` | 截图存档：初始屏与评论区长截图（截取、拼接）、配图下载、写入 / 删除存档文件夹、存档索引；侧边栏与设置页共用 |
 | `media-access.js` | 微博图床防盗链：`declarativeNetRequest` 动态规则只给本扩展自己发起的 `*.sinaimg.cn` 请求补 `Referer`；侧边栏与后台在图片 fetch 前 `await ensureWeiboMediaReferer()`（设置页不取图，不需要） |
 | `service-worker.js` | 后台：消息路由、配置与密钥、缓存、工作流状态、合并清单、历史、飞书推送、短链解析与补链接 |
+| `agent-api.js` | 自动化入口 `globalThis.SHUYE_AGENT_API`（`ping` / `captureTab`）：供带调试端口的专用浏览器经 CDP 在后台调用，复用单条管线，可关本次飞书推送；不注册消息、不对外开放 |
 | `ai-pipeline.js` | 模型调用、证据构建、图片识别、文字概括、截图识别、结果渲染、缓存键 |
 | `prompts.js` | 全部内置提示词 |
 | `capture-common.js` | 两平台共享的采集工作流与内容脚本消息协议 |
@@ -46,6 +47,7 @@
 2. **合并**：清单条目的 payload 存在 `chrome.storage.session`，合并时按发帖时间排序后一次性交给文字模型，再由 `renderMergedSummary` 渲染；运行中改过清单链接时同样先 deferred，面板按当前清单原地重渲染后再推送一次。
 3. **截图**：普通截图以原始文件、原始尺寸、原始格式上传；长截图（高度超过宽度 ×2.5 或高度超过 4096 像素）在面板暂存时按原分辨率带重叠切段（单张最多 20 段；PNG 源仍出 PNG，JPEG / WebP 转高质量 JPEG），段间重叠交给截图提示词已有的「多张按顺序拼接、去掉重叠」规则；单边超过 4096 的段或截图等比缩小，不提示用户。切段后的一批受源文件单张 12 MB、本批 data URL 总长 32 MB、单次最多 20 张限制，识别超时随张数放宽（`screenshotTimeoutMs`，最多 240 秒） → 图片模型把截图抄录成结构化 JSON → `buildScreenshotPayload` 组装成与网页采集同 schema 的 payload（相对时间复用 `resolvePublishedDate` 以识别时刻即上传当天换算）→ 复用单条或合并管线。提交截图时面板只带暂存卡上挂着的链接（`stagedShotLink`，随消息 `sourceUrl` 带入，落到 payload 的 `source.url`），不再从输入框顺带读取；微博链接挂不上（截图管线只覆盖小红书）。
 4. **链接**：`XHS_AI_RESOLVE_LINK` 把链接解析为「平台 + 帖子 ID」→ 与当前页签、清单条目比对 → 命中就补链接，没命中就开新页签采集，解析失败就让用户手动选择。新页签只在 `detailReady`（标题渲染）后就开采集，因此小红书采集端自带就绪等待（`content-script.js` 的 `TIMING`，测试可用 `__XHS_CAPTURE_TIMING__` 缩短）：互动数或评论总数出现才继续，评论区挂载与首条评论各有等待上限；「共 0 条评论」立即结束，超时记 `comment_load_timeout` 并向 `uncertainties` 写「评论未能读取」。
+6. **自动化**（v0.22.0）：本机 Agent 经 CDP 在后台调用 `SHUYE_AGENT_API.captureTab` → 注入采集脚本、等 `detailReady` → `XHS_CAPTURE_AND_SUMMARIZE`，与面板单条流程相同；`notify: false` 时把页签记入静默集合，`summarizePagePayload` 传 `skipNotify` 跳过飞书（不查询面板待补链接）。
 5. **存档**（设置开启时）：面板发采集消息带 `options.archive` 并登记 tabId → pageSessionId。小红书边加载边截：`content-script.js` 加载评论前发 `XHS_ARCHIVE_FRAME` start（面板滚到顶截初始屏，兼作第一帧），每滚一步、等过新评论后发 frame（面板原地截一帧并记锚点），收尾在恢复滚动位置前发 end（面板按锚点丢掉错位帧、补截缺口，回复后再拼接）；每步都等面板回复才继续，面板不回或出错就停止请求、评论照常加载。采集完发 `XHS_ARCHIVE_PAGE_READY`（含 payload）后照常进入概括；面板只响应自己登记过的页签，有边加载边截的结果就直接用，否则（微博、或没能启动）排队单独滚一遍截图（与模型调用并行）→ 采集响应后下载配图 → 有了概括记录（单条完成 / 合并完成按 `captureKeys` / 重新生成）才写入 `<存放文件夹>/<时间_平台_标题_ID尾>/` → 索引记 `historyIds`。加入清单与概括失败的存档在内存里等待（`awaiting-summary`），移出或清空清单即丢弃。
 
 ## 关键约定（改代码前必读）

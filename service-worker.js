@@ -1,4 +1,4 @@
-importScripts("prompts.js", "media-access.js", "ai-pipeline.js");
+importScripts("prompts.js", "media-access.js", "ai-pipeline.js", "agent-api.js");
 
 const CONFIG_KEY = "xhsAiConfig";
 const SECRETS_KEY = "xhsAiSecrets";
@@ -750,7 +750,8 @@ async function summarizePayload(payload, force, progressListener = () => {}, pre
   );
   const { cache: updatedCache, ...publicResult } = result;
   let notification = null;
-  if (hasFeishuSettings(config, secrets)) {
+  // 自动化入口（agent-api.js）要求本次不推送时跳过飞书；概括、缓存、历史照常
+  if (!options?.skipNotify && hasFeishuSettings(config, secrets)) {
     let deferNotify = false;
     if (typeof options?.shouldDeferNotify === "function") {
       try {
@@ -833,6 +834,7 @@ async function summarizePagePayload(message, sender) {
 
   try {
     const response = await summarizePayload(payload, message.force, onProgress, message.preparedVision, {
+      skipNotify: Boolean(globalThis.SHUYE_AGENT_API?.isQuiet?.(tabId)),
       // 本次生成实际用的 givenUrl 之外若还有更新的待补链接，先不推送，等面板补完链接再来。
       // 截图帖文的链接在创建时已确定，不参与延迟推送。
       shouldDeferNotify: () => payload?.source?.origin === "user_screenshot"

@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\package.ps1
 
 产物为 `shuye-<版本号>.zip`，版本号从 `manifest.json` 读取。新增运行时文件时，同步更新脚本里的白名单。
 
-- 进包：`manifest.json`、`panel.*`、`options.*`、运行时 `.js`（`prompts.js`、`ai-pipeline.js`、`service-worker.js`、`capture-common.js`、`content-script.js`、`weibo-content-script.js`、`main-world.js`、`archive.js`、`media-access.js`）、`icons/`、`_locales/`（如存在）。
+- 进包：`manifest.json`、`panel.*`、`options.*`、运行时 `.js`（`prompts.js`、`ai-pipeline.js`、`service-worker.js`、`capture-common.js`、`content-script.js`、`weibo-content-script.js`、`main-world.js`、`archive.js`、`media-access.js`、`agent-api.js`）、`icons/`、`_locales/`（如存在）。
 - 不进包：`AGENTS.md`、`.memory/`、`tests/`、`scripts/`、`README.md`、`PRIVACY_POLICY.md`、`package.json`、`.git*`、`.worktrees/`。
 
 新增运行时文件时，同步更新白名单。

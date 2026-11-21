@@ -171,6 +171,22 @@ Webhook 本身相当于发送凭据，请勿分享。飞书官方配置说明：
 
 视频帖的页面状态读取由 `main-world.js`（注入页面主世界的桥接脚本）与 `content-script.js` 中的提取逻辑完成；截帧时间点、字幕长度上限等参数在 `content-script.js` 顶部的常量中调整。微博帖文的采集逻辑独立在 `weibo-content-script.js`，通过页面同源的 `/ajax/` 接口读取数据，采集上限（评论条数、页数、回复数）在同文件顶部的常量中调整。两个平台共享的采集工作流（进度上报、图片识别预备、概括与合并清单的消息协议）在 `capture-common.js`，由侧边栏在注入平台脚本前一并注入，改消息协议通常只需改该文件。
 
+## 自动化入口（给本机 Agent 用）
+
+v0.22.0 起，后台多了一个只供本机自动化调用的入口 `globalThis.SHUYE_AGENT_API`（`agent-api.js`）。用法：用 `--remote-debugging-port` 启动一个专用浏览器，经 CDP 连到本扩展的 service worker，在里面执行：
+
+```js
+await SHUYE_AGENT_API.ping();
+// → { ok, apiVersion: 1, extensionVersion }
+await SHUYE_AGENT_API.captureTab({ noteId: "<24 位帖子 ID>", commentLimit: 30, notify: false });
+// → { ok, apiVersion, noteId, pageUrl, text, historyId, notification, meta }
+```
+
+- 目标帖子要先在这个浏览器里打开（`/explore/<id>` 详情页），入口按 `noteId` 或 `tabId` 找到页签，走和侧边栏完全相同的采集与概括管线，结果照常写入概括历史。
+- `notify: false` 时本次不推送飞书，避免批量采集刷屏；不传则按设置照常推送。
+- 调用方应先检查 `apiVersion`，不认识的版本就停下，返回格式变化时会升这个版本号。
+- 不新增任何权限，不注册新消息，也不通过 `externally_connectable` 或页面 `postMessage` 开放：网页和其他扩展都调用不到，普通安装下没有调试端口，也就触发不了。
+
 ## 打包
 
 在仓库根目录运行：

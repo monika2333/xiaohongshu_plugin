@@ -34,7 +34,8 @@ $Files = @(
     "weibo-content-script.js",
     "main-world.js",
     "archive.js",
-    "media-access.js"
+    "media-access.js",
+    "agent-api.js"
 )
 
 foreach ($Name in $Files) {
